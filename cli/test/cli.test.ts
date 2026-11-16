@@ -102,6 +102,28 @@ describe("ws CLI", () => {
     rmSync(parent, { recursive: true, force: true });
   });
 
+  test("link sends up a folder that already exists, and keeps both on a clash", async () => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "fresh" });
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/fresh/members/ana@example.org", { role: "editor" });
+    const dir = tempDir("ws-cli-link-");
+    await Bun.write(`${dir}/a.md`, "a\n");
+    await Bun.write(`${dir}/sub/b.md`, "b\n");
+    const linked = JSON.parse((await ws(["link", "fresh", dir, "--json"])).out);
+    expect(linked.pushed.map((p: any) => p.path).sort()).toEqual(["a.md", "sub/b.md"]);
+    expect((await ws(["link", "fresh", `${dir}/sub`])).code).toBe(1); // already synced
+    // A second folder with a clashing file: the server's version wins in place, ours goes to a copy.
+    const other = tempDir("ws-cli-link2-");
+    await Bun.write(`${other}/a.md`, "different\n");
+    await Bun.write(`${other}/c.md`, "c\n");
+    const second = JSON.parse((await ws(["link", "fresh", other, "--json"])).out);
+    expect(second.conflicts).toHaveLength(1);
+    expect(await Bun.file(`${other}/a.md`).text()).toBe("a\n");
+    expect(await Bun.file(`${other}/${second.conflicts[0].copy}`).text()).toBe("different\n");
+    expect(await Bun.file(`${other}/sub/b.md`).text()).toBe("b\n");
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  });
+
   test("help for agents is Markdown", async () => {
     const r = await ws(["help", "--agent"]);
     expect(r.out.startsWith("# Using `ws` from an agent")).toBe(true);

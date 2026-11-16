@@ -27,6 +27,7 @@ const HELP = `ws ${VERSION}
   ws log WS [PATH] [--limit N]      History, newest first
 
   ws clone WS [DIR]                 Make DIR (default ./WS) a synced copy of the workspace
+  ws link WS [DIR]                  Connect a folder that already has files (default: this one) and send them up
   ws status [DIR]                   What changed here since the last sync
   ws sync [DIR]                     Sync once: bring down, send up
   ws watch [DIR]                    Keep syncing: seconds after you edit, and when others commit
@@ -208,6 +209,25 @@ async function main(): Promise<void> {
         const report = await engine.sync();
         return print({ dir, workspace: ws, role: info.role, ...report }, () =>
           [`Cloned ${ws} into ${dir} (${report.pulled.length} file(s), you are ${info.role}).`, `Keep it in sync with: ws watch ${dir}`].join("\n"),
+        );
+      }
+      case "link": {
+        const ws = need(0, "ws link WS [DIR]");
+        const dir = resolve(args[1] ?? ".");
+        if (!existsSync(dir)) throw new UsageError(`${dir} doesn't exist.`);
+        const existing = findRoot(dir);
+        if (existing) throw new UsageError(`${existing} is already synced with "${(await loadState(existing)).workspace}".`);
+        const [info, me] = await Promise.all([c.workspace(ws), c.me()]);
+        const state = newState(cfg.url, ws, me.user.name || me.user.email.split("@")[0]!);
+        await saveState(dir, state);
+        const engine = new SyncEngine(dir, c, state);
+        const report = await engine.sync();
+        return print({ dir, workspace: ws, role: info.role, ...report }, () =>
+          [
+            `Linked ${dir} to ${ws}: ${report.pushed.length} file(s) sent, ${report.pulled.length} received.`,
+            ...describe(report).filter((l) => !l.startsWith("↑") && !l.startsWith("↓")),
+            `Keep it in sync with: ws watch ${dir}`,
+          ].join("\n"),
         );
       }
       default:
