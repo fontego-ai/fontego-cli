@@ -32,6 +32,7 @@ const HELP = `ws ${VERSION}
   ws sync [DIR]                     Sync once: bring down, send up
   ws watch [DIR]                    Keep syncing: seconds after you edit, and when others commit
   ws conflicts [DIR]                Conflict copies waiting to be merged by hand
+  ws open [WS] [--print]            Open the web app, already signed in (--print: just show the link)
   ws help --agent                   How to use ws, written for an AI agent
 
 Options: --json (machine-readable output). WS_URL and WS_TOKEN override the saved login.`;
@@ -77,7 +78,7 @@ interface Args {
   flags: Record<string, string | true>;
 }
 
-const BOOLEAN = new Set(["json", "agent", "r", "recursive", "help"]);
+const BOOLEAN = new Set(["json", "agent", "r", "recursive", "help", "print"]);
 
 function parse(argv: string[]): Args {
   const positional: string[] = [];
@@ -195,6 +196,20 @@ async function main(): Promise<void> {
         return print(commits, () =>
           commits.map((x) => `${x.commit.slice(0, 10)}  ${x.date.slice(0, 16).replace("T", " ")}  ${x.author.name || x.author.email}  ${x.message.split("\n")[0]}`).join("\n") || "(no history yet)",
         );
+      }
+      case "open": {
+        const ws = args[0];
+        if (ws) await c.workspace(ws); // fails early if it doesn't exist for you
+        const link = await c.sessionCode();
+        const url = ws ? `${link.url}&next=${encodeURIComponent(`/w/${ws}`)}` : link.url;
+        if (flags.print === true || asJson) return print({ url, expiresAt: link.expiresAt }, () => url);
+        const opener = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["cmd", "/c", "start", "", url] : ["xdg-open", url];
+        try {
+          Bun.spawn(opener, { stdout: "ignore", stderr: "ignore" }).unref();
+          return console.log("Opening the web app in your browser (the link works once, for two minutes).");
+        } catch {
+          return console.log(`Open this link in your browser (works once, for two minutes):\n${url}`);
+        }
       }
       case "clone": {
         const ws = need(0, "ws clone WS [DIR]");

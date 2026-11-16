@@ -30,6 +30,9 @@ export interface WorkspaceInfo {
   createdAt: string;
   head: string | null;
   role: Role | null;
+  /** Date and author of the last change, if any */
+  updatedAt: string | null;
+  updatedBy: string | null;
 }
 
 export interface Member {

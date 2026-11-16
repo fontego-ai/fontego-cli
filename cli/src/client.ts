@@ -71,6 +71,11 @@ export class Client {
     return this.json<Me>("GET", "/v1/me");
   }
 
+  /** A one-time link that opens the web app already signed in (valid two minutes). */
+  sessionCode() {
+    return this.json<{ code: string; expiresAt: string; url: string }>("POST", "/v1/session/code");
+  }
+
   workspaces(category?: string) {
     return this.json<{ workspaces: WorkspaceInfo[] }>("GET", `/v1/workspaces${category ? `?category=${enc(category)}` : ""}`).then((r) => r.workspaces);
   }
