@@ -12,6 +12,10 @@ export interface TestServer {
   url: string;
   adminToken: string;
   stop(): Promise<void>;
+  /** Stops the server process, keeping its data and port, as if the connection were lost */
+  pause(): Promise<void>;
+  /** Starts it again where it was */
+  resume(): Promise<void>;
   /** Creates a person with a token */
   person(email: string, name?: string): Promise<{ token: string; id: number }>;
   call(token: string, method: string, path: string, body?: unknown): Promise<{ status: number; data: any; res: Response }>;
@@ -44,20 +48,23 @@ export async function startTestServer(): Promise<TestServer> {
   };
 
   const adminToken: string = admin(["init", "admin@example.org", "--name", "Admin"]).token;
-  const proc = Bun.spawn([process.execPath, SERVER_MAIN, "serve"], { env, stdout: "ignore", stderr: "pipe" });
   const url = `http://127.0.0.1:${port}`;
-  for (let i = 0; ; i++) {
-    try {
-      if ((await fetch(`${url}/v1/health`)).ok) break;
-    } catch {
-      // not listening yet
+  const serve = async () => {
+    const p = Bun.spawn([process.execPath, SERVER_MAIN, "serve"], { env, stdout: "ignore", stderr: "pipe" });
+    for (let i = 0; ; i++) {
+      try {
+        if ((await fetch(`${url}/v1/health`)).ok) return p;
+      } catch {
+        // not listening yet
+      }
+      if (i >= 100 || p.exitCode !== null) {
+        p.kill();
+        throw new Error(`fontego-server did not start on ${url}: ${await new Response(p.stderr).text()}`);
+      }
+      await Bun.sleep(50);
     }
-    if (i >= 100 || proc.exitCode !== null) {
-      proc.kill();
-      throw new Error(`fontego-server did not start on ${url}: ${await new Response(proc.stderr).text()}`);
-    }
-    await Bun.sleep(50);
-  }
+  };
+  let proc = await serve();
 
   return {
     url,
@@ -66,6 +73,13 @@ export async function startTestServer(): Promise<TestServer> {
       proc.kill();
       await proc.exited;
       rmSync(dir, { recursive: true, force: true });
+    },
+    async pause() {
+      proc.kill();
+      await proc.exited;
+    },
+    async resume() {
+      proc = await serve();
     },
     async person(email, name = "") {
       const { id } = admin(["user", "add", email, ...(name ? ["--name", name] : [])]);

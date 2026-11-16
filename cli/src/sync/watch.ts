@@ -1,10 +1,11 @@
 // `fontego watch`: keeps a folder in step with the server. It syncs a moment after you stop editing, as soon as the
-// server announces a commit, and every 30 s as a safety net. Only one watcher per folder.
+// server announces a commit, and every 30 s as a safety net. Without a connection it keeps watching and catches up
+// when the server is back. Only one watcher per folder.
 
 import { watch as fsWatch, type FSWatcher } from "node:fs";
 import { open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { Client } from "../client.ts";
+import { ClientError, type Client } from "../client.ts";
 import type { SyncEngine, SyncReport } from "./engine.ts";
 import { loadIgnore, STATE_DIR } from "./local.ts";
 
@@ -74,8 +75,14 @@ export class Watcher {
   }
 
   async start() {
-    const report = await this.engine.sync();
-    this.opts.onReport?.(report);
+    // Without the server (offline, or it is restarting) keep going: the retries below catch up once it is back.
+    // Anything else (a revoked token, a workspace that is gone) won't fix itself, so it stops here.
+    try {
+      this.opts.onReport?.(await this.engine.sync());
+    } catch (e) {
+      if (!(e instanceof ClientError && (e.status === 0 || e.status >= 500))) throw e;
+      this.opts.onError?.(e);
+    }
     const root = this.engine.root;
     const debounce = this.opts.debounceMs ?? 1500;
     const ignore = await loadIgnore(root);

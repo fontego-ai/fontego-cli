@@ -205,4 +205,23 @@ describe("sync between two copies", () => {
     await wa.stop();
     await wb.stop();
   });
+
+  test("a watcher started while the server is down waits, then catches up", async () => {
+    await s.pause();
+    const errors: string[] = [];
+    const w = new Watcher(A, new Client(s.url, ana.token), { debounceMs: 200, safetyMs: 500, onError: (e) => errors.push(e.message) });
+    await w.start(); // no server: it keeps watching instead of failing
+    write(A, "offline/note.md", "written offline\n");
+    await Bun.sleep(400);
+    await s.resume();
+    const t0 = Date.now();
+    let synced = false;
+    while (!synced && Date.now() - t0 < 15_000) {
+      await Bun.sleep(200);
+      synced = (await s.call(ana.token, "GET", "/v1/workspaces/team/files/offline/note.md")).status === 200;
+    }
+    await w.stop();
+    expect(errors.some((m) => m.includes("Can't reach"))).toBe(true);
+    expect(synced).toBe(true);
+  });
 });
