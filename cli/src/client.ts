@@ -1,17 +1,16 @@
-// HTTP client of the API. The CLI uses it today; the sync daemon and the MCP adapter will reuse it.
+// HTTP client of the API. Commands the server declares go through call(); sync, clone and the other built-in
+// commands use the typed methods. Every answer says which version of the commands the server has, and the client
+// remembers the last one so the CLI can tell when its saved list is stale.
 
-import type {
-  ChangeSetRequest,
-  ChangeSetResult,
-  Commit,
-  ErrorBody,
-  FileMeta,
-  Me,
-  Member,
-  SearchHit,
-  SyncResponse,
-  TreeResponse,
-  WorkspaceInfo,
+import {
+  COMMANDS_HEADER,
+  type ChangeSetRequest,
+  type ChangeSetResult,
+  type CommandsManifest,
+  type ErrorBody,
+  type Me,
+  type SyncResponse,
+  type WorkspaceInfo,
 } from "@fontego/core";
 
 export class ClientError extends Error {
@@ -36,7 +35,10 @@ export class Client {
     private readonly userAgent = "fontego-cli/0.1.0",
   ) {}
 
-  private async request(method: string, path: string, body?: unknown): Promise<Response> {
+  /** Version of the server's commands, from the last answer that carried it */
+  commandsVersion: string | null = null;
+
+  private async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
     let res: Response;
     try {
       res = await fetch(this.baseUrl.replace(/\/+$/, "") + path, {
@@ -47,10 +49,12 @@ export class Client {
           ...(body !== undefined ? { "content-type": "application/json" } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
       });
     } catch (e) {
       throw new ClientError(0, "unreachable", `Can't reach ${this.baseUrl}: ${(e as Error).message}`, "Check the URL and that the server is running.");
     }
+    this.commandsVersion = res.headers.get(COMMANDS_HEADER) ?? this.commandsVersion;
     if (!res.ok) {
       let err: ErrorBody["error"] | undefined;
       try {
@@ -76,24 +80,20 @@ export class Client {
     return this.json<{ code: string; expiresAt: string; url: string }>("POST", "/v1/session/code");
   }
 
-  workspaces(category?: string) {
-    return this.json<{ workspaces: WorkspaceInfo[] }>("GET", `/v1/workspaces${category ? `?category=${enc(category)}` : ""}`).then((r) => r.workspaces);
-  }
-
   workspace(ws: string) {
     return this.json<WorkspaceInfo>("GET", `/v1/workspaces/${enc(ws)}`);
   }
 
-  members(ws: string) {
-    return this.json<{ members: Member[] }>("GET", `/v1/workspaces/${enc(ws)}/members`).then((r) => r.members);
+  /** Any API call; the answer as it comes. Commands the server declares run through here. */
+  call(method: string, path: string, opts: { query?: URLSearchParams; body?: unknown } = {}): Promise<Response> {
+    const q = opts.query?.toString();
+    return this.request(method, q ? `${path}?${q}` : path, opts.body);
   }
 
-  tree(ws: string, opts: { path?: string; rev?: string; recursive?: boolean } = {}) {
-    const q = new URLSearchParams();
-    if (opts.path) q.set("path", opts.path);
-    if (opts.rev) q.set("rev", opts.rev);
-    if (opts.recursive) q.set("recursive", "1");
-    return this.json<TreeResponse>("GET", `/v1/workspaces/${enc(ws)}/tree?${q}`);
+  /** The commands this server declares (see core/commands.ts). */
+  async commands(timeoutMs?: number): Promise<CommandsManifest> {
+    const res = await this.request("GET", "/v1/commands", undefined, timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined);
+    return (await res.json()) as CommandsManifest;
   }
 
   async file(ws: string, path: string, rev?: string): Promise<{ bytes: Uint8Array; hash: string; mode: string; rev: string }> {
@@ -104,24 +104,6 @@ export class Client {
       mode: res.headers.get("x-file-mode") ?? "100644",
       rev: res.headers.get("x-rev") ?? "",
     };
-  }
-
-  fileMeta(ws: string, path: string, rev?: string) {
-    return this.json<FileMeta>("GET", `/v1/workspaces/${enc(ws)}/files/${encPath(path)}?meta=1${rev ? `&rev=${enc(rev)}` : ""}`);
-  }
-
-  history(ws: string, opts: { path?: string; limit?: number } = {}) {
-    const q = new URLSearchParams();
-    if (opts.path) q.set("path", opts.path);
-    if (opts.limit) q.set("limit", String(opts.limit));
-    return this.json<{ commits: Commit[] }>("GET", `/v1/workspaces/${enc(ws)}/history?${q}`).then((r) => r.commits);
-  }
-
-  search(ws: string, query: string, opts: { path?: string; limit?: number } = {}) {
-    const q = new URLSearchParams({ q: query });
-    if (opts.path) q.set("path", opts.path);
-    if (opts.limit) q.set("limit", String(opts.limit));
-    return this.json<{ hits: SearchHit[] }>("GET", `/v1/workspaces/${enc(ws)}/search?${q}`).then((r) => r.hits);
   }
 
   sync(ws: string, since: string | null) {

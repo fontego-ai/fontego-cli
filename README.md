@@ -10,5 +10,8 @@ fontego clone handbook && fontego watch handbook
 fontego help --agent      # how to use it, written for an AI agent
 ```
 
+Besides the commands for a synced folder, `fontego` runs the ones your server declares, so a newer server brings its
+new commands to every CLI without an update. `fontego help` lists what yours offers.
+
 This repo also holds `@fontego/core`, the API contract shared with the server. The server and the web app are in
 `fontego-app`. To work on it, see `AGENTS.md`.
