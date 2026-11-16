@@ -84,6 +84,24 @@ describe("ws CLI", () => {
     rmSync(other, { recursive: true, force: true });
   });
 
+  test("clone, edit, status and sync from the command line", async () => {
+    const parent = tempDir("ws-cli-clone-");
+    const dir = `${parent}/notes`;
+    const cloned = JSON.parse((await ws(["clone", "notes", dir, "--json"])).out);
+    expect(cloned.pulled.length).toBe(2);
+    expect((await ws(["clone", "notes", dir])).code).toBe(1); // not empty
+    await Bun.write(`${dir}/travel/japan.md`, "# Japan\nKyoto in April, Osaka in May.\n");
+    const st = JSON.parse((await ws(["status", dir, "--json"])).out);
+    expect(st.modified).toEqual(["travel/japan.md"]);
+    const synced = JSON.parse((await ws(["sync", dir, "--json"])).out);
+    expect(synced.pushed).toEqual([{ path: "travel/japan.md", status: "put" }]);
+    expect((await ws(["status", `${dir}/travel`])).out).toContain("Nothing to send.");
+    expect((await ws(["cat", "notes", "travel/japan.md"])).out).toContain("Osaka");
+    expect((await ws(["conflicts", dir, "--json"])).out).toContain('"conflicts": []');
+    expect((await ws(["status", parent])).code).toBe(1); // not a synced folder
+    rmSync(parent, { recursive: true, force: true });
+  });
+
   test("help for agents is Markdown", async () => {
     const r = await ws(["help", "--agent"]);
     expect(r.out.startsWith("# Using `ws` from an agent")).toBe(true);

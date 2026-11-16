@@ -1,0 +1,51 @@
+// .ws/state.json: what the folder looked like after the last sync. Without .git, this is all the client keeps.
+
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { STATE_DIR, type LocalEntry } from "./local.ts";
+
+export interface SyncState {
+  version: 1;
+  url: string;
+  workspace: string;
+  /** Who this copy belongs to, for conflict copy names */
+  user: string;
+  /** Last server commit this folder is in step with */
+  head: string | null;
+  /** Each file as it was at "head" (the base for the next edit) */
+  files: Record<string, LocalEntry>;
+  /** Files the server refused (policy), by the hash that was refused; retried when the file changes */
+  skipped: Record<string, { hash: string; reason: string }>;
+  /** Set when the server says this person can only read */
+  readOnly?: boolean;
+}
+
+export const statePath = (root: string) => join(root, STATE_DIR, "state.json");
+
+export function newState(url: string, workspace: string, user: string): SyncState {
+  return { version: 1, url, workspace, user, head: null, files: {}, skipped: {} };
+}
+
+export async function loadState(root: string): Promise<SyncState> {
+  return JSON.parse(await readFile(statePath(root), "utf8")) as SyncState;
+}
+
+export async function saveState(root: string, state: SyncState) {
+  const path = statePath(root);
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, JSON.stringify(state, null, 1) + "\n", { mode: 0o600 });
+  await rename(tmp, path);
+}
+
+/** Finds the synced folder that contains "start" by walking up to the first .ws/state.json. */
+export function findRoot(start: string): string | null {
+  let dir = resolve(start);
+  for (;;) {
+    if (existsSync(statePath(dir))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
