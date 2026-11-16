@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { startTestServer, tempDir, type TestServer } from "../../server/test/helpers.ts";
+import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
 let s: TestServer;
@@ -19,9 +19,9 @@ async function fontego(args: string[], env: Record<string, string> = {}) {
 }
 
 beforeAll(async () => {
-  s = startTestServer();
+  s = await startTestServer();
   home = tempDir("fontego-cli-home-");
-  ana = s.person("ana@example.org", "Ana");
+  ana = await s.person("ana@example.org", "Ana");
   await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "notes", name: "Notes", category: "personal" });
   await s.call(s.adminToken, "PUT", "/v1/workspaces/notes/members/ana@example.org", { role: "editor" });
   await s.call(ana.token, "POST", "/v1/workspaces/notes/changes", {
@@ -33,8 +33,8 @@ beforeAll(async () => {
     ],
   });
 });
-afterAll(() => {
-  s.stop();
+afterAll(async () => {
+  await s.stop();
   rmSync(home, { recursive: true, force: true });
 });
 

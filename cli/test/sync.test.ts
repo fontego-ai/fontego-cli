@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { startTestServer, tempDir, type TestServer } from "../../server/test/helpers.ts";
+import { startTestServer, tempDir, type TestServer } from "./server.ts";
 import { Client } from "../src/client.ts";
 import { localStatus, SyncEngine } from "../src/sync/engine.ts";
 import { isConflictCopy } from "../src/sync/local.ts";
@@ -32,10 +32,10 @@ const write = (e: SyncEngine, p: string, text: string) => {
 const DOC = "one\ntwo\nthree\nfour\nfive\n";
 
 beforeAll(async () => {
-  s = startTestServer();
-  ana = s.person("ana@example.org", "Ana");
-  bea = s.person("bea@example.org", "Bea");
-  carl = s.person("carl@example.org", "Carl");
+  s = await startTestServer();
+  ana = await s.person("ana@example.org", "Ana");
+  bea = await s.person("bea@example.org", "Bea");
+  carl = await s.person("carl@example.org", "Carl");
   await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "team" });
   for (const [who, role] of [["ana", "editor"], ["bea", "editor"], ["carl", "reader"]]) {
     await s.call(s.adminToken, "PUT", `/v1/workspaces/team/members/${who}@example.org`, { role });
@@ -48,8 +48,8 @@ beforeAll(async () => {
     ],
   });
 });
-afterAll(() => {
-  s.stop();
+afterAll(async () => {
+  await s.stop();
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 

@@ -1,0 +1,18 @@
+{
+  "name": "fontego-cli",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "core",
+    "cli"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p .",
+    "fontego": "bun cli/src/main.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.3"
+  }
+}
