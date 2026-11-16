@@ -15,7 +15,7 @@ let carl: { token: string; id: number };
 const dirs: string[] = [];
 
 async function copy(token: string, user: string, ws = "team"): Promise<SyncEngine> {
-  const dir = tempDir(`ws-sync-${user}-`);
+  const dir = tempDir(`fontego-sync-${user}-`);
   dirs.push(dir);
   const state = newState(s.url, ws, user);
   await saveState(dir, state);
@@ -62,7 +62,7 @@ describe("sync between two copies", () => {
     B = await copy(bea.token, "Bea");
     expect(read(A, "doc.md")).toBe(DOC);
     expect(read(B, "notes/old.md")).toBe("old\n");
-    expect(existsSync(join(A.root, ".ws/state.json"))).toBe(true);
+    expect(existsSync(join(A.root, ".fontego/state.json"))).toBe(true);
   });
 
   test("an edit and a new file travel from A to B", async () => {
@@ -186,7 +186,7 @@ describe("sync between two copies", () => {
   test("one watcher per folder", async () => {
     const release = await acquireLock(A.root);
     // the same process may re-take it; another live pid may not
-    writeFileSync(join(A.root, ".ws/lock"), String(process.ppid));
+    writeFileSync(join(A.root, ".fontego/lock"), String(process.ppid));
     await expect(acquireLock(A.root)).rejects.toBeInstanceOf(LockedError);
     await release();
   });

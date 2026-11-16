@@ -1,4 +1,4 @@
-// `ws watch`: keeps a folder in step with the server. It syncs a moment after you stop editing, as soon as the
+// `fontego watch`: keeps a folder in step with the server. It syncs a moment after you stop editing, as soon as the
 // server announces a commit, and every 30 s as a safety net. Only one watcher per folder.
 
 import { watch as fsWatch, type FSWatcher } from "node:fs";
@@ -28,13 +28,13 @@ function alive(pid: number): boolean {
 
 export class LockedError extends Error {}
 
-/** Takes .ws/lock for this process; fails if another live watcher holds it. */
+/** Takes .fontego/lock for this process; fails if another live watcher holds it. */
 export async function acquireLock(root: string): Promise<() => Promise<void>> {
   const path = join(root, STATE_DIR, "lock");
   try {
     const pid = Number((await readFile(path, "utf8")).trim());
     if (pid && pid !== process.pid && alive(pid)) {
-      throw new LockedError(`Another ws watch (pid ${pid}) is already syncing this folder.`);
+      throw new LockedError(`Another fontego watch (pid ${pid}) is already syncing this folder.`);
     }
   } catch (e) {
     if (e instanceof LockedError) throw e; // a missing or unreadable lock is a stale one

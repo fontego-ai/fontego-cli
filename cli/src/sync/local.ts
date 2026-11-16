@@ -1,11 +1,11 @@
 // The local side of sync: scanning the folder, reading and writing files safely.
 
-import { blobHash, normalizePath, PathError } from "@workspaces/core";
+import { blobHash, normalizePath, PathError } from "@fontego/core";
 import { lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
 
-export const STATE_DIR = ".ws";
+export const STATE_DIR = ".fontego";
 
 /** Files and folders sync never touches, whatever the workspace contains. */
 const ALWAYS_IGNORED_DIRS = new Set([STATE_DIR, ".git"]);
@@ -18,7 +18,7 @@ export interface LocalEntry {
   mtimeMs: number;
 }
 
-/** Simple ignore rules from a .wsignore file at the root: "name", "*.ext", "dir/", "path/to/file". */
+/** Simple ignore rules from a .fontegoignore file at the root: "name", "*.ext", "dir/", "path/to/file". */
 export class Ignore {
   private readonly rules: Array<{ re: RegExp; dirOnly: boolean; anchored: boolean }> = [];
 
@@ -56,7 +56,7 @@ export class Ignore {
 
 export async function loadIgnore(root: string): Promise<Ignore> {
   try {
-    return new Ignore(await readFile(join(root, ".wsignore"), "utf8"));
+    return new Ignore(await readFile(join(root, ".fontegoignore"), "utf8"));
   } catch {
     return new Ignore();
   }

@@ -1,13 +1,13 @@
 {
-  "name": "@workspaces/cli",
+  "name": "@fontego/cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@workspaces/core": "workspace:*"
+    "@fontego/core": "workspace:*"
   },
   "bin": {
-    "ws": "src/main.ts"
+    "fontego": "src/main.ts"
   }
 }

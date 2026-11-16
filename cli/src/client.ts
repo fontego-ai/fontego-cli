@@ -12,7 +12,7 @@ import type {
   SyncResponse,
   TreeResponse,
   WorkspaceInfo,
-} from "@workspaces/core";
+} from "@fontego/core";
 
 export class ClientError extends Error {
   constructor(
@@ -33,7 +33,7 @@ export class Client {
   constructor(
     readonly baseUrl: string,
     private readonly token: string,
-    private readonly userAgent = "ws-cli/0.1.0",
+    private readonly userAgent = "fontego-cli/0.1.0",
   ) {}
 
   private async request(method: string, path: string, body?: unknown): Promise<Response> {

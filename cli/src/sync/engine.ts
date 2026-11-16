@@ -7,7 +7,7 @@
 //
 // A real conflict keeps both: the server's version stays in place and ours is saved next to it as a conflict copy.
 
-import { looksLikeText, type ChangeOp, type Conflict, type FileMode } from "@workspaces/core";
+import { looksLikeText, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
 import {
@@ -176,7 +176,7 @@ export class SyncEngine {
     const message = `${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""} (from ${hostname()})`;
     let result;
     try {
-      result = await this.client.change(this.state.workspace, { baseCommit: this.state.head, message, ops, client: "ws" });
+      result = await this.client.change(this.state.workspace, { baseCommit: this.state.head, message, ops, client: "fontego" });
     } catch (e) {
       if (!(e instanceof ClientError)) throw e;
       if (e.status === 403) {

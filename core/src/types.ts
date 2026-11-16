@@ -127,7 +127,7 @@ export interface ChangeSetRequest {
   baseCommit: string | null;
   message: string;
   ops: ChangeOp[];
-  /** Free label of the client: "ws", "mcp", "web", "script"... */
+  /** Free label of the client: "fontego", "mcp", "web", "script"... */
   client?: string;
 }
 

@@ -1,4 +1,4 @@
-// .ws/state.json: what the folder looked like after the last sync. Without .git, this is all the client keeps.
+// .fontego/state.json: what the folder looked like after the last sync. Without .git, this is all the client keeps.
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -39,7 +39,7 @@ export async function saveState(root: string, state: SyncState) {
   await rename(tmp, path);
 }
 
-/** Finds the synced folder that contains "start" by walking up to the first .ws/state.json. */
+/** Finds the synced folder that contains "start" by walking up to the first .fontego/state.json. */
 export function findRoot(start: string): string | null {
   let dir = resolve(start);
   for (;;) {

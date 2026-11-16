@@ -1,5 +1,5 @@
-// Where the CLI keeps its login: $XDG_CONFIG_HOME/ws/config.json (0600). WS_URL and WS_TOKEN override it,
-// which is how an agent or a script uses ws without touching the file.
+// Where the CLI keeps its login: $XDG_CONFIG_HOME/fontego/config.json (0600). FONTEGO_URL and FONTEGO_TOKEN override it,
+// which is how an agent or a script uses fontego without touching the file.
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -12,16 +12,16 @@ export interface CliConfig {
 
 export function configPath(env = process.env): string {
   const base = env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(base, "ws", "config.json");
+  return join(base, "fontego", "config.json");
 }
 
 export function loadCliConfig(env = process.env): CliConfig | null {
-  if (env.WS_URL && env.WS_TOKEN) return { url: env.WS_URL, token: env.WS_TOKEN };
+  if (env.FONTEGO_URL && env.FONTEGO_TOKEN) return { url: env.FONTEGO_URL, token: env.FONTEGO_TOKEN };
   const path = configPath(env);
   if (!existsSync(path)) return null;
   const saved = JSON.parse(readFileSync(path, "utf8")) as Partial<CliConfig>;
-  const url = env.WS_URL || saved.url;
-  const token = env.WS_TOKEN || saved.token;
+  const url = env.FONTEGO_URL || saved.url;
+  const token = env.FONTEGO_TOKEN || saved.token;
   return url && token ? { url, token } : null;
 }
 
