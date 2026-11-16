@@ -23,7 +23,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 
 | Path | What |
 |---|---|
-| `core/` | `@fontego/core`: API types (`types.ts`), path rules (`paths.ts`) and the Git blob hash (`hash.ts`). `fontego-app` uses it through its `core` link |
+| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), path rules (`paths.ts`) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Commands and their help (`fontego help`, and `fontego help --agent` for AI agents) |
 | `cli/src/client.ts` | HTTP client for `/v1` |
 | `cli/src/config.ts` | The login, in `$XDG_CONFIG_HOME/fontego/config.json`; `FONTEGO_URL` and `FONTEGO_TOKEN` override it |

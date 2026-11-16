@@ -1,17 +1,12 @@
-// Types of the HTTP API (version 1). The server and every client use them.
+// Types of the HTTP API (version 1): what the server answers. What requests carry is in schemas.ts.
 
-export type Role = "reader" | "editor" | "admin";
-
-export const ROLES: readonly Role[] = ["reader", "editor", "admin"];
+import { ROLES, type Role } from "./schemas.ts";
 
 /** reader < editor < admin */
 export function roleAtLeast(role: Role | null | undefined, needed: Role): boolean {
   if (!role) return false;
   return ROLES.indexOf(role) >= ROLES.indexOf(needed);
 }
-
-/** Git file modes the API accepts. */
-export type FileMode = "100644" | "100755" | "120000";
 
 export interface ErrorBody {
   error: { code: string; message: string; hint?: string; details?: unknown };
@@ -94,42 +89,7 @@ export interface SearchHit {
   text: string;
 }
 
-// --- Writing: a change set is a list of operations on whole files ---
-
-export interface PutOp {
-  op: "put";
-  path: string;
-  /** UTF-8 text; use contentBase64 for binary files */
-  content?: string;
-  contentBase64?: string;
-  /** Git blob hash of the version this edit started from; null for a new file */
-  baseHash: string | null;
-  mode?: FileMode;
-}
-
-export interface DeleteOp {
-  op: "delete";
-  path: string;
-  baseHash: string;
-}
-
-export interface MoveOp {
-  op: "move";
-  from: string;
-  to: string;
-  baseHash: string;
-}
-
-export type ChangeOp = PutOp | DeleteOp | MoveOp;
-
-export interface ChangeSetRequest {
-  /** The commit the client last synced; the base for three-way merges */
-  baseCommit: string | null;
-  message: string;
-  ops: ChangeOp[];
-  /** Free label of the client: "fontego", "mcp", "web", "script"... */
-  client?: string;
-}
+// --- Writing ---
 
 export interface Conflict {
   path: string;
