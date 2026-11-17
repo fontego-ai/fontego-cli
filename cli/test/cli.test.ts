@@ -11,8 +11,10 @@ let s: TestServer;
 let ana: { token: string; id: number };
 let home: string;
 
-async function fontego(args: string[], env: Record<string, string> = {}) {
+/** `input`: what comes on stdin, which is then not a terminal. */
+async function fontego(args: string[], env: Record<string, string> = {}, input?: string) {
   const proc = Bun.spawn(["bun", MAIN, ...args], {
+    stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
     // Never the real keychain or browser: credentials go to a file in the test home, and links are not opened.
     env: { ...process.env, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", ...env },
     stdout: "pipe",
@@ -194,6 +196,55 @@ describe("commands the server declares", () => {
     expect(again.delivery.link).not.toBe(link);
     // Anyone can ask for a new password; the answer never says whether the address has an account.
     expect((await fontego(["password-reset", "ana@example.org"])).out).toContain("If ana@example.org has an account here");
+  });
+
+  test("an admin changes the settings; a secret is asked for, never taken from the command line nor shown", async () => {
+    const env = asAdmin();
+    expect((await fontego(["admin", "settings", "set", "displayName", "Crumb & Co."], env)).out).toContain("displayName is now Crumb & Co..");
+    const list = (await fontego(["admin", "settings"], env)).out;
+    expect(list).toMatch(/displayName\s+Crumb & Co\.\s+set here/);
+    expect(list).toMatch(/smtp\.password\s+\(not set\)\s+default/);
+    expect((await fontego(["help", "admin", "settings", "set"], env)).out).toContain("left out, it is asked for without showing it");
+
+    const pw = await fontego(["admin", "settings", "set", "smtp.password"], env, "s3cret pass\n");
+    expect([pw.code, pw.out.trim()]).toEqual([0, "smtp.password is now (set)."]);
+    expect(pw.out + pw.err).not.toContain("s3cret");
+    expect((await fontego(["admin", "settings", "get", "smtp.password", "--json"], env)).out).not.toContain("s3cret");
+    const nothing = await fontego(["admin", "settings", "set", "smtp.password"], env, "");
+    expect(nothing.code).toBe(1);
+    expect(nothing.err).toContain("Nothing came on stdin");
+
+    const bad = await fontego(["admin", "settings", "set", "smtp.port", "lots"], env);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("smtp.port: it needs a number.");
+    expect((await fontego(["admin", "settings", "get", "smtp.port"], env)).out).toContain("From: the default");
+    expect((await fontego(["admin", "settings", "reset", "displayName"], env)).out).toContain("displayName is back to Fontego (the default).");
+  });
+
+  test("an admin archives a workspace: synced folders keep their changes until it is back; deleting it takes its id", async () => {
+    const env = asAdmin();
+    await fontego(["workspace", "create", "old"], env);
+    const parent = tempDir("fontego-cli-archive-");
+    const dir = `${parent}/old`;
+    expect((await fontego(["clone", "old", dir], env)).code).toBe(0);
+    expect((await fontego(["admin", "workspaces", "archive", "old"], env)).out).toContain("Workspace old archived");
+    expect((await fontego(["workspaces"], env)).out).not.toMatch(/^old\s/m);
+    expect((await fontego(["admin", "workspaces"], env)).out).toMatch(/^old\s.*\d{4}-\d\d-\d\d/m);
+
+    await Bun.write(`${dir}/later.md`, "written while archived\n");
+    const refused = await fontego(["sync", dir], env);
+    expect(refused.code).not.toBe(0);
+    expect(refused.err).toContain("archived");
+    expect((await fontego(["status", dir, "--json"], env)).out).toContain("later.md");
+    expect((await fontego(["admin", "workspaces", "unarchive", "old"], env)).out).toContain("Workspace old is back.");
+    expect(JSON.parse((await fontego(["sync", dir, "--json"], env)).out).pushed).toEqual([{ path: "later.md", status: "put" }]);
+
+    await fontego(["admin", "workspaces", "archive", "old"], env);
+    const unconfirmed = await fontego(["admin", "workspaces", "delete", "old"], env);
+    expect(unconfirmed.code).not.toBe(0);
+    expect(unconfirmed.err).toContain("--confirm old");
+    expect((await fontego(["admin", "workspaces", "delete", "old", "--confirm", "old"], env)).out).toContain("Workspace old deleted for good.");
+    rmSync(parent, { recursive: true, force: true });
   });
 
   test("usage mistakes are caught before calling the server", async () => {
