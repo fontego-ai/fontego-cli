@@ -15,3 +15,11 @@ new commands to every CLI without an update. `fontego help` lists what yours off
 
 This repo also holds `@fontego/core`, the API contract shared with the server. The server and the web app are in
 `fontego-app`. To work on it, see `AGENTS.md`.
+
+## License
+
+Apache License 2.0 (`LICENSE`): use it, change it and build on it, also in closed products. The server and the web app,
+in `fontego-app`, are under the GNU Affero General Public License v3.
+
+Copyright 2026 Joel Kassim Moratalla and the Fontego contributors (`NOTICE`). To contribute, see
+`CONTRIBUTING.md`.

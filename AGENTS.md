@@ -23,6 +23,11 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   give the same result on the server and in every client. A change here is a change to the API: update `fontego-app`
   in the same go.
 - **No company or brand in the code.** Fontego is the project's name.
+- **Licenses: this repo is Apache 2.0, `fontego-app` is AGPL v3.** Never copy code from `fontego-app` into this repo:
+  it would bring the AGPL with it. Code can go the other way, from here into the app.
+- **Copyright and contributions.** The copyright holder is Joel Kassim Moratalla, Fontego's creator: keep `NOTICE`
+  and the copyright lines as they are. Don't merge a contribution from anyone else until they have accepted the
+  contributor agreement (`CLA.md`).
 - **English** for code, commands, messages and docs.
 
 ## Layout
