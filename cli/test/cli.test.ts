@@ -176,6 +176,25 @@ describe("commands the server declares", () => {
     expect((await fontego(["members", "set", "notes", "nobody@example.org", "reader"])).code).toBe(5);
   });
 
+  test("an admin invites people from the CLI; without mail, the link to pass on is right there", async () => {
+    const env = asAdmin();
+    const inv = await fontego(["admin", "users", "invite", "cai@example.org", "--name", "Cai"], env);
+    expect(inv.out).toContain("Invitation for cai@example.org");
+    expect(inv.out).toContain("Not sent (no SMTP is configured)");
+    const link = /https?:\/\/\S+#\/link\/\S+/.exec(inv.out)?.[0];
+    expect(link).toBeTruthy();
+    expect((await fontego(["admin", "mail", "outbox"], env)).out).toContain(link!);
+    expect((await fontego(["admin", "mail"], env)).out).toContain("No SMTP");
+    expect((await fontego(["admin", "users"], env)).out).toMatch(/cai@example\.org\s+invited/);
+    expect((await fontego(["admin", "users", "disable", "cai@example.org"], env)).out).toContain("can't sign in any more");
+    expect((await fontego(["admin", "users", "enable", "cai@example.org"], env)).out).toContain("they still have to set a password");
+    const again = JSON.parse((await fontego(["admin", "users", "resend", "cai@example.org", "--json"], env)).out);
+    expect(again.delivery.status).toBe("held");
+    expect(again.delivery.link).not.toBe(link);
+    // Anyone can ask for a new password; the answer never says whether the address has an account.
+    expect((await fontego(["password-reset", "ana@example.org"])).out).toContain("If ana@example.org has an account here");
+  });
+
   test("usage mistakes are caught before calling the server", async () => {
     const r = await fontego(["members", "set", "notes"]);
     expect(r.code).toBe(1);

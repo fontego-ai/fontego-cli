@@ -47,7 +47,7 @@ export async function startTestServer(): Promise<TestServer> {
     return JSON.parse(r.stdout.toString());
   };
 
-  const adminToken: string = admin(["init", "admin@example.org", "--name", "Admin"]).token;
+  const adminToken: string = admin(["init", "admin@example.org", "--name", "Admin", "--token"]).token;
   const url = `http://127.0.0.1:${port}`;
   const serve = async () => {
     const p = Bun.spawn([process.execPath, SERVER_MAIN, "serve"], { env, stdout: "ignore", stderr: "pipe" });
