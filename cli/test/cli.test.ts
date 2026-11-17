@@ -217,6 +217,17 @@ describe("commands the server declares", () => {
     expect((await fontego(["members", "notes"])).out).toContain("ana@example.org");
   });
 
+  test("a command whose route moved since the list was saved is learned again and run", async () => {
+    const path = commandsCachePath(s.url, { XDG_CACHE_HOME: home });
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    const moved = saved.commands.map((c: any) => (c.name === "members" ? { ...c, request: { ...c.request, path: "/v1/old/{workspace}/members" } } : c));
+    writeFileSync(path, JSON.stringify({ ...saved, version: "old", commands: moved }));
+    const r = await fontego(["members", "notes"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("ana@example.org");
+    expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(saved.version);
+  });
+
   test("offline, help still lists the saved commands and calls fail clearly", async () => {
     const offline = "http://127.0.0.1:9";
     const saved = JSON.parse(readFileSync(commandsCachePath(s.url, { XDG_CACHE_HOME: home }), "utf8"));

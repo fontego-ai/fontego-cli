@@ -58,7 +58,18 @@ async function main(): Promise<void> {
       }
       if (!spec) throw new UsageError(`Unknown command "${words.join(" ") || tokens[0]}". Run: fontego help`);
       if (help) return console.log(describe(spec));
-      await runCommand(spec, parseCommand(spec, tokens.slice(nameLength(spec, words))), client, { json });
+      try {
+        await runCommand(spec, parseCommand(spec, tokens.slice(nameLength(spec, words))), client, { json });
+      } catch (e) {
+        // A route that moved since our list was saved answers 404 or 405, and its answer carries the server's newer
+        // version: learn the commands again and try once more (the failed call did nothing).
+        const stale = client.commandsVersion && cache?.version !== client.commandsVersion;
+        if (!(stale && e instanceof ClientError && (e.status === 404 || e.status === 405))) throw e;
+        cache = await refreshCommands(client);
+        const again = findCommand(cache, words);
+        if (!again) throw new UsageError(`Unknown command "${words.join(" ")}". Run: fontego help`);
+        await runCommand(again, parseCommand(again, tokens.slice(nameLength(again, words))), client, { json });
+      }
     }
 
     const used = conn as Connection | null;
