@@ -75,12 +75,13 @@ export class Watcher {
   }
 
   async start() {
-    // Without the server (offline, or it is restarting) keep going: the retries below catch up once it is back.
-    // Anything else (a revoked token, a workspace that is gone) won't fix itself, so it stops here.
+    // Without the server (offline, or it is restarting), or signed out (the session ended), keep going: the retries
+    // below catch up once it is back, or once the person signs in again. Anything else (a workspace that is gone)
+    // won't fix itself, so it stops here.
     try {
       this.opts.onReport?.(await this.engine.sync());
     } catch (e) {
-      if (!(e instanceof ClientError && (e.status === 0 || e.status >= 500))) throw e;
+      if (!(e instanceof ClientError && (e.status === 0 || e.status === 401 || e.status >= 500))) throw e;
       this.opts.onError?.(e);
     }
     const root = this.engine.root;

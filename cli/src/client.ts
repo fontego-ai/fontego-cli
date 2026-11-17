@@ -28,33 +28,64 @@ export class ClientError extends Error {
 const enc = encodeURIComponent;
 const encPath = (p: string) => p.split("/").map(enc).join("/");
 
+/** What a request needs to prove who it is: a stored session renews itself (auth.ts); a token is just a token. */
+export interface AuthProvider {
+  token(): Promise<string>;
+  /** After a 401: gets a new credential to try (renewed, or signed in again elsewhere), or throws why there is none */
+  recover?(): Promise<void>;
+}
+
+/** Which agent runs this CLI, if any: the server's log then says "Ana, from claude-code". A label, not a guarantee. */
+export function agentName(env = process.env): string | null {
+  const named = env.FONTEGO_AGENT?.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 40);
+  if (named) return named;
+  if (env.CLAUDECODE === "1") return "claude-code";
+  return null;
+}
+
 export class Client {
+  private readonly auth: AuthProvider;
+  private readonly agent = agentName();
+
   constructor(
     readonly baseUrl: string,
-    private readonly token: string,
+    auth: string | AuthProvider,
     private readonly userAgent = "fontego-cli/0.1.0",
-  ) {}
+  ) {
+    this.auth = typeof auth === "string" ? { token: async () => auth } : auth;
+  }
 
   /** Version of the server's commands, from the last answer that carried it */
   commandsVersion: string | null = null;
 
-  private async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
+  private async headers(extra: Record<string, string> = {}): Promise<Record<string, string>> {
+    return {
+      authorization: `Bearer ${await this.auth.token()}`,
+      "user-agent": this.userAgent,
+      ...(this.agent ? { "fontego-agent": this.agent } : {}),
+      ...extra,
+    };
+  }
+
+  private async request(method: string, path: string, body?: unknown, signal?: AbortSignal, retried = false): Promise<Response> {
     let res: Response;
     try {
       res = await fetch(this.baseUrl.replace(/\/+$/, "") + path, {
         method,
-        headers: {
-          authorization: `Bearer ${this.token}`,
-          "user-agent": this.userAgent,
-          ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        },
+        headers: await this.headers(body !== undefined ? { "content-type": "application/json" } : {}),
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
       });
     } catch (e) {
+      if (e instanceof ClientError) throw e;
       throw new ClientError(0, "unreachable", `Can't reach ${this.baseUrl}: ${(e as Error).message}`, "Check the URL and that the server is running.");
     }
     this.commandsVersion = res.headers.get(COMMANDS_HEADER) ?? this.commandsVersion;
+    // A refused credential: renew it (or pick up a new sign-in) and try once more.
+    if (res.status === 401 && !retried && this.auth.recover) {
+      await this.auth.recover();
+      return this.request(method, path, body, signal, true);
+    }
     if (!res.ok) {
       let err: ErrorBody["error"] | undefined;
       try {
@@ -117,9 +148,10 @@ export class Client {
   /** Opens the live event stream; calls onEvent for each event until the signal aborts. */
   async events(ws: string, onEvent: (type: string, data: unknown) => void, signal?: AbortSignal): Promise<void> {
     const res = await fetch(`${this.baseUrl.replace(/\/+$/, "")}/v1/workspaces/${enc(ws)}/events`, {
-      headers: { authorization: `Bearer ${this.token}`, "user-agent": this.userAgent, accept: "text/event-stream" },
+      headers: await this.headers({ accept: "text/event-stream" }),
       signal,
     });
+    if (res.status === 401 && this.auth.recover) await this.auth.recover(); // the next attempt carries the new one
     if (!res.ok || !res.body) throw new ClientError(res.status, "events_failed", `Can't open the event stream (HTTP ${res.status}).`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();

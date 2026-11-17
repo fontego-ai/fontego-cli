@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
-import { Client } from "../src/client.ts";
+import { Client, ClientError } from "../src/client.ts";
 import { localStatus, SyncEngine } from "../src/sync/engine.ts";
 import { isConflictCopy } from "../src/sync/local.ts";
 import { newState, saveState } from "../src/sync/state.ts";
@@ -204,6 +204,36 @@ describe("sync between two copies", () => {
     expect(Date.now() - t0).toBeLessThan(10_000);
     await wa.stop();
     await wb.stop();
+  });
+
+  test("a watcher whose session ends waits, and carries on once its person signs in again", async () => {
+    // A credential that stops working, as a session that ended; signing in again gives a new one.
+    let current = "fontego_at_ended";
+    let signedInAgain = false;
+    const auth = {
+      token: async () => current,
+      recover: async () => {
+        if (!signedInAgain) throw new ClientError(401, "session_ended", "Your session on test ended.", "Sign in again: fontego login test");
+        current = ana.token;
+      },
+    };
+    const errors: string[] = [];
+    const client = new Client(s.url, auth);
+    const engine = new SyncEngine(A.root, client, A.state); // the engine and the watcher share it, as in fontego watch
+    const w = new Watcher(engine, client, { debounceMs: 200, safetyMs: 400, onError: (e) => errors.push(e.message) });
+    await w.start(); // signed out: it waits instead of failing
+    write(A, "paused/note.md", "written while signed out\n");
+    await Bun.sleep(600);
+    expect(errors.some((m) => m.includes("session on test ended"))).toBe(true);
+    signedInAgain = true;
+    const t0 = Date.now();
+    let synced = false;
+    while (!synced && Date.now() - t0 < 10_000) {
+      await Bun.sleep(200);
+      synced = (await s.call(ana.token, "GET", "/v1/workspaces/team/files/paused/note.md")).status === 200;
+    }
+    await w.stop();
+    expect(synced).toBe(true);
   });
 
   test("a watcher started while the server is down waits, then catches up", async () => {
