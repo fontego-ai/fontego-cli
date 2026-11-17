@@ -14,6 +14,11 @@ export interface CommandArg {
   name: string;
   to: CommandTarget;
   optional?: boolean;
+  /**
+   * A secret, such as a password: when it is left out (so it must be optional), the CLI asks for it without showing
+   * what is typed, or reads one line from stdin when that is not a terminal, so it stays out of the shell's history
+   */
+  secret?: boolean;
   description?: string;
 }
 

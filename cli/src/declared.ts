@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { UsageError, usageLine, type Parsed } from "./args.ts";
 import type { Client } from "./client.ts";
+import { readSecret } from "./prompt.ts";
 
 // --- The cache: one file per server ---
 
@@ -108,12 +109,14 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   for (const p of pathParams(spec.request.path)) {
     if (!args.some((a) => a.to === `path.${p}` && !a.optional)) out.push(`${at}: nothing fills {${p}} in ${spec.request.path}`);
   }
+  for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
   for (const f of flags) {
     if (!["string", "number", "boolean"].includes(f.type)) out.push(`${at}: --${f.name} has an unknown type`);
     if (f.short && !/^[A-Za-z]$/.test(f.short)) out.push(`${at}: -${f.short} must be one letter`);
   }
   if (!["table", "lines", "record", "message", "raw"].includes(spec.output.kind)) out.push(`${at}: unknown output "${spec.output.kind}"`);
-  const vars = new Set(["url", ...args.map((a) => a.name), ...flags.map((f) => f.name)]);
+  // A secret never goes into what is printed.
+  const vars = new Set(["url", ...args.filter((a) => !a.secret).map((a) => a.name), ...flags.map((f) => f.name)]);
   for (const t of outputTemplates(spec.output)) {
     out.push(...checkTemplate(t).map((p) => `${at}: ${p}`));
     for (const v of templateVars(t)) if (!vars.has(v)) out.push(`${at}: {$${v}} is unknown`);
@@ -204,9 +207,12 @@ export function renderOutput(output: CommandOutput, data: unknown, vars: Templat
 }
 
 export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Client, opts: { json: boolean }): Promise<void> {
+  // A secret left out is asked for; it lands in parsed, so trying the command again doesn't ask twice.
+  for (const a of spec.args ?? []) if (a.secret && parsed.args[a.name] === undefined) parsed.args[a.name] = await readSecret(a.name);
   const req = buildRequest(spec, parsed);
   const res = await client.call(req.method, req.path, { query: req.query, body: req.body });
-  const vars: TemplateVars = { url: client.baseUrl, ...parsed.args, ...parsed.flags };
+  const shown = Object.fromEntries(Object.entries(parsed.args).filter(([name]) => !spec.args?.find((a) => a.name === name)?.secret));
+  const vars: TemplateVars = { url: client.baseUrl, ...shown, ...parsed.flags };
 
   if (spec.output.kind === "raw") {
     const bytes = new Uint8Array(await res.arrayBuffer());
