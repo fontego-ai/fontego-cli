@@ -52,6 +52,8 @@ export const CreateTokenBody = z.object({
   kind: z.enum(["person", "agent"]).optional(),
 });
 
+export const MailTestBody = z.object({ to: Email });
+
 /** Opens a browser session, with a token or with a one-time code from `fontego open`. */
 export const SessionBody = z.union([z.object({ token: z.string() }), z.object({ code: z.string() })]);
 

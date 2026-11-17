@@ -17,6 +17,35 @@ export interface Me {
   token: { id: number; label: string; kind: "person" | "agent" };
 }
 
+/** What happened to a message: sent by mail, or held for an admin to pass on (no SMTP, or sending failed). */
+export interface Delivery {
+  status: "sent" | "held";
+  /** Why it was held */
+  reason?: string;
+  /** Only when held, and only to a server admin: the link to pass on by hand */
+  link?: string;
+}
+
+export interface MailStatus {
+  transport: "smtp" | "none";
+  host: string | null;
+  port: number | null;
+  from: string | null;
+  /** Where the settings come from */
+  source: string;
+}
+
+export interface OutboxMessage {
+  id: number;
+  createdAt: string;
+  to: string;
+  subject: string;
+  kind: string;
+  /** The link in it, if any: what an admin passes on when there is no mail */
+  link: string | null;
+  reason: string | null;
+}
+
 export interface WorkspaceInfo {
   slug: string;
   name: string;
