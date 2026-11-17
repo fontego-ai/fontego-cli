@@ -236,6 +236,8 @@ export interface WorkspaceInfo {
   /** Date and author of the last change, if any */
   updatedAt: string | null;
   updatedBy: string | null;
+  /** When a server admin archived it: hidden from lists and read-only until brought back */
+  archivedAt?: string;
 }
 
 export interface Member {
