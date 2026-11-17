@@ -17,6 +17,31 @@ export interface Me {
   token: { id: number; label: string; kind: "person" | "agent" };
 }
 
+/** active: can sign in; invited: has a link waiting to set a password; no-password: neither (a token-only account);
+ * disabled: can't sign in, and its sessions and tokens were closed */
+export type AccountStatus = "active" | "invited" | "no-password" | "disabled";
+
+export interface UserSummary {
+  id: number;
+  email: string;
+  name: string;
+  isAdmin: boolean;
+  disabled: boolean;
+  status: AccountStatus;
+}
+
+export type LinkPurpose = "setup" | "invite" | "reset";
+
+/** What a one-time link is for, so the page that opens it can say so. */
+export interface LinkInfo {
+  purpose: LinkPurpose;
+  email: string;
+  name: string;
+  expiresAt: string;
+  /** The server's visible name */
+  instance: string;
+}
+
 /** What happened to a message: sent by mail, or held for an admin to pass on (no SMTP, or sending failed). */
 export interface Delivery {
   status: "sent" | "held";
@@ -24,6 +49,12 @@ export interface Delivery {
   reason?: string;
   /** Only when held, and only to a server admin: the link to pass on by hand */
   link?: string;
+}
+
+export interface InvitationResult {
+  user: UserSummary;
+  expiresAt: string;
+  delivery: Delivery;
 }
 
 export interface MailStatus {

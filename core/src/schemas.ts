@@ -39,7 +39,15 @@ export type UpdateWorkspaceRequest = z.input<typeof UpdateWorkspaceBody>;
 
 export const SetMemberBody = z.object({ role: RoleSchema });
 
-// --- People and tokens ---
+// --- People, passwords and tokens ---
+
+/** NIST SP 800-63B: at least 15 characters when a password is the only thing that proves who you are. */
+export const MIN_PASSWORD = 15;
+export const MAX_PASSWORD = 256;
+const NewPassword = z
+  .string()
+  .min(MIN_PASSWORD, `use at least ${MIN_PASSWORD} characters (a few words make a good one)`)
+  .max(MAX_PASSWORD, `use at most ${MAX_PASSWORD} characters`);
 
 export const CreateUserBody = z.object({
   email: Email,
@@ -52,10 +60,27 @@ export const CreateTokenBody = z.object({
   kind: z.enum(["person", "agent"]).optional(),
 });
 
+/** Invites someone: creates their account, without a password, and sends them a one-time link to set one. */
+export const InviteBody = z.object({
+  email: Email,
+  name: Text(200).optional(),
+  admin: z.boolean().optional(),
+});
+
+/** Uses a one-time link (set up the first admin, accept an invitation, reset a password): the new password. */
+export const UseLinkBody = z.object({ password: NewPassword, name: Text(200).optional() });
+
+/** Asks for a link to set a new password. The answer is the same whether the address has an account or not. */
+export const PasswordResetBody = z.object({ email: Email });
+
 export const MailTestBody = z.object({ to: Email });
 
-/** Opens a browser session, with a token or with a one-time code from `fontego open`. */
-export const SessionBody = z.union([z.object({ token: z.string() }), z.object({ code: z.string() })]);
+/** Opens a browser session: with email and password, a token, or a one-time code from `fontego open`. */
+export const SessionBody = z.union([
+  z.object({ email: z.string(), password: z.string().max(MAX_PASSWORD) }),
+  z.object({ token: z.string() }),
+  z.object({ code: z.string() }),
+]);
 
 // --- Reading ---
 
