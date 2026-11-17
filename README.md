@@ -4,7 +4,7 @@
 and per-workspace permissions. Explore them, or keep a local folder in sync while you edit it with your usual tools.
 
 ```bash
-fontego login https://fontego.example.org --token <token>
+fontego login https://fontego.example.org      # opens the browser to sign in (--device without one)
 fontego workspaces
 fontego clone handbook && fontego watch handbook
 fontego help --agent      # how to use it, written for an AI agent

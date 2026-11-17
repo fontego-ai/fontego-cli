@@ -1,6 +1,6 @@
 // Reading the command line. A command is one or more words (`members set`), then its arguments and flags; which flags
 // take a value depends on the command, so the words are resolved first and the rest is read with that command's
-// flags. --json, --help and -h work anywhere.
+// flags. --json, --help, -h and --instance ALIAS work anywhere.
 
 export class UsageError extends Error {}
 
@@ -35,6 +35,8 @@ export interface Usage {
 export interface Globals {
   json: boolean;
   help: boolean;
+  /** --instance ALIAS: which Fontego this command goes to */
+  instance?: string;
   /** Everything else, in order */
   tokens: string[];
 }
@@ -43,6 +45,7 @@ export function readGlobals(argv: string[]): Globals {
   const tokens: string[] = [];
   let json = false;
   let help = false;
+  let instance: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--") {
@@ -51,9 +54,13 @@ export function readGlobals(argv: string[]): Globals {
     }
     if (a === "--json") json = true;
     else if (a === "--help" || a === "-h") help = true;
+    else if (a === "--instance") {
+      instance = argv[++i];
+      if (!instance) throw new UsageError("--instance needs an alias: --instance ALIAS");
+    } else if (a.startsWith("--instance=")) instance = a.slice("--instance=".length);
     else tokens.push(a);
   }
-  return { json, help, tokens };
+  return { json, help, instance, tokens };
 }
 
 /** The words before the first flag: the command and, after it, its first arguments. */

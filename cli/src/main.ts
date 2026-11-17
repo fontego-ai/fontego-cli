@@ -1,61 +1,80 @@
 #!/usr/bin/env bun
-// fontego: workspaces on a Fontego server, from the terminal, for people, agents and scripts.
+// fontego: workspaces on Fontego servers, from the terminal, for people, agents and scripts.
 //
 // Two kinds of commands: built-in ones (builtins.ts), which work with this machine or a synced folder, and the ones
-// the server declares (declared.ts), learned from GET /v1/commands and kept in a cache. Every command accepts --json.
+// each server declares (declared.ts), learned from GET /v1/commands and kept in a cache. A machine can be signed in
+// to several servers (connect.ts says which one a command goes to). Every command accepts --json.
 
 import { leadingWords, parseCommand, readGlobals, resolveName, UsageError } from "./args.ts";
-import { BUILTIN_NAMES, BUILTINS, notLoggedIn, type RunContext } from "./builtins.ts";
-import { Client, ClientError } from "./client.ts";
-import { loadCliConfig, type CliConfig } from "./config.ts";
+import { BUILTIN_NAMES, BUILTINS, type RunContext } from "./builtins.ts";
+import { ClientError } from "./client.ts";
+import { connect, type Connection } from "./connect.ts";
 import { findCommand, nameLength, readCommands, refreshCommands, runCommand, type CachedCommands } from "./declared.ts";
 import { describe } from "./help.ts";
+import { findRoot, loadState } from "./sync/state.ts";
 import { LockedError } from "./sync/watch.ts";
 
 const EXIT: Record<number, number> = { 401: 2, 404: 3, 409: 4, 403: 5 };
+const DAY = 86_400_000;
+
+/** Inside a synced folder, the URL of the instance it belongs to. */
+async function folderUrl(): Promise<string | undefined> {
+  const root = findRoot(process.cwd());
+  return root ? (await loadState(root).catch(() => null))?.url : undefined;
+}
 
 async function main(): Promise<void> {
-  const { json, help, tokens } = readGlobals(process.argv.slice(2));
-  const print = (data: unknown, text: () => string) => console.log(json ? JSON.stringify(data, null, 2) : text());
-  let signedIn: { client: Client; config: CliConfig } | null = null;
-  const client = () => {
-    if (signedIn) return signedIn;
-    const config = loadCliConfig();
-    if (!config) throw notLoggedIn();
-    signedIn = { client: new Client(config.url, config.token), config };
-    return signedIn;
-  };
+  let json = process.argv.includes("--json");
+  let conn: Connection | null = null;
   let cache: CachedCommands | null = null;
 
   try {
+    const globals = readGlobals(process.argv.slice(2));
+    json = globals.json;
+    const { help, instance, tokens } = globals;
+    const print = (data: unknown, text: () => string) => console.log(json ? JSON.stringify(data, null, 2) : text());
+    const chosen = instance || process.env.FONTEGO_INSTANCE;
+    const signIn: RunContext["connect"] = async (opts = {}) => {
+      if (!conn) conn = await connect({ alias: instance, folderUrl: opts.folderUrl ?? (chosen ? undefined : await folderUrl()) });
+      return conn;
+    };
+
     const words = leadingWords(tokens);
     const builtinName = resolveName(words, BUILTIN_NAMES) ?? (words.length === 0 ? "help" : null);
 
     if (builtinName) {
       const b = BUILTINS.find((x) => x.name === builtinName)!;
       if (help && builtinName !== "help") return console.log(describe(b));
-      const rest = tokens.slice(words.length ? 1 : 0);
-      const rc: RunContext = { parsed: parseCommand(b, rest), json, print, client };
-      await b.run(rc);
+      const rest = tokens.slice(words.length ? builtinName.split(" ").length : 0);
+      await b.run({ parsed: parseCommand(b, rest), json, instance, print, connect: signIn });
     } else {
       // A command the server declares: from the saved list, or a fresh one if it isn't there yet.
-      const { client: c, config } = client();
-      cache = readCommands(config.url);
+      const { client, url } = await signIn();
+      cache = readCommands(url);
       let spec = cache ? findCommand(cache, words) : null;
       if (!spec) {
-        cache = await refreshCommands(c);
+        cache = await refreshCommands(client);
         spec = findCommand(cache, words);
       }
       if (!spec) throw new UsageError(`Unknown command "${words.join(" ") || tokens[0]}". Run: fontego help`);
       if (help) return console.log(describe(spec));
-      await runCommand(spec, parseCommand(spec, tokens.slice(nameLength(spec, words))), c, { json });
+      await runCommand(spec, parseCommand(spec, tokens.slice(nameLength(spec, words))), client, { json });
     }
 
-    // Every answer says which version of the commands the server has; a different one means our list is stale.
-    const used = signedIn as { client: Client; config: CliConfig } | null;
-    if (used?.client.commandsVersion) {
-      cache ??= readCommands(used.config.url);
-      if (cache?.version !== used.client.commandsVersion) await refreshCommands(used.client).catch(() => {});
+    const used = conn as Connection | null;
+    if (used) {
+      // Every answer says which version of the commands the server has; a different one means our list is stale.
+      if (used.client.commandsVersion) {
+        cache ??= readCommands(used.url);
+        if (cache?.version !== used.client.commandsVersion) await refreshCommands(used.client).catch(() => {});
+      }
+      // A few days before a session ends, say so.
+      const ends = used.auth?.expiresAt;
+      const left = ends ? Date.parse(ends) - Date.now() : Infinity;
+      if (left > 0 && left < 3 * DAY) {
+        const days = Math.max(1, Math.round(left / DAY));
+        console.error(`Your session on ${used.label} ends in ${days} day(s) unless you use it; renew it with: fontego login ${used.label}`);
+      }
     }
   } catch (e) {
     if (e instanceof LockedError) {

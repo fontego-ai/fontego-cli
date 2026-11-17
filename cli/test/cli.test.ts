@@ -13,7 +13,8 @@ let home: string;
 
 async function fontego(args: string[], env: Record<string, string> = {}) {
   const proc = Bun.spawn(["bun", MAIN, ...args], {
-    env: { ...process.env, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", ...env },
+    // Never the real keychain or browser: credentials go to a file in the test home, and links are not opened.
+    env: { ...process.env, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
