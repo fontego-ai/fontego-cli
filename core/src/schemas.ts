@@ -130,6 +130,9 @@ export const ByUserQuery = z.object({ user: Opt });
 
 export const AuditQuery = z.object({ user: Opt, workspace: Opt, since: Opt, limit: Opt });
 
+/** A new value for one of the instance's settings; the server checks it against the setting's type. */
+export const SettingValueBody = z.object({ value: z.union([z.string(), z.number(), z.boolean()], "a value is required") });
+
 // --- Writing: a change set is a list of operations on whole files ---
 
 export const MAX_OPS = 1000;

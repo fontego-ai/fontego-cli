@@ -176,8 +176,42 @@ export interface MailStatus {
   host: string | null;
   port: number | null;
   from: string | null;
-  /** Where the settings come from */
+  /** Where the settings come from: the environment, the config file, the admin settings */
   source: string;
+  /** Why there is no SMTP although part of it is set (a server without a sender) */
+  problem?: string;
+}
+
+export type SettingValue = string | number | boolean;
+
+/**
+ * One of the instance's settings. Each comes from the first of three places that has it: the server's own config
+ * (environment or config file, which wins and can't be changed from the API), what an admin set from the web or the
+ * CLI, or the default.
+ */
+export interface SettingEntry {
+  key: string;
+  group: "general" | "mail" | "sessions";
+  type: "string" | "number" | "boolean";
+  description: string;
+  /** In effect now; null when unset, and always null for a secret */
+  value: SettingValue | null;
+  /** The value as text, for showing: "(set)" or "(not set)" for a secret, "-" when unset */
+  display: string;
+  default: SettingValue | null;
+  /** Where the value comes from: env and file pin it */
+  source: "default" | "admin" | "env" | "file";
+  /** Set in the server's config, so it can only be changed there */
+  pinned: boolean;
+  /** When pinned: the environment variable, or the key in the config file */
+  pinnedBy?: string;
+  /** A secret (the SMTP password): it can be set, never read back */
+  secret?: boolean;
+  /** For a secret: whether it is set */
+  isSet?: boolean;
+  /** When an admin set it, and who */
+  updatedAt?: string;
+  updatedBy?: string | null;
 }
 
 export interface OutboxMessage {
