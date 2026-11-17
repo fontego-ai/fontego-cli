@@ -75,6 +75,31 @@ export const PasswordResetBody = z.object({ email: Email });
 
 export const MailTestBody = z.object({ to: Email });
 
+// --- OAuth, for the CLI to sign in through the browser. Field names are the standard's (RFC 6749, 7636, 8628). ---
+
+/** The person's answer, from a signed-in browser, to "connect the CLI of <machine>?" */
+export const AuthorizeBody = z.object({
+  client_id: z.string(),
+  redirect_uri: z.string(),
+  code_challenge: z.string(),
+  code_challenge_method: z.string(),
+  state: z.string().max(500).optional(),
+  machine: Text(80).optional(),
+  approve: z.boolean(),
+});
+
+export const DeviceStartBody = z.object({ client_id: z.string(), machine: Text(80).optional() });
+
+export const DeviceDecisionBody = z.object({ approve: z.boolean() });
+
+export const TokenBody = z.discriminatedUnion("grant_type", [
+  z.object({ grant_type: z.literal("authorization_code"), code: z.string(), code_verifier: z.string(), redirect_uri: z.string(), client_id: z.string() }),
+  z.object({ grant_type: z.literal("refresh_token"), refresh_token: z.string(), client_id: z.string().optional() }),
+  z.object({ grant_type: z.literal("urn:ietf:params:oauth:grant-type:device_code"), device_code: z.string(), client_id: z.string() }),
+]);
+
+export const RevokeBody = z.object({ token: z.string(), token_type_hint: z.string().optional() });
+
 /** Opens a browser session: with email and password, a token, or a one-time code from `fontego open`. */
 export const SessionBody = z.union([
   z.object({ email: z.string(), password: z.string().max(MAX_PASSWORD) }),

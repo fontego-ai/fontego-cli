@@ -169,7 +169,7 @@ describe("commands the server declares", () => {
     const token = JSON.parse((await fontego(["admin", "tokens", "create", "bea@example.org", "--agent", "--label", "Bea's agent", "--json"], env)).out);
     expect(token.kind).toBe("agent");
     const bea = await fontego(["whoami", "--json"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: token.token });
-    expect(JSON.parse(bea.out).token).toMatchObject({ kind: "agent", label: "Bea's agent" });
+    expect(JSON.parse(bea.out).credential).toMatchObject({ type: "token", kind: "agent", label: "Bea's agent" });
     expect((await fontego(["members", "remove", "shared", "bea@example.org"], env)).out).toContain("bea@example.org is no longer in shared.");
     // Ana is no admin: the server says no, with the usual exit codes.
     expect((await fontego(["admin", "users"])).code).toBe(5);
