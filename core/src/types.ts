@@ -83,6 +83,65 @@ export interface UserSummary {
   isAdmin: boolean;
   disabled: boolean;
   status: AccountStatus;
+  /** For server admins: when they last used the API */
+  lastActiveAt?: string | null;
+}
+
+// --- For server admins ---
+
+/** Someone, as admin lists show them */
+export interface PersonRef {
+  email: string;
+  name: string;
+}
+
+export interface AdminSession {
+  id: number;
+  user: PersonRef;
+  kind: "web" | "cli";
+  /** The browser or the machine */
+  label: string;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+}
+
+export interface AdminToken {
+  id: number;
+  user: PersonRef;
+  kind: "person" | "agent";
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** One API call, from the access log */
+export interface AccessEntry {
+  at: string;
+  user: string | null;
+  /** How they signed in: "cli joel-laptop", "web Firefox on Linux", "token ci (agent)" */
+  credential: string | null;
+  agent: string | null;
+  method: string;
+  route: string;
+  workspace: string | null;
+  status: number;
+}
+
+/** One commit, from the change log: who wrote it, whatever its author says */
+export interface ChangeEntry {
+  at: string;
+  workspace: string;
+  commit: string;
+  user: string | null;
+  credential: string | null;
+  agent: string | null;
+  client: string;
+  files: number;
+}
+
+export interface AdminWorkspace extends WorkspaceInfo {
+  members: number;
 }
 
 export type LinkPurpose = "setup" | "invite" | "reset";

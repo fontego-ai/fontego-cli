@@ -120,6 +120,16 @@ export const HistoryQuery = z.object({ path: Opt, rev: Opt, limit: Opt });
 export const SyncQuery = z.object({ since: Opt });
 export const SearchQuery = z.object({ q: z.string(), path: Opt, limit: Opt });
 
+// --- For server admins ---
+
+/** A destructive action says yes on purpose. */
+export const ConfirmBody = z.object({ confirm: z.literal(true, "add --yes: this can't be undone") });
+
+/** Lists for admins, maybe of one person */
+export const ByUserQuery = z.object({ user: Opt });
+
+export const AuditQuery = z.object({ user: Opt, workspace: Opt, since: Opt, limit: Opt });
+
 // --- Writing: a change set is a list of operations on whole files ---
 
 export const MAX_OPS = 1000;
