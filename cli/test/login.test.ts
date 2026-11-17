@@ -67,7 +67,7 @@ const credentials = () => JSON.parse(readFileSync(credentialsFile(), "utf8"));
 
 /** A person with a password, signed in to the web (the cookie the "browser" uses). */
 async function personWithPassword(server: TestServer, email: string): Promise<string> {
-  const link = (await server.call(server.adminToken, "POST", "/v1/users/invitations", { email })).data.delivery.link;
+  const link = (await server.call(server.adminToken, "POST", "/v1/admin/users/invitations", { email })).data.delivery.link;
   const res = await fetch(`${server.url}/v1/links/${/#\/link\/(\S+)/.exec(link)![1]}`, {
     method: "POST",
     headers: { "content-type": "application/json" },

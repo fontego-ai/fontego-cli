@@ -180,7 +180,7 @@ describe("commands the server declares", () => {
   test("an admin invites people from the CLI; without mail, the link to pass on is right there", async () => {
     const env = asAdmin();
     const inv = await fontego(["admin", "users", "invite", "cai@example.org", "--name", "Cai"], env);
-    expect(inv.out).toContain("Invitation for cai@example.org");
+    expect(inv.out).toContain("Link for cai@example.org");
     expect(inv.out).toContain("Not sent (no SMTP is configured)");
     const link = /https?:\/\/\S+#\/link\/\S+/.exec(inv.out)?.[0];
     expect(link).toBeTruthy();
