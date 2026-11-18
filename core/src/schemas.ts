@@ -169,6 +169,24 @@ export const ChangeSetBody = z.object({
   client: Text(40).optional(),
 });
 
+// --- Writing one file, without a copy of the workspace (agents, scripts) ---
+// Each is a change set of one operation underneath, with its merge and its conflicts. Without baseHash a write only
+// creates; with it, it edits the version it names, merging text changed elsewhere meanwhile.
+
+export const FileWriteBody = z.object({
+  /** UTF-8 text; use contentBase64 for binary files */
+  content: z.string().optional(),
+  contentBase64: z.string().optional(),
+  /** Hash of the version this edit started from (fontego cat --json); left out, only a new file is written */
+  baseHash: z.string().nullable().optional(),
+  mode: FileModeSchema.optional(),
+  message: Text(10_000).optional(),
+});
+
+export const FileDeleteBody = z.object({ baseHash: z.string().optional(), message: Text(10_000).optional() });
+
+export const FileMoveBody = z.object({ from: z.string(), to: z.string(), baseHash: z.string().optional(), message: Text(10_000).optional() });
+
 export type PutOp = z.infer<typeof PutOpSchema>;
 export type DeleteOp = z.infer<typeof DeleteOpSchema>;
 export type MoveOp = z.infer<typeof MoveOpSchema>;
