@@ -97,10 +97,20 @@ export interface ScanResult {
   invalid: string[];
 }
 
-/** Walks the folder and returns every syncable file with its hash (reusing cached hashes when size and mtime match). */
-export async function scan(root: string, ignore: Ignore, cache: Record<string, LocalEntry>): Promise<ScanResult> {
+/**
+ * Walks the folder and returns every syncable file with its hash (reusing cached hashes when size and mtime match).
+ * `tracked` is what the workspace already has here (the sync state, which also caches hashes): those files are read
+ * even when an ignore rule matches them, inside an ignored folder too. As in Git, an ignore rule only keeps new files
+ * from going up; otherwise a file the rules come to match would look deleted, and sync would delete it everywhere.
+ */
+export async function scan(root: string, ignore: Ignore, tracked: Record<string, LocalEntry>): Promise<ScanResult> {
   const files = new Map<string, LocalEntry>();
   const invalid: string[] = [];
+  const add = async (path: string) => {
+    const key = path.normalize("NFC");
+    const entry = await readEntry(root, path, tracked[key]);
+    if (entry) files.set(key, entry);
+  };
   async function walk(rel: string) {
     let names: string[];
     try {
@@ -117,7 +127,15 @@ export async function scan(root: string, ignore: Ignore, cache: Record<string, L
         continue;
       }
       const isDir = st.isDirectory();
-      if (ignore.ignores(path, isDir)) continue;
+      if (ignore.ignores(path, isDir)) {
+        const key = path.normalize("NFC");
+        if (!isDir) {
+          if (tracked[key]) await add(path);
+        } else {
+          for (const p of Object.keys(tracked)) if (p.startsWith(`${key}/`)) await add(p);
+        }
+        continue;
+      }
       try {
         normalizePath(path);
       } catch (e) {
@@ -128,10 +146,7 @@ export async function scan(root: string, ignore: Ignore, cache: Record<string, L
         throw e;
       }
       if (isDir) await walk(path);
-      else {
-        const entry = await readEntry(root, path, cache[path]);
-        if (entry) files.set(path.normalize("NFC"), entry);
-      }
+      else await add(path);
     }
   }
   await walk("");

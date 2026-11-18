@@ -256,3 +256,57 @@ describe("sync between two copies", () => {
     expect(synced).toBe(true);
   });
 });
+
+describe("ignore rules never delete", () => {
+  // Like Git: an ignore rule only keeps new files from going up. A file already in the workspace keeps syncing.
+  let A: SyncEngine;
+  let B: SyncEngine;
+  const onServer = async (path: string) => (await s.call(s.adminToken, "GET", `/v1/workspaces/ign/files/${path}`)).status === 200;
+
+  beforeAll(async () => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "ign" });
+    for (const who of ["ana", "bea"]) await s.call(s.adminToken, "PUT", `/v1/workspaces/ign/members/${who}@example.org`, { role: "editor" });
+    await s.call(ana.token, "POST", "/v1/workspaces/ign/changes", {
+      baseCommit: null,
+      ops: [
+        { op: "put", path: "build/out.txt", content: "built\n", baseHash: null },
+        { op: "put", path: "notes.md", content: "notes\n", baseHash: null },
+      ],
+    });
+    A = await copy(ana.token, "Ana", "ign");
+    B = await copy(bea.token, "Bea", "ign");
+  });
+
+  test("a file already in the workspace that a new rule matches is not deleted, and keeps syncing both ways", async () => {
+    write(A, ".fontegoignore", "build/\n");
+    await A.sync();
+    expect(await onServer("build/out.txt")).toBe(true);
+    await B.sync();
+    expect(read(B, "build/out.txt")).toBe("built\n");
+    write(B, "build/out.txt", "built again\n");
+    await B.sync();
+    await A.sync();
+    expect(read(A, "build/out.txt")).toBe("built again\n");
+  });
+
+  test("an ignore rule of * from one person deletes nothing for anyone", async () => {
+    write(B, ".fontegoignore", "*\n");
+    await B.sync();
+    await A.sync();
+    await B.sync();
+    for (const path of ["notes.md", "build/out.txt", ".fontegoignore"]) expect(await onServer(path)).toBe(true);
+    expect(read(A, "notes.md")).toBe("notes\n");
+  });
+
+  test("a file the rules ignore that comes from the server is kept, here and there", async () => {
+    write(A, ".fontegoignore", "cache/\n");
+    await A.sync();
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/ign/files/cache/x.tmp", { content: "from the server\n" });
+    const C = await copy(bea.token, "Bea", "ign");
+    expect(read(C, "cache/x.tmp")).toBe("from the server\n");
+    await C.sync();
+    await C.sync();
+    expect(await onServer("cache/x.tmp")).toBe(true);
+    expect(read(C, "cache/x.tmp")).toBe("from the server\n");
+  });
+});

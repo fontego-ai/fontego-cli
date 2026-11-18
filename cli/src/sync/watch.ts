@@ -91,7 +91,8 @@ export class Watcher {
       if (!filename) return this.schedule(debounce);
       const path = String(filename).split("\\").join("/");
       if (path === STATE_DIR || path.startsWith(`${STATE_DIR}/`)) return;
-      if (ignore.ignores(path, false)) return;
+      // A file the workspace has keeps syncing even when a rule ignores it.
+      if (ignore.ignores(path, false) && !this.engine.state.files[path.normalize("NFC")]) return;
       this.schedule(debounce);
     });
     this.safety = setInterval(() => this.schedule(0), this.opts.safetyMs ?? 30_000);
