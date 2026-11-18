@@ -190,10 +190,11 @@ export class SyncEngine {
         return "retry";
       }
       if (e.status === 422) {
+        // The server won't take one file (too big, a secret, a path only admins write...): set it aside, send the
+        // rest, and try it again once it changes here. A refused delete is set aside too: the file stays there.
         const path = (e.details as { path?: string } | undefined)?.path;
-        const l = path ? local.get(path) : undefined;
-        if (!path || !l) throw e;
-        this.state.skipped[path] = { hash: l.hash, reason: e.message };
+        if (!path || !ops.some((o) => o.op !== "move" && o.path === path)) throw e;
+        this.state.skipped[path] = { hash: local.get(path)?.hash ?? "deleted", reason: e.message };
         report.skipped.push({ path, reason: e.message });
         return "retry";
       }

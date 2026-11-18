@@ -55,7 +55,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock |
 | `cli/src/auth.ts` | Signing in (browser or device flow), a stored session that renews itself, signing out on the server |
 | `cli/src/connect.ts` | Which instance a command goes to, and a client signed in there; `FONTEGO_URL` with `FONTEGO_TOKEN` override it all |
-| `cli/src/sync/` | Sync: `engine.ts` (one round: pull, push, conflicts), `local.ts` (scan, atomic writes, `.fontegoignore`), `state.ts` (`.fontego/state.json`), `watch.ts` (continuous mode and its lock) |
+| `cli/src/sync/` | Sync: `engine.ts` (one round: pull, push, conflicts; a file the server refuses, such as a protected path, is set aside and the rest sent), `local.ts` (scan, atomic writes, `.fontegoignore`), `state.ts` (`.fontego/state.json`), `watch.ts` (continuous mode and its lock) |
 | `cli/test/` | Tests against a real server; `server.ts` starts it from `fontego-app` |
 
 ## How to work
