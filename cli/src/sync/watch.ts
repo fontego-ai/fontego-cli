@@ -7,7 +7,7 @@ import { open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { ClientError, type Client } from "../client.ts";
 import type { SyncEngine, SyncReport } from "./engine.ts";
-import { IGNORE_FILE, IgnoreRules, MACHINE_IGNORE, STATE_DIR } from "./ignore.ts";
+import { IGNORE_FILE, loadIgnoreRules, MACHINE_IGNORE, STATE_DIR } from "./ignore.ts";
 
 export interface WatchOptions {
   /** Quiet time after a local edit before syncing */
@@ -88,9 +88,9 @@ export class Watcher {
     const debounce = this.opts.debounceMs ?? 1500;
     // Changes to what the rules ignore don't start a round, unless the file is in the workspace already. A changed
     // ignore file brings the rules up to date; the round it starts reads them anew anyway.
-    let rules = await IgnoreRules.load(root);
+    let rules = await loadIgnoreRules(root);
     const reload = async () => {
-      rules = await IgnoreRules.load(root);
+      rules = await loadIgnoreRules(root);
     };
     this.fsw = fsWatch(root, { recursive: true }, (_event, filename) => {
       if (!filename) return this.schedule(debounce);

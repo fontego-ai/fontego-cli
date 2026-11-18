@@ -3,7 +3,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { IgnoreRules } from "../src/sync/ignore.ts";
+import { loadIgnoreRules } from "../src/sync/ignore.ts";
 import { scan } from "../src/sync/local.ts";
 import { tempDir } from "./server.ts";
 
@@ -23,7 +23,7 @@ function folder(files: Record<string, string>): string {
 }
 
 async function rulesFor(root: string, path: string, isDir = false) {
-  const rules = await IgnoreRules.load(root);
+  const rules = await loadIgnoreRules(root);
   await rules.prepare(path);
   return rules.match(path, isDir);
 }
@@ -72,7 +72,7 @@ describe("ignore rules", () => {
   test("scanning sends files the workspace has even when ignored, also inside an ignored folder, and lists the rest", async () => {
     const root = folder({ ".fontegoignore": "node_modules/\n*.log\n", "node_modules/pkg/index.js": "x", "node_modules/kept.js": "k", "a.log": "a", "b.log": "b", "c.md": "c" });
     const tracked = { "node_modules/kept.js": { hash: "", mode: "100644", size: -1, mtimeMs: 0 }, "a.log": { hash: "", mode: "100644", size: -1, mtimeMs: 0 } };
-    const r = await scan(root, await IgnoreRules.load(root), tracked);
+    const r = await scan(root, await loadIgnoreRules(root), tracked);
     expect([...r.files.keys()].sort()).toEqual([".fontegoignore", "a.log", "c.md", "node_modules/kept.js"]);
     expect(r.ignored).toEqual(["b.log", "node_modules/"]);
     expect(r.trackedIgnored.map((t) => [t.path, t.pattern])).toEqual([

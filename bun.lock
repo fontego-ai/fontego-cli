@@ -17,13 +17,13 @@
       },
       "dependencies": {
         "@fontego/core": "workspace:*",
-        "ignore": "7.0.14",
       },
     },
     "core": {
       "name": "@fontego/core",
       "version": "0.1.0",
       "dependencies": {
+        "ignore": "7.0.14",
         "zod": "4.6.7",
       },
     },

@@ -29,7 +29,7 @@ import { connect, ensureMigrated, type Connection } from "./connect.ts";
 import { forgetCommands, readCommands, refreshCommands, type CachedCommands } from "./declared.ts";
 import { agentHelp, commandHelp, generalHelp } from "./help.ts";
 import { localStatus, SyncEngine, type SyncReport } from "./sync/engine.ts";
-import { IgnoreRules, type IgnoreMatch } from "./sync/ignore.ts";
+import { loadIgnoreRules, type IgnoreMatch } from "./sync/ignore.ts";
 import { isConflictCopy, scan } from "./sync/local.ts";
 import { findRoot, loadState, newState, saveState } from "./sync/state.ts";
 import { acquireLock, Watcher } from "./sync/watch.ts";
@@ -445,7 +445,7 @@ export const BUILTINS: Builtin[] = [
         // it doesn't exist (yet): check it as a file, or a folder with a trailing /
       }
       const state = await loadState(root);
-      const rules = await IgnoreRules.load(root);
+      const rules = await loadIgnoreRules(root);
       await rules.prepare(rel);
       const m = rules.match(rel, isDir);
       const tracked = !!state.files[rel.normalize("NFC")];
@@ -524,7 +524,7 @@ export const BUILTINS: Builtin[] = [
     args: [DIR],
     async run(rc) {
       const { root, state } = await folder(rc, rc.parsed.args.DIR);
-      const scanned = await scan(root, await IgnoreRules.load(root), state.files);
+      const scanned = await scan(root, await loadIgnoreRules(root), state.files);
       const copies = [...scanned.files.keys()].filter(isConflictCopy).sort();
       rc.print({ root, conflicts: copies }, () => (copies.length ? copies.join("\n") : "No conflict copies."));
     },

@@ -10,7 +10,7 @@
 import { looksLikeText, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
-import { IgnoreRules } from "./ignore.ts";
+import { loadIgnoreRules } from "./ignore.ts";
 import {
   conflictName,
   readBytes,
@@ -108,7 +108,7 @@ export class SyncEngine {
     }
     if (!res.reset && res.head === this.state.head) return;
 
-    const rules = await IgnoreRules.load(this.root);
+    const rules = await loadIgnoreRules(this.root);
     const local = (await scan(this.root, rules, this.state.files)).files;
     const remote = new Map<string, { hash: string; mode: string } | null>();
     for (const c of res.changes) remote.set(c.path, c.status === "put" ? { hash: c.hash!, mode: c.mode ?? "100644" } : null);
@@ -147,7 +147,7 @@ export class SyncEngine {
   }
 
   private async push(report: SyncReport): Promise<"done" | "retry"> {
-    const scanned = await scan(this.root, await IgnoreRules.load(this.root), this.state.files);
+    const scanned = await scan(this.root, await loadIgnoreRules(this.root), this.state.files);
     report.invalid = scanned.invalid;
     const local = scanned.files;
 
@@ -266,7 +266,7 @@ export class SyncEngine {
 
 /** Local changes compared with the last sync, without talking to the server. */
 export async function localStatus(root: string, state: SyncState) {
-  const scanned = await scan(root, await IgnoreRules.load(root), state.files);
+  const scanned = await scan(root, await loadIgnoreRules(root), state.files);
   const added: string[] = [];
   const modified: string[] = [];
   const deleted: string[] = [];
