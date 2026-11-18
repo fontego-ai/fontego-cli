@@ -7,7 +7,7 @@ import { open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { ClientError, type Client } from "../client.ts";
 import type { SyncEngine, SyncReport } from "./engine.ts";
-import { loadIgnore, STATE_DIR } from "./local.ts";
+import { IGNORE_FILE, IgnoreRules, MACHINE_IGNORE, STATE_DIR } from "./ignore.ts";
 
 export interface WatchOptions {
   /** Quiet time after a local edit before syncing */
@@ -86,13 +86,18 @@ export class Watcher {
     }
     const root = this.engine.root;
     const debounce = this.opts.debounceMs ?? 1500;
-    const ignore = await loadIgnore(root);
+    // Changes to what the rules ignore don't start a round, unless the file is in the workspace already. A changed
+    // ignore file brings the rules up to date; the round it starts reads them anew anyway.
+    let rules = await IgnoreRules.load(root);
+    const reload = async () => {
+      rules = await IgnoreRules.load(root);
+    };
     this.fsw = fsWatch(root, { recursive: true }, (_event, filename) => {
       if (!filename) return this.schedule(debounce);
       const path = String(filename).split("\\").join("/");
+      if (path === MACHINE_IGNORE || path === IGNORE_FILE || path.endsWith(`/${IGNORE_FILE}`)) void reload();
       if (path === STATE_DIR || path.startsWith(`${STATE_DIR}/`)) return;
-      // A file the workspace has keeps syncing even when a rule ignores it.
-      if (ignore.ignores(path, false) && !this.engine.state.files[path.normalize("NFC")]) return;
+      if (rules.match(path, false).ignored && !this.engine.state.files[path.normalize("NFC")]) return;
       this.schedule(debounce);
     });
     this.safety = setInterval(() => this.schedule(0), this.opts.safetyMs ?? 30_000);

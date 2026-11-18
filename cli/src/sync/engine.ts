@@ -10,9 +10,9 @@
 import { looksLikeText, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
+import { IgnoreRules } from "./ignore.ts";
 import {
   conflictName,
-  loadIgnore,
   readBytes,
   readEntry,
   removeLocal,
@@ -108,8 +108,8 @@ export class SyncEngine {
     }
     if (!res.reset && res.head === this.state.head) return;
 
-    const ignore = await loadIgnore(this.root);
-    const local = (await scan(this.root, ignore, this.state.files)).files;
+    const rules = await IgnoreRules.load(this.root);
+    const local = (await scan(this.root, rules, this.state.files)).files;
     const remote = new Map<string, { hash: string; mode: string } | null>();
     for (const c of res.changes) remote.set(c.path, c.status === "put" ? { hash: c.hash!, mode: c.mode ?? "100644" } : null);
     if (res.reset) {
@@ -143,8 +143,7 @@ export class SyncEngine {
   }
 
   private async push(report: SyncReport): Promise<"done" | "retry"> {
-    const ignore = await loadIgnore(this.root);
-    const scanned = await scan(this.root, ignore, this.state.files);
+    const scanned = await scan(this.root, await IgnoreRules.load(this.root), this.state.files);
     report.invalid = scanned.invalid;
     const local = scanned.files;
 
@@ -263,7 +262,7 @@ export class SyncEngine {
 
 /** Local changes compared with the last sync, without talking to the server. */
 export async function localStatus(root: string, state: SyncState) {
-  const scanned = await scan(root, await loadIgnore(root), state.files);
+  const scanned = await scan(root, await IgnoreRules.load(root), state.files);
   const added: string[] = [];
   const modified: string[] = [];
   const deleted: string[] = [];
@@ -273,5 +272,15 @@ export async function localStatus(root: string, state: SyncState) {
     else if (!same(l, s)) modified.push(path);
   }
   for (const path of Object.keys(state.files)) if (!scanned.files.has(path)) deleted.push(path);
-  return { added: added.sort(), modified: modified.sort(), deleted: deleted.sort(), invalid: scanned.invalid, skipped: state.skipped };
+  return {
+    added: added.sort(),
+    modified: modified.sort(),
+    deleted: deleted.sort(),
+    invalid: scanned.invalid,
+    skipped: state.skipped,
+    /** New files and folders the ignore rules keep here */
+    ignored: scanned.ignored,
+    /** Files in the workspace that the rules match: they keep syncing */
+    trackedIgnored: scanned.trackedIgnored,
+  };
 }

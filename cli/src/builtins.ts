@@ -29,7 +29,8 @@ import { connect, ensureMigrated, type Connection } from "./connect.ts";
 import { forgetCommands, readCommands, refreshCommands, type CachedCommands } from "./declared.ts";
 import { agentHelp, commandHelp, generalHelp } from "./help.ts";
 import { localStatus, SyncEngine, type SyncReport } from "./sync/engine.ts";
-import { isConflictCopy, loadIgnore, scan } from "./sync/local.ts";
+import { IgnoreRules } from "./sync/ignore.ts";
+import { isConflictCopy, scan } from "./sync/local.ts";
 import { findRoot, loadState, newState, saveState } from "./sync/state.ts";
 import { acquireLock, Watcher } from "./sync/watch.ts";
 
@@ -476,7 +477,7 @@ export const BUILTINS: Builtin[] = [
     args: [DIR],
     async run(rc) {
       const { root, state } = await folder(rc, rc.parsed.args.DIR);
-      const scanned = await scan(root, await loadIgnore(root), state.files);
+      const scanned = await scan(root, await IgnoreRules.load(root), state.files);
       const copies = [...scanned.files.keys()].filter(isConflictCopy).sort();
       rc.print({ root, conflicts: copies }, () => (copies.length ? copies.join("\n") : "No conflict copies."));
     },

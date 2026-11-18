@@ -4,62 +4,15 @@ import { blobHash, normalizePath, PathError } from "@fontego/core";
 import { lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
+import { BUILT_IN, IgnoreRules, isJunk, STATE_DIR, type IgnoreMatch } from "./ignore.ts";
 
-export const STATE_DIR = ".fontego";
-
-/** Files and folders sync never touches, whatever the workspace contains. */
-const ALWAYS_IGNORED_DIRS = new Set([STATE_DIR, ".git"]);
-const ALWAYS_IGNORED_FILES = [/^\.DS_Store$/, /^Thumbs\.db$/i, /^desktop\.ini$/i, /\.sw[op]$/, /~$/, /^\.#/, /^#.*#$/];
+export { STATE_DIR } from "./ignore.ts";
 
 export interface LocalEntry {
   hash: string;
   mode: string;
   size: number;
   mtimeMs: number;
-}
-
-/** Simple ignore rules from a .fontegoignore file at the root: "name", "*.ext", "dir/", "path/to/file". */
-export class Ignore {
-  private readonly rules: Array<{ re: RegExp; dirOnly: boolean; anchored: boolean }> = [];
-
-  constructor(text = "") {
-    for (const raw of text.split("\n")) {
-      const line = raw.trim();
-      if (!line || line.startsWith("#")) continue;
-      const dirOnly = line.endsWith("/");
-      const body = line.replace(/\/+$/, "").replace(/^\//, "");
-      const anchored = line.startsWith("/") || body.includes("/");
-      const re = new RegExp(
-        "^" +
-          body
-            .split("")
-            .map((ch) => (ch === "*" ? "[^/]*" : ch === "?" ? "[^/]" : ch.replace(/[.+^${}()|[\]\\]/g, "\\$&")))
-            .join("") +
-          "$",
-      );
-      this.rules.push({ re, dirOnly, anchored });
-    }
-  }
-
-  ignores(path: string, isDir: boolean): boolean {
-    const name = path.split("/").pop() ?? path;
-    if (isDir && ALWAYS_IGNORED_DIRS.has(name) && !path.includes("/")) return true;
-    if (isDir && name === ".git") return true;
-    if (!isDir && ALWAYS_IGNORED_FILES.some((re) => re.test(name))) return true;
-    for (const r of this.rules) {
-      if (r.dirOnly && !isDir) continue;
-      if (r.anchored ? r.re.test(path) : r.re.test(name)) return true;
-    }
-    return false;
-  }
-}
-
-export async function loadIgnore(root: string): Promise<Ignore> {
-  try {
-    return new Ignore(await readFile(join(root, ".fontegoignore"), "utf8"));
-  } catch {
-    return new Ignore();
-  }
 }
 
 const toPosix = (p: string) => (sep === "/" ? p : p.split(sep).join("/"));
@@ -95,23 +48,55 @@ export interface ScanResult {
   files: Map<string, LocalEntry>;
   /** Names that can't exist in a workspace (backslashes, control characters...) */
   invalid: string[];
+  /** New files and folders (ending in /) the ignore rules keep from going up */
+  ignored: string[];
+  /** Files already in the workspace that the ignore rules match: they keep syncing */
+  trackedIgnored: Array<{ path: string } & IgnoreMatch>;
+}
+
+/** Whether a folder holds a file the workspace doesn't have (junk aside). */
+async function holdsUntracked(root: string, dir: string, tracked: Record<string, LocalEntry>): Promise<boolean> {
+  let names: string[];
+  try {
+    names = await readdir(join(root, dir));
+  } catch {
+    return false;
+  }
+  for (const name of names) {
+    const path = `${dir}/${name}`;
+    let st;
+    try {
+      st = await lstat(join(root, path));
+    } catch {
+      continue;
+    }
+    if (st.isDirectory() ? await holdsUntracked(root, path, tracked) : !tracked[path.normalize("NFC")] && !isJunk(name)) return true;
+  }
+  return false;
 }
 
 /**
- * Walks the folder and returns every syncable file with its hash (reusing cached hashes when size and mtime match).
- * `tracked` is what the workspace already has here (the sync state, which also caches hashes): those files are read
- * even when an ignore rule matches them, inside an ignored folder too. As in Git, an ignore rule only keeps new files
- * from going up; otherwise a file the rules come to match would look deleted, and sync would delete it everywhere.
+ * Walks the folder and returns every file to sync with its hash, reusing a known hash when size and mtime match.
+ * `tracked` is what the workspace already has here (the sync state): those files are read even when the ignore rules
+ * match them, also inside an ignored folder, because an ignore rule only keeps new files back (ignore.ts).
  */
-export async function scan(root: string, ignore: Ignore, tracked: Record<string, LocalEntry>): Promise<ScanResult> {
+export async function scan(root: string, rules: IgnoreRules, tracked: Record<string, LocalEntry>): Promise<ScanResult> {
   const files = new Map<string, LocalEntry>();
   const invalid: string[] = [];
-  const add = async (path: string) => {
+  const ignored: string[] = [];
+  const trackedIgnored: ScanResult["trackedIgnored"] = [];
+  const trackedPaths = Object.keys(tracked);
+
+  const add = async (path: string, match?: IgnoreMatch) => {
     const key = path.normalize("NFC");
     const entry = await readEntry(root, path, tracked[key]);
-    if (entry) files.set(key, entry);
+    if (!entry) return;
+    files.set(key, entry);
+    if (match?.ignored) trackedIgnored.push({ path: key, ...match });
   };
+
   async function walk(rel: string) {
+    await rules.enter(rel);
     let names: string[];
     try {
       names = await readdir(rel ? join(root, rel) : root);
@@ -127,13 +112,18 @@ export async function scan(root: string, ignore: Ignore, tracked: Record<string,
         continue;
       }
       const isDir = st.isDirectory();
-      if (ignore.ignores(path, isDir)) {
-        const key = path.normalize("NFC");
-        if (!isDir) {
-          if (tracked[key]) await add(path);
-        } else {
-          for (const p of Object.keys(tracked)) if (p.startsWith(`${key}/`)) await add(p);
-        }
+      const match = rules.match(path, isDir);
+      if (match.ignored) {
+        if (match.source === BUILT_IN) continue;
+        if (isDir) {
+          // Not walked (node_modules can be huge): only what the workspace already has inside is read. Like Git, the
+          // folder counts as ignored only if it holds something new.
+          const prefix = `${path.normalize("NFC")}/`;
+          const inside = trackedPaths.filter((p) => p.startsWith(prefix));
+          for (const p of inside) await add(p, rules.match(p, false));
+          if (!inside.length || (await holdsUntracked(root, path, tracked))) ignored.push(`${path}/`);
+        } else if (tracked[path.normalize("NFC")]) await add(path, match);
+        else ignored.push(path);
         continue;
       }
       try {
@@ -150,7 +140,7 @@ export async function scan(root: string, ignore: Ignore, tracked: Record<string,
     }
   }
   await walk("");
-  return { files, invalid };
+  return { files, invalid, ignored: ignored.sort(), trackedIgnored: trackedIgnored.sort((a, b) => a.path.localeCompare(b.path)) };
 }
 
 /** Writes a file atomically (temp file + rename) and returns its new entry. */

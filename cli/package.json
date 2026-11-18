@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@fontego/core": "workspace:*"
+    "@fontego/core": "workspace:*",
+    "ignore": "7.0.14"
   },
   "bin": {
     "fontego": "src/main.ts"
