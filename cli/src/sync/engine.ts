@@ -123,8 +123,12 @@ export class SyncEngine {
       const changedHere = !same(l, s);
       if (!r) {
         if (!changedHere && l) {
-          await removeLocal(this.root, path);
-          report.pulled.push({ path, status: "delete" });
+          // Gone from the workspace. A file the rules here ignore stays, as one of this copy's own; any other goes.
+          await rules.prepare(path);
+          if (!rules.match(path, false).ignored) {
+            await removeLocal(this.root, path);
+            report.pulled.push({ path, status: "delete" });
+          }
         }
         // Deleted there: forget it. If it was edited here, the push step sends it back as a new file.
         delete this.state.files[path];

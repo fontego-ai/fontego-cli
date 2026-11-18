@@ -2,8 +2,8 @@
 // folder. Everything else comes from the server (declared.ts).
 
 import type { Credential as SavedCredential } from "./config.ts";
-import { existsSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 import type { Parsed, Usage } from "./args.ts";
 import { UsageError } from "./args.ts";
 import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, openInBrowser, revokeSession } from "./auth.ts";
@@ -29,7 +29,7 @@ import { connect, ensureMigrated, type Connection } from "./connect.ts";
 import { forgetCommands, readCommands, refreshCommands, type CachedCommands } from "./declared.ts";
 import { agentHelp, commandHelp, generalHelp } from "./help.ts";
 import { localStatus, SyncEngine, type SyncReport } from "./sync/engine.ts";
-import { IgnoreRules } from "./sync/ignore.ts";
+import { IgnoreRules, type IgnoreMatch } from "./sync/ignore.ts";
 import { isConflictCopy, scan } from "./sync/local.ts";
 import { findRoot, loadState, newState, saveState } from "./sync/state.ts";
 import { acquireLock, Watcher } from "./sync/watch.ts";
@@ -135,6 +135,9 @@ async function folder(rc: RunContext, dirArg: string | undefined) {
 }
 
 const DIR = { name: "DIR", optional: true } as const;
+
+/** "build/out.txt matches .fontegoignore:3 (build/)", for the rule that ignores a path. */
+const ruleText = (m: IgnoreMatch) => `${m.source}${m.line ? `:${m.line}` : ""} (${m.pattern})${m.folder ? `, through the folder ${m.folder}/` : ""}`;
 const MACHINE = "This machine";
 const FOLDERS = "Synced folders";
 
@@ -394,21 +397,65 @@ export const BUILTINS: Builtin[] = [
   },
   {
     name: "status",
-    summary: "What changed here since the last sync (works offline)",
+    summary: "What changed here since the last sync, and what the ignore rules keep here (works offline)",
     group: FOLDERS,
     args: [DIR],
+    flags: [{ name: "ignored", type: "boolean", description: "List what the ignore rules keep here (--json always does)" }],
     async run(rc) {
       const { root, state } = await folder(rc, rc.parsed.args.DIR);
       const st = await localStatus(root, state);
-      rc.print({ root, workspace: state.workspace, head: state.head, ...st }, () => {
+      // A file in the workspace that the rules match keeps syncing; say so, and how to take it out.
+      const trackedIgnored = st.trackedIgnored.map((t) => ({ ...t, hash: state.files[t.path]?.hash ?? null }));
+      rc.print({ root, workspace: state.workspace, head: state.head, ...st, trackedIgnored }, () => {
         const lines = [
           ...st.added.map((p) => `new       ${p}`),
           ...st.modified.map((p) => `modified  ${p}`),
           ...st.deleted.map((p) => `deleted   ${p}`),
           ...Object.entries(st.skipped).map(([p, s]) => `skipped   ${p}: ${s.reason}`),
+          ...(rc.parsed.flags.ignored ? st.ignored.map((p) => `ignored   ${p}`) : []),
         ];
-        return `${state.workspace} in ${root}\n${lines.length ? lines.join("\n") : "Nothing to send."}`;
+        const notes = trackedIgnored.map(
+          (t) =>
+            `note: ${t.path} matches ${ruleText(t)} but is in the workspace, so it keeps syncing. To take it out of the workspace (the copy here stays): fontego rm ${state.workspace} ${t.path} --base ${t.hash}`,
+        );
+        const ignored =
+          st.ignored.length && !rc.parsed.flags.ignored
+            ? [`${st.ignored.length} ignored here (fontego status --ignored lists them; fontego check-ignore PATH says why).`]
+            : [];
+        return [`${state.workspace} in ${root}`, lines.length ? lines.join("\n") : "Nothing to send.", ...notes, ...ignored].join("\n");
       });
+    },
+  },
+  {
+    name: "check-ignore",
+    summary: "Which ignore rule keeps a path from syncing, if any, like git check-ignore -v (works offline)",
+    group: FOLDERS,
+    args: [{ name: "PATH", description: "A file or folder inside a synced folder" }],
+    async run(rc) {
+      const given = rc.parsed.args.PATH!;
+      const abs = resolve(given);
+      const root = findRoot(dirname(abs));
+      if (!root) throw new UsageError(`${given} is not inside a synced workspace.`);
+      const rel = relative(root, abs).split(sep).join("/");
+      if (!rel || rel.startsWith("..")) throw new UsageError(`Give a path inside ${root}.`);
+      let isDir = given.endsWith("/");
+      try {
+        isDir ||= lstatSync(abs).isDirectory();
+      } catch {
+        // it doesn't exist (yet): check it as a file, or a folder with a trailing /
+      }
+      const state = await loadState(root);
+      const rules = await IgnoreRules.load(root);
+      await rules.prepare(rel);
+      const m = rules.match(rel, isDir);
+      const tracked = !!state.files[rel.normalize("NFC")];
+      rc.print({ path: rel, folder: isDir, ...m, tracked }, () => {
+        if (!m.ignored) return `${rel} is not ignored.`;
+        const why = `${m.source}${m.line ? `:${m.line}` : ""}:${m.pattern}\t${rel}${m.folder ? `  (through the folder ${m.folder}/)` : ""}`;
+        return tracked ? `${why}\n${rel} is in the workspace, though, so it keeps syncing. To take it out: fontego rm.` : why;
+      });
+      // As git check-ignore: 1 when the path isn't ignored.
+      if (!m.ignored) process.exitCode = 1;
     },
   },
   {

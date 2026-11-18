@@ -310,3 +310,22 @@ describe("ignore rules never delete", () => {
     expect(read(C, "cache/x.tmp")).toBe("from the server\n");
   });
 });
+
+describe("taking an ignored file out of the workspace", () => {
+  test("its copy stays where the rules ignore it, and goes where they don't", async () => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "out" });
+    for (const who of ["ana", "bea"]) await s.call(s.adminToken, "PUT", `/v1/workspaces/out/members/${who}@example.org`, { role: "editor" });
+    await s.call(ana.token, "POST", "/v1/workspaces/out/changes", { baseCommit: null, ops: [{ op: "put", path: "local.cfg", content: "mine\n", baseHash: null }] });
+    const A = await copy(ana.token, "Ana", "out");
+    const B = await copy(bea.token, "Bea", "out");
+    mkdirSync(join(A.root, ".fontego"), { recursive: true });
+    writeFileSync(join(A.root, ".fontego/ignore"), "*.cfg\n");
+    const hash = (await s.call(ana.token, "GET", "/v1/workspaces/out/files/local.cfg?meta=1")).data.hash;
+    await s.call(ana.token, "DELETE", "/v1/workspaces/out/files/local.cfg", { baseHash: hash });
+    await A.sync();
+    await B.sync();
+    expect(read(A, "local.cfg")).toBe("mine\n");
+    expect(existsSync(join(B.root, "local.cfg"))).toBe(false);
+    expect((await A.sync()).pushed).toEqual([]); // and it doesn't go back up
+  });
+});

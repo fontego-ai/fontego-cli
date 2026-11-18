@@ -15,7 +15,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `fontego-server` and use it from the outside.
 - **Most commands come from the server.** Built-in commands (`builtins.ts`) work with this machine or a synced
   folder: login, logout, sessions (rename, forget), use, open, help, version, clone, link, status, sync, watch,
-  conflicts. Everything else is declared
+  conflicts, check-ignore. Everything else is declared
   by the server (`GET /v1/commands`): a description of one API call, never code, run by `declared.ts` and cached per
   server in `$XDG_CACHE_HOME/fontego/commands/`. Every answer carries the version of the server's commands
   (`fontego-commands` header); a different one refreshes the cache. With `--json`, a declared command prints exactly
@@ -29,6 +29,14 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   system keychain (`Bun.secrets`), or to `credentials.json` (0600) where there is none. Each command goes to
   `--instance`, `FONTEGO_INSTANCE`, the synced folder's instance, or the default (`connect.ts`). Sessions renew by
   themselves under a lock: two processes swapping the same refresh token would make the server close the session.
+- **Ignore rules never delete** (`cli/src/sync/ignore.ts`). As in Git, a rule only keeps new files from going up: a
+  file already in the workspace keeps syncing both ways, and `fontego status` says so, with the `fontego rm` that takes
+  it out (the copy stays where the rules ignore it). Three levels: built-in (`.git`, `.fontego`, system and editor
+  junk; keep it short), per machine (`.fontego/ignore`, never synced), and shared (`.fontegoignore` files at the top
+  or in any folder, which sync and travel with templates; a deeper one wins). Full `.gitignore` syntax through the
+  `ignore` library (MIT), case ignored. `fontego status --ignored` lists what they keep here and `fontego
+  check-ignore PATH` says which rule. This is each copy's convenience; the paths a workspace protects or rejects
+  (`core/paths.ts`) are the server's policy, and separate.
 - **The CLI says which agent runs it** (`fontego-agent` header: `FONTEGO_AGENT`, or `claude-code` when `CLAUDECODE=1`),
   so the server's log reads "Ana, from claude-code". A label, never a permission.
 - **`core` is the contract.** The API types, the path rules (`normalizePath`) and the Git blob hash (`blobHash`) must
@@ -56,7 +64,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock |
 | `cli/src/auth.ts` | Signing in (browser or device flow), a stored session that renews itself, signing out on the server |
 | `cli/src/connect.ts` | Which instance a command goes to, and a client signed in there; `FONTEGO_URL` with `FONTEGO_TOKEN` override it all |
-| `cli/src/sync/` | Sync: `engine.ts` (one round: pull, push, conflicts; a file the server refuses, such as a protected path, is set aside and the rest sent), `local.ts` (scan, atomic writes, `.fontegoignore`), `state.ts` (`.fontego/state.json`), `watch.ts` (continuous mode and its lock) |
+| `cli/src/sync/` | Sync: `engine.ts` (one round: pull, push, conflicts; a file the server refuses, such as a protected path, is set aside and the rest sent), `local.ts` (scan, atomic writes), `ignore.ts` (the ignore rules), `state.ts` (`.fontego/state.json`), `watch.ts` (continuous mode and its lock) |
 | `cli/test/` | Tests against a real server; `server.ts` starts it from `fontego-app` |
 
 ## How to work

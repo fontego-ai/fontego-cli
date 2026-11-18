@@ -109,6 +109,33 @@ describe("fontego CLI", () => {
     rmSync(parent, { recursive: true, force: true });
   });
 
+  test("status counts what the ignore rules keep here, and check-ignore says which rule", async () => {
+    const parent = tempDir("fontego-cli-ignore-");
+    const dir = `${parent}/notes`;
+    expect((await fontego(["clone", "notes", dir])).code).toBe(0);
+    await Bun.write(`${dir}/.fontegoignore`, "*.log\ntravel/\n");
+    await Bun.write(`${dir}/run.log`, "x\n");
+    await Bun.write(`${dir}/cache/a.tmp`, "x\n");
+    await Bun.write(`${dir}/.fontego/ignore`, "cache/\n");
+    const st = await fontego(["status", dir]);
+    expect(st.out).toContain("new       .fontegoignore");
+    expect(st.out).toContain("2 ignored here (fontego status --ignored lists them");
+    expect(st.out).toMatch(/note: travel\/japan\.md matches \.fontegoignore:2 \(travel\/\), through the folder travel\/ but is in the workspace, so it keeps syncing\. To take it out of the workspace \(the copy here stays\): fontego rm notes travel\/japan\.md --base [0-9a-f]{40}/);
+    expect((await fontego(["status", dir, "--ignored"])).out).toContain("ignored   cache/\nignored   run.log");
+    const json = JSON.parse((await fontego(["status", dir, "--json"])).out);
+    expect(json.ignored).toEqual(["cache/", "run.log"]);
+    expect(json.trackedIgnored[0]).toMatchObject({ path: "travel/japan.md", source: ".fontegoignore", line: 2, folder: "travel" });
+
+    const why = await fontego(["check-ignore", `${dir}/run.log`]);
+    expect([why.code, why.out.trim()]).toEqual([0, ".fontegoignore:1:*.log\trun.log"]);
+    expect((await fontego(["check-ignore", `${dir}/cache/a.tmp`])).out).toContain(".fontego/ignore:1:cache/");
+    const not = await fontego(["check-ignore", `${dir}/README.md`]);
+    expect([not.code, not.out.trim()]).toEqual([1, "README.md is not ignored."]);
+    const tracked = JSON.parse((await fontego(["check-ignore", `${dir}/travel/japan.md`, "--json"])).out);
+    expect(tracked).toMatchObject({ path: "travel/japan.md", ignored: true, tracked: true, pattern: "travel/" });
+    rmSync(parent, { recursive: true, force: true });
+  });
+
   test("link sends up a folder that already exists, and keeps both on a clash", async () => {
     await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "fresh" });
     await s.call(s.adminToken, "PUT", "/v1/workspaces/fresh/members/ana@example.org", { role: "editor" });
