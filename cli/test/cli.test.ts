@@ -247,6 +247,31 @@ describe("commands the server declares", () => {
     rmSync(parent, { recursive: true, force: true });
   });
 
+  test("protected and rejected paths: sync sets a refused file aside and sends the rest; admins change the lists", async () => {
+    const env = asAdmin();
+    const parent = tempDir("fontego-cli-paths-");
+    const dir = `${parent}/notes`;
+    expect((await fontego(["clone", "notes", dir])).code).toBe(0);
+    await Bun.write(`${dir}/AGENTS.md`, "# My rules\n");
+    await Bun.write(`${dir}/.mcp.json`, "{}\n");
+    await Bun.write(`${dir}/fine.md`, "fine\n");
+    const r = JSON.parse((await fontego(["sync", dir, "--json"])).out);
+    expect(r.pushed).toEqual([{ path: "fine.md", status: "put" }]);
+    expect(r.skipped.map((x: any) => x.path).sort()).toEqual([".mcp.json", "AGENTS.md"]);
+    expect(r.skipped.find((x: any) => x.path === "AGENTS.md").reason).toContain("protected path");
+    expect((await fontego(["status", dir])).out).toContain("skipped   AGENTS.md");
+
+    expect((await fontego(["workspace", "paths", "notes"])).out).toMatch(/protected\s+\*\*\/AGENTS\.md\s+instance default/);
+    expect((await fontego(["workspace", "paths", "protect", "notes", "travel/**"], env)).out).toContain("travel/** is protected in notes.");
+    expect((await fontego(["workspace", "paths", "notes"])).out).toMatch(/protected\s+travel\/\*\*\s+this workspace/);
+    await Bun.write(`${dir}/travel/japan.md`, "# Japan, edited by Ana\n");
+    expect(JSON.parse((await fontego(["sync", dir, "--json"])).out).skipped.map((x: any) => x.path)).toContain("travel/japan.md");
+    const reject = await fontego(["workspace", "paths", "reject", "notes", "**/*.exe"]);
+    expect(reject.code).toBe(5); // Ana is no admin
+    expect((await fontego(["workspace", "paths", "reset", "notes"], env)).out).not.toContain("this workspace");
+    rmSync(parent, { recursive: true, force: true });
+  });
+
   test("usage mistakes are caught before calling the server", async () => {
     const r = await fontego(["members", "set", "notes"]);
     expect(r.code).toBe(1);

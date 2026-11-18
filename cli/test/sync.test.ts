@@ -159,15 +159,16 @@ describe("sync between two copies", () => {
   });
 
   test("symlinks, executables and binaries round-trip", async () => {
-    write(A, "AGENTS.md", "# Rules\n");
-    symlinkSync("AGENTS.md", join(A.root, "CLAUDE.md"));
+    // Not AGENTS.md and CLAUDE.md: only workspace admins write those, and Ana is an editor.
+    write(A, "guide.md", "# Guide\n");
+    symlinkSync("guide.md", join(A.root, "start-here.md"));
     write(A, "tools/run.sh", "#!/bin/sh\necho hi\n");
     chmodSync(join(A.root, "tools/run.sh"), 0o755);
     writeFileSync(join(A.root, "logo.bin"), new Uint8Array([0, 255, 1, 2, 0]));
     await A.sync();
     await B.sync();
-    expect(lstatSync(join(B.root, "CLAUDE.md")).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(join(B.root, "CLAUDE.md"))).toBe("AGENTS.md");
+    expect(lstatSync(join(B.root, "start-here.md")).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(B.root, "start-here.md"))).toBe("guide.md");
     expect(lstatSync(join(B.root, "tools/run.sh")).mode & 0o111).toBeGreaterThan(0);
     expect([...readFileSync(join(B.root, "logo.bin"))]).toEqual([0, 255, 1, 2, 0]);
   });
