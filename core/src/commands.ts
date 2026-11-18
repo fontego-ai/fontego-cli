@@ -19,6 +19,11 @@ export interface CommandArg {
    * what is typed, or reads one line from stdin when that is not a terminal, so it stays out of the shell's history
    */
   secret?: boolean;
+  /**
+   * Long text, such as a file's content: when it is left out (so it must be optional), the CLI reads it whole from
+   * stdin (`< file`, or a pipe)
+   */
+  stdin?: boolean;
   description?: string;
 }
 

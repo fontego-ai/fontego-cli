@@ -94,7 +94,7 @@ export function describe(u: Usage | CommandSpec): string {
   if (args.length) {
     out.push("", "Arguments:");
     const w = Math.max(...args.map((a) => a.name.length)) + 2;
-    for (const a of args) out.push(`  ${a.name.padEnd(w)}${a.description ?? ""}${"secret" in a && a.secret ? " (left out, it is asked for without showing it)" : a.optional ? " (optional)" : ""}`.trimEnd());
+    for (const a of args) out.push(`  ${a.name.padEnd(w)}${a.description ?? ""}${"secret" in a && a.secret ? " (left out, it is asked for without showing it)" : "stdin" in a && a.stdin ? " (left out, it is read from stdin)" : a.optional ? " (optional)" : ""}`.trimEnd());
   }
   const flags = u.flags ?? [];
   out.push("", "Options:");

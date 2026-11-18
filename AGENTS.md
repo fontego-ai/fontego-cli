@@ -21,7 +21,8 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   (`fontego-commands` header); a different one refreshes the cache. With `--json`, a declared command prints exactly
   what the API answered. `cli/test/cli.test.ts` fails if the server declares something this CLI can't run. An
   argument marked `secret` (a password) is asked for without echo when left out, or read from stdin when that isn't a
-  terminal (`prompt.ts`), and never printed.
+  terminal (`prompt.ts`), and never printed. One marked `stdin` (a file's content, for `fontego write`) is read whole
+  from stdin when left out; nothing on stdin is an error, so a forgotten `< file` never writes an empty file.
 - **One machine, several Fontegos.** `fontego login` signs in through the browser (OAuth with PKCE and a loopback
   redirect), or with a code typed on another device when there is no display (`--device`); `--token` stays for
   scripts and CI. `config.json` lists the instances under short aliases and holds no secrets; credentials go to the

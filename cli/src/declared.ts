@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { UsageError, usageLine, type Parsed } from "./args.ts";
 import type { Client } from "./client.ts";
-import { readSecret } from "./prompt.ts";
+import { readSecret, readStdin } from "./prompt.ts";
 
 // --- The cache: one file per server ---
 
@@ -110,6 +110,7 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
     if (!args.some((a) => a.to === `path.${p}` && !a.optional)) out.push(`${at}: nothing fills {${p}} in ${spec.request.path}`);
   }
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
+  for (const a of args) if (a.stdin && !a.optional) out.push(`${at}: ${a.name} comes from stdin when left out, so it must be optional`);
   for (const f of flags) {
     if (!["string", "number", "boolean"].includes(f.type)) out.push(`${at}: --${f.name} has an unknown type`);
     if (f.short && !/^[A-Za-z]$/.test(f.short)) out.push(`${at}: -${f.short} must be one letter`);
@@ -208,7 +209,11 @@ export function renderOutput(output: CommandOutput, data: unknown, vars: Templat
 
 export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Client, opts: { json: boolean }): Promise<void> {
   // A secret left out is asked for; it lands in parsed, so trying the command again doesn't ask twice.
-  for (const a of spec.args ?? []) if (a.secret && parsed.args[a.name] === undefined) parsed.args[a.name] = await readSecret(a.name);
+  for (const a of spec.args ?? []) {
+    if (parsed.args[a.name] !== undefined) continue;
+    if (a.secret) parsed.args[a.name] = await readSecret(a.name);
+    else if (a.stdin) parsed.args[a.name] = await readStdin(a.name, usageLine(spec));
+  }
   const req = buildRequest(spec, parsed);
   const res = await client.call(req.method, req.path, { query: req.query, body: req.body });
   const shown = Object.fromEntries(Object.entries(parsed.args).filter(([name]) => !spec.args?.find((a) => a.name === name)?.secret));
