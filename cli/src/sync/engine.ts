@@ -15,7 +15,9 @@ import {
   conflictName,
   readBytes,
   readEntry,
+  insideRoot,
   removeLocal,
+  UnsafePathError,
   scan,
   writeLocal,
   type LocalEntry,
@@ -118,32 +120,51 @@ export class SyncEngine {
     }
 
     for (const [path, r] of remote) {
-      const s = this.state.files[path];
-      const l = local.get(path);
-      const changedHere = !same(l, s);
-      if (!r) {
-        if (!changedHere && l) {
-          // Gone from the workspace. A file the rules here ignore stays, as one of this copy's own; any other goes.
-          await rules.prepare(path);
-          if (!rules.match(path, false).ignored) {
-            await removeLocal(this.root, path);
-            report.pulled.push({ path, status: "delete" });
-          }
-        }
-        // Deleted there: forget it. If it was edited here, the push step sends it back as a new file.
+      try {
+        await this.pullOne(report, path, r, local, rules, res.head);
+      } catch (e) {
+        // A path that would land outside this folder is left alone; the rest goes on.
+        if (!(e instanceof UnsafePathError)) throw e;
+        report.skipped.push({ path, reason: e.message });
         delete this.state.files[path];
-        continue;
       }
-      if (l && l.hash === r.hash && l.mode === r.mode) {
-        this.state.files[path] = l; // already identical
-        continue;
-      }
-      if (!changedHere) {
-        if (await this.writeIfUnchanged(path, l, res.head)) report.pulled.push({ path, status: "put" });
-      }
-      // else: changed on both sides; push sends ours with its original base and the server merges
     }
     this.state.head = res.head;
+  }
+
+  private async pullOne(
+    report: SyncReport,
+    path: string,
+    r: { hash: string; mode: string } | null,
+    local: Map<string, LocalEntry>,
+    rules: Awaited<ReturnType<typeof loadIgnoreRules>>,
+    head: string,
+  ) {
+    await insideRoot(this.root, path);
+    const s = this.state.files[path];
+    const l = local.get(path);
+    const changedHere = !same(l, s);
+    if (!r) {
+      if (!changedHere && l) {
+        // Gone from the workspace. A file the rules here ignore stays, as one of this copy's own; any other goes.
+        await rules.prepare(path);
+        if (!rules.match(path, false).ignored) {
+          await removeLocal(this.root, path);
+          report.pulled.push({ path, status: "delete" });
+        }
+      }
+      // Deleted there: forget it. If it was edited here, the push step sends it back as a new file.
+      delete this.state.files[path];
+      return;
+    }
+    if (l && l.hash === r.hash && l.mode === r.mode) {
+      this.state.files[path] = l; // already identical
+      return;
+    }
+    if (!changedHere) {
+      if (await this.writeIfUnchanged(path, l, head)) report.pulled.push({ path, status: "put" });
+    }
+    // else: changed on both sides; push sends ours with its original base and the server merges
   }
 
   private async push(report: SyncReport): Promise<"done" | "retry"> {

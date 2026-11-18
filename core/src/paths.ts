@@ -12,6 +12,12 @@ export class PathError extends Error {
 
 const MAX_PATH = 1024;
 const MAX_SEGMENT = 255;
+/**
+ * Folders no workspace may hold, at any depth: Git's, and `.fontego`, where each synced copy keeps its own state (the
+ * server it syncs with, what it last saw, its own ignore rules). A file there from the workspace would rewrite that
+ * state on every member's machine.
+ */
+const RESERVED = [".git", ".fontego"];
 // Control characters, including NUL, tab and newline.
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
@@ -41,8 +47,8 @@ export function normalizePath(input: unknown): string {
     if (segment.length > MAX_SEGMENT) {
       throw new PathError("invalid_path", `A path segment is longer than ${MAX_SEGMENT} characters.`);
     }
-    if (segment.toLowerCase() === ".git") {
-      throw new PathError("reserved_path", "Paths inside .git are reserved.");
+    if (RESERVED.includes(segment.toLowerCase())) {
+      throw new PathError("reserved_path", `Paths inside ${segment} are reserved.`);
     }
   }
   return segments.join("/");

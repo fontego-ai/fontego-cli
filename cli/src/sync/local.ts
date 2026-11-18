@@ -143,15 +143,57 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
   return { files, invalid, ignored: ignored.sort(), trackedIgnored: trackedIgnored.sort((a, b) => a.path.localeCompare(b.path)) };
 }
 
+/**
+ * Refuses a path that would reach outside the folder: one that isn't a clean workspace path (the server could send
+ * anything), or one whose folders on the way down include a symlink here, which a write or a delete would follow
+ * wherever it points (`a -> .` and `b -> a/..` look harmless one by one, and `b/x` lands next to the folder).
+ */
+export async function insideRoot(root: string, path: string): Promise<void> {
+  let clean: string;
+  try {
+    clean = normalizePath(path);
+  } catch (e) {
+    throw new UnsafePathError(path, e instanceof PathError ? e.message : String(e));
+  }
+  if (clean !== path) throw new UnsafePathError(path, "it isn't written the way the server writes paths");
+  const parts = path.split("/");
+  for (let i = 1; i < parts.length; i++) {
+    const folder = parts.slice(0, i).join("/");
+    let st;
+    try {
+      st = await lstat(join(root, folder));
+    } catch {
+      return; // from here down nothing exists yet: mkdir makes real folders
+    }
+    if (st.isSymbolicLink()) throw new UnsafePathError(path, `${folder} is a symlink here, and Fontego doesn't write through one`);
+    if (!st.isDirectory()) return; // the write fails on its own, inside the folder
+  }
+}
+
+export class UnsafePathError extends Error {
+  constructor(
+    readonly path: string,
+    why: string,
+  ) {
+    super(`Left ${JSON.stringify(path)} alone: ${why}.`);
+  }
+}
+
 /** Writes a file atomically (temp file + rename) and returns its new entry. */
 export async function writeLocal(root: string, path: string, bytes: Uint8Array, mode: string): Promise<LocalEntry> {
+  await insideRoot(root, path);
   const full = join(root, path);
   await mkdir(dirname(full), { recursive: true });
   const tmpDir = join(root, STATE_DIR, "tmp");
   await mkdir(tmpDir, { recursive: true });
   const tmp = join(tmpDir, randomBytes(8).toString("hex"));
   if (mode === "120000") {
-    await symlink(new TextDecoder().decode(bytes), tmp);
+    const target = new TextDecoder().decode(bytes);
+    const lands = posix.normalize(posix.join(posix.dirname(path), target));
+    if (!target || /[\u0000\n]/.test(target) || target.startsWith("/") || lands === ".." || lands.startsWith("../")) {
+      throw new UnsafePathError(path, "it is a symlink that points outside this folder");
+    }
+    await symlink(target, tmp);
   } else {
     await writeFile(tmp, bytes, { mode: mode === "100755" ? 0o755 : 0o644 });
   }
@@ -170,6 +212,7 @@ export async function writeLocal(root: string, path: string, bytes: Uint8Array, 
 
 /** Deletes a file and the folders it leaves empty (never the root). */
 export async function removeLocal(root: string, path: string) {
+  await insideRoot(root, path);
   await rm(join(root, path), { force: true });
   let dir = posix.dirname(path);
   while (dir && dir !== ".") {
