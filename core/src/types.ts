@@ -140,6 +140,17 @@ export interface ChangeEntry {
   files: number;
 }
 
+/**
+ * A path a workspace protects (only its admins change it) or rejects (nobody writes it: such files would run code on
+ * the machines of everyone who syncs). Patterns are those of matchPath in paths.ts.
+ */
+export interface PathRule {
+  kind: "protected" | "rejected";
+  pattern: string;
+  /** The workspace's own list, or the instance's default while the workspace has none of that kind */
+  from: "workspace" | "instance";
+}
+
 export interface AdminWorkspace extends WorkspaceInfo {
   members: number;
 }
@@ -182,7 +193,7 @@ export interface MailStatus {
   problem?: string;
 }
 
-export type SettingValue = string | number | boolean;
+export type SettingValue = string | number | boolean | string[];
 
 /**
  * One of the instance's settings. Each comes from the first of three places that has it: the server's own config
@@ -191,8 +202,9 @@ export type SettingValue = string | number | boolean;
  */
 export interface SettingEntry {
   key: string;
-  group: "general" | "mail" | "sessions";
-  type: "string" | "number" | "boolean";
+  group: "general" | "mail" | "sessions" | "workspaces";
+  /** A list is of text, such as path patterns */
+  type: "string" | "number" | "boolean" | "list";
   description: string;
   /** In effect now; null when unset, and always null for a secret */
   value: SettingValue | null;

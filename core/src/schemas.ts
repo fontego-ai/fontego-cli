@@ -131,7 +131,10 @@ export const ByUserQuery = z.object({ user: Opt });
 export const AuditQuery = z.object({ user: Opt, workspace: Opt, since: Opt, limit: Opt });
 
 /** A new value for one of the instance's settings; the server checks it against the setting's type. */
-export const SettingValueBody = z.object({ value: z.union([z.string(), z.number(), z.boolean()], "a value is required") });
+export const SettingValueBody = z.object({ value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())], "a value is required") });
+
+/** Going back to the instance's default path rules: both kinds, or one. */
+export const PathRulesResetQuery = z.object({ kind: z.enum(["protected", "rejected"]).optional() });
 
 /** Deleting a workspace for good: its id, typed again. */
 export const DeleteWorkspaceBody = z.object({ confirm: z.string().optional() });

@@ -61,3 +61,64 @@ export function looksLikeText(bytes: Uint8Array): boolean {
   for (let i = 0; i < end; i++) if (bytes[i] === 0) return false;
   return true;
 }
+
+// --- Path patterns: which paths a workspace protects or rejects ---
+//
+// A pattern names paths from the workspace's top, split by "/". In a name, `*` stands for any characters and `?` for
+// one; a name that is just `**` stands for any number of folders, none included. A pattern matches a whole path, and
+// ignores case, as the file systems of macOS and Windows do: `**/AGENTS.md` is every AGENTS.md, `.claude/**`
+// everything under .claude at the top.
+
+/** What is wrong with a pattern, or null. */
+export function pathPatternError(pattern: string): string | null {
+  if (!pattern || pattern.length > 200) return "a pattern has 1 to 200 characters";
+  if (CONTROL.test(pattern) || pattern.includes("\\")) return "a pattern has no control characters or backslashes";
+  if (pattern.startsWith("/") || pattern.endsWith("/")) return "a pattern starts and ends with a name, not a /";
+  const names = pattern.split("/");
+  if (names.some((n) => n === "" || n === "." || n === "..")) return "a pattern has no empty, . or .. names";
+  if (names.some((n) => n.includes("**") && n !== "**")) return "** stands alone between slashes";
+  return null;
+}
+
+const nameRegex = new Map<string, RegExp>();
+
+function nameMatches(pattern: string, name: string): boolean {
+  let re = nameRegex.get(pattern);
+  if (!re) {
+    const body = [...pattern].map((c) => (c === "*" ? "[^/]*" : c === "?" ? "[^/]" : c.replace(/[.+^${}()|[\]\\]/g, "\\$&"))).join("");
+    re = new RegExp(`^${body}$`, "iu");
+    nameRegex.set(pattern, re);
+  }
+  return re.test(name);
+}
+
+function namesMatch(pattern: string[], path: string[], p = 0, n = 0): boolean {
+  if (p === pattern.length) return n === path.length;
+  if (pattern[p] === "**") {
+    for (let skip = n; skip <= path.length; skip++) if (namesMatch(pattern, path, p + 1, skip)) return true;
+    return false;
+  }
+  return n < path.length && nameMatches(pattern[p]!, path[n]!) && namesMatch(pattern, path, p + 1, n + 1);
+}
+
+/** Whether a pattern matches a path. */
+export function matchPath(pattern: string, path: string): boolean {
+  return namesMatch(pattern.normalize("NFC").split("/"), path.normalize("NFC").split("/"));
+}
+
+/**
+ * Whether a symlink at this path would let files reach what the pattern names: the path is where the pattern's
+ * folders are, with the rest of the pattern below it. A link named .claude pointing to an ordinary folder would turn
+ * that folder's settings.json into .claude/settings.json on every machine, so a pattern for .claude/settings.json in
+ * any folder reaches a symlink named .claude. A pattern's leading `**` alone reaches nothing: files below any folder
+ * are checked by their own path when they are written.
+ */
+export function patternReachesBelow(pattern: string, path: string): boolean {
+  const names = pattern.normalize("NFC").split("/");
+  const at = path.normalize("NFC").split("/");
+  for (let k = 1; k < names.length; k++) {
+    const head = names.slice(0, k);
+    if (head.some((n) => n !== "**") && namesMatch(head, at)) return true;
+  }
+  return false;
+}
