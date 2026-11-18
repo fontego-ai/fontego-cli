@@ -272,6 +272,34 @@ describe("commands the server declares", () => {
     rmSync(parent, { recursive: true, force: true });
   });
 
+  test("an agent writes, moves and deletes one file without a copy, naming the version it starts from", async () => {
+    const agent = { FONTEGO_AGENT: "test-agent" };
+    const first = await fontego(["write", "notes", "drafts/a.md"], agent, "# Draft\n");
+    expect(first.code).toBe(0);
+    const hash = JSON.parse((await fontego(["cat", "notes", "drafts/a.md", "--json"])).out).hash;
+    expect(first.out.trim()).toBe(`Wrote drafts/a.md. Its hash is now ${hash}`);
+
+    const again = await fontego(["write", "notes", "drafts/a.md"], agent, "# Other\n");
+    expect(again.code).toBe(4); // a conflict: it exists, and no --base said which version it edits
+    expect(again.err).toContain("--base");
+    expect((await fontego(["write", "notes", "drafts/a.md", "--base", hash, "-m", "Second draft"], agent, "# Draft 2\n")).code).toBe(0);
+    expect((await fontego(["cat", "notes", "drafts/a.md"])).out).toBe("# Draft 2\n");
+
+    const nothing = await fontego(["write", "notes", "drafts/empty.md"], agent, "");
+    expect(nothing.code).toBe(1);
+    expect(nothing.err).toContain("Nothing came on stdin");
+    expect((await fontego(["write", "notes", "drafts/b.md", "Short text, as an argument."], agent)).code).toBe(0);
+
+    const b = JSON.parse((await fontego(["cat", "notes", "drafts/b.md", "--json"])).out).hash;
+    expect((await fontego(["mv", "notes", "drafts/b.md", "drafts/c.md", "--base", b], agent)).out).toContain("Wrote drafts/c.md");
+    const noBase = await fontego(["rm", "notes", "drafts/c.md"], agent);
+    expect(noBase.err).toContain("fontego cat notes drafts/c.md --json");
+    expect((await fontego(["rm", "notes", "drafts/c.md", "--base", b], agent)).out.trim()).toBe("Deleted drafts/c.md");
+    expect((await fontego(["write", "notes", "AGENTS.md"], agent, "# Mine\n")).err).toContain("protected path");
+    const log = (await fontego(["admin", "audit", "changes", "--workspace", "notes", "--limit", "5"], asAdmin())).out;
+    expect(log).toContain("test-agent");
+  });
+
   test("usage mistakes are caught before calling the server", async () => {
     const r = await fontego(["members", "set", "notes"]);
     expect(r.code).toBe(1);
