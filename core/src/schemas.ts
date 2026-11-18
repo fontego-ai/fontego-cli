@@ -22,12 +22,26 @@ const Text = (max: number) => z.string().max(max);
 
 // --- Workspaces and members ---
 
-export const CreateWorkspaceBody = z.object({
-  slug: Slug,
-  name: Text(200).optional(),
-  description: Text(5000).optional(),
-  category: Text(100).optional(),
-});
+/** A template's name: what `fontego workspace templates` lists. */
+export const TEMPLATE_NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
+/**
+ * A new workspace starts empty, from a template, or from a Git repository the server can reach (https), with its
+ * history unless `history` is false. Importing a folder from your machine is `fontego link` on an empty workspace.
+ */
+export const CreateWorkspaceBody = z
+  .object({
+    slug: Slug,
+    name: Text(200).optional(),
+    description: Text(5000).optional(),
+    category: Text(100).optional(),
+    template: z.string().regex(TEMPLATE_NAME, "is not a template name").optional(),
+    git: Text(2000).optional(),
+    branch: Text(200).optional(),
+    history: z.boolean().optional(),
+  })
+  .refine((b) => !(b.template && b.git), { message: "start from a template or from a Git repository, not both", path: ["template"] })
+  .refine((b) => b.git || (b.branch === undefined && b.history === undefined), { message: "branch and history only go with git", path: ["branch"] });
 export type CreateWorkspaceRequest = z.input<typeof CreateWorkspaceBody>;
 
 export const UpdateWorkspaceBody = z.object({

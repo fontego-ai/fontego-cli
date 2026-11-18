@@ -252,6 +252,48 @@ export interface WorkspaceInfo {
   archivedAt?: string;
 }
 
+/** A file an import left out, and why: the same refusals as any write, or the ignore rules the source carries. */
+export interface SkippedFile {
+  /** A file, or a folder (ending in /) whose files the ignore rules kept out */
+  path: string;
+  /** ignored, path_rejected, secret_file, secret_content, file_too_large, invalid_path, submodule... */
+  code: string;
+  message: string;
+  hint?: string;
+  /** From a Git history: how many versions of it were left out */
+  versions?: number;
+}
+
+/** What filled a new workspace. */
+export interface WorkspaceImport {
+  kind: "empty" | "template" | "folder" | "zip" | "git";
+  /** What it came from, for people: "template demo", "zip notes.zip", "https://example.org/notes.git (main)" */
+  source: string;
+  /** Files in the workspace after the import */
+  files: number;
+  commits: number;
+  head: string | null;
+  /** From Git: whether its history came in, and whether commits had to be rewritten to leave files out */
+  history?: boolean;
+  rewritten?: boolean;
+  skipped: SkippedFile[];
+  /** For people: "14 files from the template demo, in 1 commit; 2 left out." */
+  summary: string;
+}
+
+/** A new workspace, and what it was filled with. */
+export interface CreatedWorkspace extends WorkspaceInfo {
+  imported: WorkspaceImport;
+}
+
+/** A template new workspaces can start from: one that ships with the server, or the instance's own. */
+export interface TemplateInfo {
+  name: string;
+  /** The first line of its README */
+  description: string;
+  from: "built-in" | "instance";
+}
+
 export interface Member {
   userId: number;
   email: string;

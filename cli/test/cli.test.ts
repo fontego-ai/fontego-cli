@@ -206,6 +206,23 @@ describe("commands the server declares", () => {
     expect((await fontego(["members", "set", "notes", "nobody@example.org", "reader"])).code).toBe(5);
   });
 
+  test("an admin starts a workspace from a template, or imports a Git repository the server can reach", async () => {
+    const env = asAdmin();
+    const templates = await fontego(["workspace", "templates"], env);
+    expect(templates.out).toMatch(/demo\s+built-in/);
+    const made = await fontego(["workspace", "create", "bakery", "--template", "demo"], env);
+    expect(made.code).toBe(0);
+    expect(made.out).toContain("Workspace bakery created; you are its admin.");
+    expect(made.out).toContain("11 files from the template demo.");
+    const files = JSON.parse((await fontego(["ls", "bakery", "--json"], env)).out);
+    expect(JSON.stringify(files)).toContain("AGENTS.md");
+    // Only https through the API: a path on the server's disk is refused before anything is made.
+    const local = await fontego(["workspace", "create", "sneaky", "--git", "/etc", "--json"], env);
+    expect(local.code).not.toBe(0);
+    expect(JSON.parse(local.out).error.code).toBe("invalid_url");
+    expect((await fontego(["workspace", "create", "both", "--branch", "main"], env)).code).not.toBe(0);
+  });
+
   test("an admin invites people from the CLI; without mail, the link to pass on is right there", async () => {
     const env = asAdmin();
     const inv = await fontego(["admin", "users", "invite", "cai@example.org", "--name", "Cai"], env);
