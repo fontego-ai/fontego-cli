@@ -4,6 +4,7 @@
 
 import {
   checkTemplate,
+  outputTemplates,
   textContent,
   pathParams,
   renderTemplate,
@@ -87,9 +88,6 @@ export function nameLength(spec: CommandSpec, words: string[]): number {
 }
 
 // --- Checking a declaration ---
-
-const outputTemplates = (o: CommandOutput): string[] =>
-  o.kind === "table" ? o.columns.map((c) => c.value) : o.kind === "lines" ? [o.line] : o.kind === "record" ? o.lines : o.kind === "message" ? [o.text] : [];
 
 /** What would keep this CLI from running a declared command; an empty list means it can. */
 export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): string[] {
@@ -198,8 +196,14 @@ export function renderOutput(output: CommandOutput, data: unknown, vars: Templat
       const rows = rowsOf(data, output.rows);
       return rows.length ? rows.map((r) => renderTemplate(output.line, r, vars)).join("\n") : (output.empty ?? "(none)");
     }
-    case "record":
-      return output.lines.map((l) => recordLine(l, data, vars)).filter((l): l is string => l !== null).join("\n");
+    case "record": {
+      const lines = output.lines.map((l) => recordLine(l, data, vars)).filter((l): l is string => l !== null);
+      const items = output.list ? rowsOf(data, output.list.rows) : [];
+      if (output.list && items.length) {
+        lines.push("", renderTemplate(output.list.title, data, vars), ...items.map((r) => `  ${renderTemplate(output.list!.line, r, vars)}`.trimEnd()));
+      }
+      return lines.join("\n");
+    }
     case "message":
       return renderTemplate(output.text, data, vars);
     case "raw":

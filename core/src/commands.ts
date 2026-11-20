@@ -56,11 +56,37 @@ export type CommandOutput =
   | { kind: "table"; rows?: string; columns: CommandColumn[]; empty?: string }
   /** One line per item */
   | { kind: "lines"; rows?: string; line: Template; empty?: string }
-  /** A few lines about one object; lines that come out empty are left out */
-  | { kind: "record"; lines: Template[] }
+  /** A few lines about one object; lines that come out empty are left out. Then, maybe, a list in it */
+  | { kind: "record"; lines: Template[]; list?: RecordList }
   | { kind: "message"; text: Template }
   /** The body as it comes (a file). With --json: the content plus these headers, by name */
   | { kind: "raw"; meta?: Record<string, string> };
+
+/**
+ * A list at the end of a record: a title, then one indented line per item of the list in `rows` (the folders of a
+ * workspace). Nothing when the list is empty. A CLI that doesn't know it prints the record without it.
+ */
+export interface RecordList {
+  title: Template;
+  rows: string;
+  line: Template;
+}
+
+/** Every template of an output, to check it (the server's tests, and the CLI before it runs a command). */
+export function outputTemplates(o: CommandOutput): Template[] {
+  switch (o.kind) {
+    case "table":
+      return o.columns.map((c) => c.value);
+    case "lines":
+      return [o.line];
+    case "record":
+      return [...o.lines, ...(o.list ? [o.list.title, o.list.line] : [])];
+    case "message":
+      return [o.text];
+    case "raw":
+      return [];
+  }
+}
 
 /** What a route declares. */
 export interface CommandDecl {
