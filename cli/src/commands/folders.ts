@@ -1,0 +1,228 @@
+import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
+import { UsageError } from "../args.ts";
+import { ClientError } from "../client.ts";
+import type { Connection } from "../connect.ts";
+import { localStatus, SyncEngine, type SyncReport } from "../sync/engine.ts";
+import { loadIgnoreRules, type IgnoreMatch } from "../sync/ignore.ts";
+import { isConflictCopy, scan } from "../sync/local.ts";
+import { findRoot, loadState, newState, saveState } from "../sync/state.ts";
+import { acquireLock, Watcher } from "../sync/watch.ts";
+import type { Builtin, RunContext } from "./command.ts";
+
+export function describeReport(r: SyncReport): string[] {
+  const lines: string[] = [];
+  for (const p of r.pulled) lines.push(`↓ ${p.status === "delete" ? "deleted " : ""}${p.path}`);
+  for (const p of r.pushed) lines.push(`↑ ${p.status === "delete" ? "deleted " : ""}${p.path}${p.merged ? " (merged with other changes)" : ""}`);
+  return lines.concat(describeSyncIssues(r));
+}
+
+function describeSyncIssues(r: SyncReport): string[] {
+  const lines: string[] = [];
+  for (const c of r.conflicts) lines.push(`! ${c.message}`);
+  for (const s of r.skipped) lines.push(`skipped ${s.path}: ${s.reason}`);
+  for (const p of r.invalid) lines.push(`skipped ${p}: this name can't be synced`);
+  if (r.readOnly && r.pending) lines.push(`${r.pending} local change(s) not sent: you can only read this workspace.`);
+  return lines;
+}
+
+/** The synced folder a command works on, and a client for the instance it belongs to. */
+async function folder(rc: RunContext, dirArg: string | undefined) {
+  const root = findRoot(dirArg ?? process.cwd());
+  if (!root) throw new UsageError(`${dirArg ?? "This folder"} is not a synced workspace. Create one with: fontego clone WORKSPACE [DIR]`);
+  const state = await loadState(root);
+  const online = async () => {
+    const conn = await rc.connect({ folderUrl: state.url });
+    return { engine: new SyncEngine(root, conn.client, state), client: conn.client, conn };
+  };
+  return { root, state, online };
+}
+
+async function firstSync({ client, url }: Connection, workspace: string, dir: string) {
+  const [info, me] = await Promise.all([client.workspace(workspace), client.me()]);
+  const state = newState(url, workspace, me.user.name || me.user.email.split("@")[0]!);
+  await saveState(dir, state);
+  const report = await new SyncEngine(dir, client, state).sync();
+  return { role: info.role, report };
+}
+
+const DIR = { name: "DIR", optional: true } as const;
+
+/** "build/out.txt matches .fontegoignore:3 (build/)", for the rule that ignores a path. */
+const ruleText = (m: IgnoreMatch) => `${m.source}${m.line ? `:${m.line}` : ""} (${m.pattern})${m.folder ? `, through the folder ${m.folder}/` : ""}`;
+const FOLDERS = "Synced folders";
+
+export const folderCommands: Builtin[] = [
+  {
+    name: "clone",
+    summary: "Make DIR (default ./WORKSPACE) a synced copy of the workspace",
+    group: FOLDERS,
+    args: [{ name: "WORKSPACE" }, DIR],
+    async run({ parsed, print, connect: signIn }) {
+      const conn = await signIn();
+      const ws = parsed.args.WORKSPACE!;
+      const dir = resolve(parsed.args.DIR ?? ws);
+      if (existsSync(dir) && readdirSync(dir).length > 0) throw new UsageError(`${dir} is not empty. Clone into a new or empty folder.`);
+      const { role, report } = await firstSync(conn, ws, dir);
+      print({ dir, workspace: ws, role, ...report }, () =>
+        [`Cloned ${ws} into ${dir} (${report.pulled.length} file(s), you are ${role}).`, `Keep it in sync with: fontego watch ${dir}`].join("\n"),
+      );
+    },
+  },
+  {
+    name: "link",
+    summary: "Connect a folder that already has files (default: this one) and send them up",
+    group: FOLDERS,
+    args: [{ name: "WORKSPACE" }, DIR],
+    async run({ parsed, print, connect: signIn }) {
+      const conn = await signIn();
+      const ws = parsed.args.WORKSPACE!;
+      const dir = resolve(parsed.args.DIR ?? ".");
+      if (!existsSync(dir)) throw new UsageError(`${dir} doesn't exist.`);
+      const existing = findRoot(dir);
+      if (existing) throw new UsageError(`${existing} is already synced with "${(await loadState(existing)).workspace}".`);
+      const { role, report } = await firstSync(conn, ws, dir);
+      print({ dir, workspace: ws, role, ...report }, () =>
+        [
+          `Linked ${dir} to ${ws}: ${report.pushed.length} file(s) sent, ${report.pulled.length} received.`,
+          ...describeSyncIssues(report),
+          `Keep it in sync with: fontego watch ${dir}`,
+        ].join("\n"),
+      );
+    },
+  },
+  {
+    name: "status",
+    summary: "What changed here since the last sync, and what the ignore rules keep here (works offline)",
+    group: FOLDERS,
+    args: [DIR],
+    flags: [{ name: "ignored", type: "boolean", description: "List what the ignore rules keep here (--json always does)" }],
+    async run(rc) {
+      const { root, state } = await folder(rc, rc.parsed.args.DIR);
+      const st = await localStatus(root, state);
+      // A file in the workspace that the rules match keeps syncing; say so, and how to take it out.
+      const trackedIgnored = st.trackedIgnored.map((t) => ({ ...t, hash: state.files[t.path]?.hash ?? null }));
+      rc.print({ root, workspace: state.workspace, head: state.head, ...st, trackedIgnored }, () => {
+        const lines = [
+          ...st.added.map((p) => `new       ${p}`),
+          ...st.modified.map((p) => `modified  ${p}`),
+          ...st.deleted.map((p) => `deleted   ${p}`),
+          ...Object.entries(st.skipped).map(([p, s]) => `skipped   ${p}: ${s.reason}`),
+          ...(rc.parsed.flags.ignored ? st.ignored.map((p) => `ignored   ${p}`) : []),
+        ];
+        const notes = trackedIgnored.map(
+          (t) =>
+            `note: ${t.path} matches ${ruleText(t)} but is in the workspace, so it keeps syncing. To take it out of the workspace (the copy here stays): fontego rm ${state.workspace} ${t.path} --base ${t.hash}`,
+        );
+        const ignored =
+          st.ignored.length && !rc.parsed.flags.ignored
+            ? [`${st.ignored.length} ignored here (fontego status --ignored lists them; fontego check-ignore PATH says why).`]
+            : [];
+        return [`${state.workspace} in ${root}`, lines.length ? lines.join("\n") : "Nothing to send.", ...notes, ...ignored].join("\n");
+      });
+    },
+  },
+  {
+    name: "check-ignore",
+    summary: "Which ignore rule keeps a path from syncing, if any, like git check-ignore -v (works offline)",
+    group: FOLDERS,
+    args: [{ name: "PATH", description: "A file or folder inside a synced folder" }],
+    async run(rc) {
+      const given = rc.parsed.args.PATH!;
+      const abs = resolve(given);
+      const root = findRoot(dirname(abs));
+      if (!root) throw new UsageError(`${given} is not inside a synced workspace.`);
+      const rel = relative(root, abs).split(sep).join("/");
+      if (!rel || rel.startsWith("..")) throw new UsageError(`Give a path inside ${root}.`);
+      let isDir = given.endsWith("/");
+      try {
+        isDir ||= lstatSync(abs).isDirectory();
+      } catch {
+        // it doesn't exist (yet): check it as a file, or a folder with a trailing /
+      }
+      const state = await loadState(root);
+      const rules = await loadIgnoreRules(root);
+      await rules.prepare(rel);
+      const m = rules.match(rel, isDir);
+      const tracked = !!state.files[rel.normalize("NFC")];
+      rc.print({ path: rel, folder: isDir, ...m, tracked }, () => {
+        if (!m.ignored) return `${rel} is not ignored.`;
+        const why = `${m.source}${m.line ? `:${m.line}` : ""}:${m.pattern}\t${rel}${m.folder ? `  (through the folder ${m.folder}/)` : ""}`;
+        return tracked ? `${why}\n${rel} is in the workspace, though, so it keeps syncing. To take it out: fontego rm.` : why;
+      });
+      // As git check-ignore: 1 when the path isn't ignored.
+      if (!m.ignored) process.exitCode = 1;
+    },
+  },
+  {
+    name: "sync",
+    summary: "Sync once: bring down, send up",
+    group: FOLDERS,
+    args: [DIR],
+    async run(rc) {
+      const { root, online } = await folder(rc, rc.parsed.args.DIR);
+      const { engine } = await online();
+      const release = await acquireLock(root);
+      try {
+        const r = await engine.sync();
+        rc.print({ root, ...r }, () => describeReport(r).join("\n") || "Up to date.");
+      } finally {
+        await release();
+      }
+    },
+  },
+  {
+    name: "watch",
+    summary: "Keep syncing: seconds after you edit, and when others commit; waits while offline",
+    group: FOLDERS,
+    args: [DIR],
+    async run(rc) {
+      const { root, state, online } = await folder(rc, rc.parsed.args.DIR);
+      const { engine, client, conn } = await online();
+      const release = await acquireLock(root);
+      const log = (line: string) =>
+        rc.json ? console.log(JSON.stringify({ at: new Date().toISOString(), message: line })) : console.log(`${new Date().toLocaleTimeString()}  ${line}`);
+      let lastError = "";
+      const watcher = new Watcher(engine, client, {
+        onReport: (r) => {
+          if (lastError) log("carrying on");
+          lastError = "";
+          if (rc.json && (r.pulled.length || r.pushed.length || r.conflicts.length || r.skipped.length)) {
+            console.log(JSON.stringify({ at: new Date().toISOString(), report: r }));
+          } else if (!rc.json) for (const l of describeReport(r)) log(l);
+        },
+        onError: (e) => {
+          // Signed out (the session ended, or the token was refused): wait, and say so once.
+          const line =
+            e instanceof ClientError && e.status === 401
+              ? `paused: ${e.message} Sign in again (fontego login ${conn.label}) and it carries on by itself.`
+              : `sync failed: ${e.message}`;
+          if (line !== lastError) log(line);
+          lastError = line;
+        },
+        onEvent: log,
+      });
+      const stop = async () => {
+        await watcher.stop();
+        await release();
+        process.exit(0);
+      };
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+      log(`watching ${root} (${state.workspace} on ${conn.label}); Ctrl+C to stop`);
+      await watcher.start();
+    },
+  },
+  {
+    name: "conflicts",
+    summary: "Conflict copies waiting to be merged by hand (works offline)",
+    group: FOLDERS,
+    args: [DIR],
+    async run(rc) {
+      const { root, state } = await folder(rc, rc.parsed.args.DIR);
+      const scanned = await scan(root, await loadIgnoreRules(root), state.files);
+      const copies = [...scanned.files.keys()].filter(isConflictCopy).sort();
+      rc.print({ root, conflicts: copies }, () => (copies.length ? copies.join("\n") : "No conflict copies."));
+    },
+  },
+];

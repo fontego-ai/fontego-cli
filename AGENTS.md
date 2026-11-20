@@ -58,7 +58,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), what a declared command looks like (`commands.ts`) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Reads the command line and runs a built-in or a declared command |
 | `cli/src/args.ts` | Command words, arguments and flags, and usage lines |
-| `cli/src/builtins.ts` | The built-in commands |
+| `cli/src/builtins.ts` | Collects the built-in commands for dispatch, help and the reference docs. Instance and sign-in commands live in `cli/src/commands/instances.ts` and synced-folder commands in `cli/src/commands/folders.ts` |
 | `cli/src/declared.ts` | Commands the server declares: cache, checks, building the request, printing the answer |
 | `cli/src/help.ts` | `fontego help`, `fontego help COMMAND` and `fontego help --agent`, built from the commands themselves |
 | `cli/src/client.ts` | HTTP client for `/v1`: a token per request, and one more try after renewing on a 401 |
