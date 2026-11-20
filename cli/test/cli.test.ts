@@ -71,6 +71,12 @@ describe("fontego CLI", () => {
     const cat = JSON.parse((await fontego(["cat", "notes", "README.md", "--json"])).out);
     expect(cat).toMatchObject({ text: true, content: "My notes\n" });
     expect(cat.hash).toMatch(/^[0-9a-f]{40}$/);
+    // Bytes that wouldn't come back from text go as base64, untouched.
+    const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]);
+    await s.call(ana.token, "PUT", "/v1/workspaces/notes/files/latin1.txt", { contentBase64: latin1.toString("base64") });
+    const raw = JSON.parse((await fontego(["cat", "notes", "latin1.txt", "--json"])).out);
+    expect(raw).toMatchObject({ text: false, contentBase64: latin1.toString("base64") });
+    await s.call(ana.token, "DELETE", "/v1/workspaces/notes/files/latin1.txt", { baseHash: raw.hash });
     const found = JSON.parse((await fontego(["search", "notes", "kyoto", "--json"])).out);
     expect(found.hits).toEqual([{ path: "travel/japan.md", line: 2, text: "Kyoto in April." }]);
     const log = (await fontego(["log", "notes"])).out;

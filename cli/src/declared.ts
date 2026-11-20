@@ -4,7 +4,7 @@
 
 import {
   checkTemplate,
-  looksLikeText,
+  textContent,
   pathParams,
   renderTemplate,
   splitTarget,
@@ -226,9 +226,10 @@ export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Clie
       return;
     }
     const meta = Object.fromEntries(Object.entries(spec.output.meta ?? {}).map(([k, header]) => [k, res.headers.get(header)]));
-    const text = looksLikeText(bytes);
+    // "content" only when it gives back the very same bytes; anything else (Latin-1, a BOM...) goes as base64.
+    const content = textContent(bytes);
     console.log(
-      JSON.stringify({ ...meta, text, ...(text ? { content: new TextDecoder().decode(bytes) } : { contentBase64: Buffer.from(bytes).toString("base64") }) }, null, 2),
+      JSON.stringify({ ...meta, text: content !== null, ...(content !== null ? { content } : { contentBase64: Buffer.from(bytes).toString("base64") }) }, null, 2),
     );
     return;
   }

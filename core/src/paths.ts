@@ -68,6 +68,29 @@ export function looksLikeText(bytes: Uint8Array): boolean {
   return true;
 }
 
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * The bytes as a string, only if that string turns back into the very same bytes: valid UTF-8, a BOM kept. Anything
+ * else (Latin-1, a stray byte) is null and has to travel as base64, because a lenient decoder would swap the bytes it
+ * doesn't understand for U+FFFD, and the default one drops a BOM: the file that arrives wouldn't be the one sent.
+ */
+export function exactText(bytes: Uint8Array): string | null {
+  let text: string;
+  try {
+    text = strictUtf8.decode(bytes);
+  } catch {
+    return null;
+  }
+  const back = new TextEncoder().encode(text);
+  if (back.length !== bytes.length) return null;
+  for (let i = 0; i < back.length; i++) if (back[i] !== bytes[i]) return null;
+  return text;
+}
+
+/** A file's content as text for JSON ("content"), or null when it has to go as base64 ("contentBase64"). */
+export const textContent = (bytes: Uint8Array): string | null => (looksLikeText(bytes) ? exactText(bytes) : null);
+
 // --- Path patterns: which paths a workspace protects or rejects ---
 //
 // A pattern names paths from the workspace's top, split by "/". In a name, `*` stands for any characters and `?` for

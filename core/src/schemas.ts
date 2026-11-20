@@ -160,7 +160,7 @@ export const MAX_OPS = 1000;
 export const PutOpSchema = z.object({
   op: z.literal("put"),
   path: z.string(),
-  /** UTF-8 text; use contentBase64 for binary files */
+  /** UTF-8 text; use contentBase64 for binary files and for any bytes a UTF-8 string wouldn't give back exactly (core: textContent) */
   content: z.string().optional(),
   contentBase64: z.string().optional(),
   /** Git blob hash of the version this edit started from; null for a new file */
@@ -188,7 +188,7 @@ export const ChangeSetBody = z.object({
 // creates; with it, it edits the version it names, merging text changed elsewhere meanwhile.
 
 export const FileWriteBody = z.object({
-  /** UTF-8 text; use contentBase64 for binary files */
+  /** UTF-8 text; use contentBase64 for binary files and for any bytes a UTF-8 string wouldn't give back exactly (core: textContent) */
   content: z.string().optional(),
   contentBase64: z.string().optional(),
   /** Hash of the version this edit started from (fontego cat --json); left out, only a new file is written */

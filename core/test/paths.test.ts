@@ -2,7 +2,7 @@
 // copy keeps for itself.
 
 import { describe, expect, test } from "bun:test";
-import { normalizePath, PathError } from "../src/paths.ts";
+import { exactText, normalizePath, PathError, textContent } from "../src/paths.ts";
 
 const code = (p: string) => {
   try {
@@ -28,5 +28,20 @@ describe("normalizePath", () => {
 
   test("nothing escapes", () => {
     for (const p of ["../x", "a/../../x", "/etc/passwd", "a\\\\b", "a//b", "./a"]) expect([p, code(p)]).not.toEqual([p, "ok"]);
+  });
+});
+
+describe("exactText", () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  test("UTF-8 comes back as is, a BOM included", () => {
+    expect(exactText(enc("año\n"))).toBe("año\n");
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...enc("hola\n")]);
+    expect(new TextEncoder().encode(exactText(bom)!)).toEqual(bom);
+  });
+  test("bytes that wouldn't come back are not text", () => {
+    expect(exactText(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]))).toBeNull(); // "café" in Latin-1
+    expect(exactText(new Uint8Array([0xc0, 0xaf]))).toBeNull(); // an overlong "/"
+    expect(textContent(new Uint8Array([0x61, 0, 0x62]))).toBeNull(); // a NUL: binary
+    expect(textContent(enc("plain"))).toBe("plain");
   });
 });

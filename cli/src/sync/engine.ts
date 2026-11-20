@@ -7,7 +7,7 @@
 //
 // A real conflict keeps both: the server's version stays in place and ours is saved next to it as a conflict copy.
 
-import { looksLikeText, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
+import { textContent, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
 import { loadIgnoreRules } from "./ignore.ts";
@@ -183,8 +183,9 @@ export class SyncEngine {
       if (l) {
         const bytes = await readBytes(this.root, path, l.mode);
         const op: ChangeOp = { op: "put", path, baseHash: s?.hash ?? null, mode: l.mode as FileMode };
-        if (l.mode !== "120000" && !looksLikeText(bytes)) op.contentBase64 = Buffer.from(bytes).toString("base64");
-        else op.content = new TextDecoder().decode(bytes);
+        const text = textContent(bytes);
+        if (text === null) op.contentBase64 = Buffer.from(bytes).toString("base64");
+        else op.content = text;
         ops.push(op);
       } else if (s) {
         ops.push({ op: "delete", path, baseHash: s.hash });

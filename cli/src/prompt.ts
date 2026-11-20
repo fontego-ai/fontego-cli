@@ -1,6 +1,7 @@
 // Values a command reads instead of taking them on the command line: a secret (a password), asked for without showing
 // it, so it stays out of the screen and of the shell's history; and long text, such as a file's content, from stdin.
 
+import { exactText } from "@fontego/core";
 import { UsageError } from "./args.ts";
 
 /** Reads a secret: typed on the terminal without echo, or the first line of stdin when that is not a terminal. */
@@ -45,9 +46,8 @@ export async function readStdin(label: string, usage: string): Promise<string> {
   const bytes = new Uint8Array(await Bun.stdin.arrayBuffer());
   // A forgotten `< file` would otherwise write an empty file without a word.
   if (!bytes.length) throw new UsageError(`Nothing came on stdin for ${label}: ${usage} < FILE. For an empty one, pass "" as ${label}.`);
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new UsageError(`${label} isn't text. Binary files go through sync, or the API with contentBase64.`);
-  }
+  // Only text that gives back the very same bytes (a BOM kept): what is written is what came in.
+  const text = exactText(bytes);
+  if (text === null) throw new UsageError(`${label} isn't UTF-8 text. Other files go through sync, or the API with contentBase64.`);
+  return text;
 }

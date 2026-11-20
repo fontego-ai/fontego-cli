@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { blobHash } from "@fontego/core";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 import { Client, ClientError } from "../src/client.ts";
 import { localStatus, SyncEngine } from "../src/sync/engine.ts";
@@ -171,6 +172,25 @@ describe("sync between two copies", () => {
     expect(readlinkSync(join(B.root, "start-here.md"))).toBe("guide.md");
     expect(lstatSync(join(B.root, "tools/run.sh")).mode & 0o111).toBeGreaterThan(0);
     expect([...readFileSync(join(B.root, "logo.bin"))]).toEqual([0, 255, 1, 2, 0]);
+  });
+
+  test("every byte survives the trip: Latin-1, a BOM, binary without a NUL", async () => {
+    const utf8 = new TextEncoder().encode("# Título\n");
+    const files: Record<string, Uint8Array> = {
+      "bytes/latin1.txt": new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]), // "café\n" in Latin-1
+      "bytes/bom.md": new Uint8Array([0xef, 0xbb, 0xbf, ...utf8]),
+      "bytes/plain.md": utf8,
+      "bytes/odd.bin": new Uint8Array([0xff, 0xfe, 0x80, 0x01, 0x7f]),
+    };
+    mkdirSync(join(A.root, "bytes"), { recursive: true });
+    for (const [p, b] of Object.entries(files)) writeFileSync(join(A.root, p), b);
+    await A.sync();
+    await B.sync();
+    for (const [p, b] of Object.entries(files)) {
+      const onServer = (await s.call(ana.token, "GET", `/v1/workspaces/team/files/${p}?meta=1`)).data.hash;
+      expect([p, onServer]).toEqual([p, blobHash(b)]);
+      expect([p, blobHash(new Uint8Array(readFileSync(join(B.root, p))))]).toEqual([p, blobHash(b)]);
+    }
   });
 
   test("a reader gets everything but sends nothing", async () => {
