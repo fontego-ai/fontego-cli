@@ -13,6 +13,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { ClientError, type AuthProvider } from "./client.ts";
 import { normalizeUrl, withLock, type Credential, type CredentialStore, type Instance } from "./config.ts";
+import { USER_AGENT } from "./version.ts";
 
 export const CLIENT_ID = "fontego-cli";
 
@@ -96,7 +97,6 @@ export class StoredAuth implements AuthProvider {
   }
 }
 
-const USER_AGENT = "fontego-cli/0.1.0";
 
 // --- signing in ---
 

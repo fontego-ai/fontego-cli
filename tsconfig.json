@@ -20,6 +20,7 @@
   "include": [
     "core/src/**/*.ts",
     "cli/src/**/*.ts",
-    "cli/test/**/*.ts"
+    "cli/test/**/*.ts",
+    "scripts/**/*.ts"
   ]
 }

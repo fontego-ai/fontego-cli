@@ -4,11 +4,17 @@
 and per-workspace permissions. Explore them, or keep a local folder in sync while you edit it with your usual tools.
 
 ```bash
+npm i -g fontego                               # or: curl -fsSL https://fontego.ai/install.sh | sh
 fontego login https://fontego.example.org      # opens the browser to sign in (--device without one)
+fontego setup                                  # teaches the AI agents on this machine to use fontego
 fontego workspaces
 fontego clone handbook && fontego watch handbook
 fontego help --agent      # how to use it, written for an AI agent
 ```
+
+`fontego` is a single executable for Linux, macOS and Windows; it needs neither Bun nor Node. `fontego setup` puts a
+short skill where Claude Code, Codex, GitHub Copilot CLI, OpenCode, Cursor and Gemini CLI look for skills; it tells
+them to run `fontego help --agent`, which always matches your CLI and your server.
 
 Besides the commands for a synced folder, `fontego` runs the ones your server declares, so a newer server brings its
 new commands to every CLI without an update. `fontego help` lists what yours offers.

@@ -38,8 +38,24 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `ignore` library (MIT), case ignored. `fontego status --ignored` lists what they keep here and `fontego
   check-ignore PATH` says which rule. This is each copy's convenience; the paths a workspace protects or rejects
   (`core/paths.ts`) are the server's policy, and separate.
-- **The CLI says which agent runs it** (`fontego-agent` header: `FONTEGO_AGENT`, or `claude-code` when `CLAUDECODE=1`),
-  so the server's log reads "Ana, from claude-code". A label, never a permission.
+- **The CLI says which agent runs it** (`fontego-agent` header: `FONTEGO_AGENT`, or the variables each agent sets in
+  the commands it runs, such as `CLAUDECODE=1`; `agents.ts`), so the server's log reads "Ana, from claude-code". A
+  label, never a permission. When an agent runs it, the general help and usage errors point it to `fontego help
+  --agent`.
+- **Agents learn fontego from fontego itself.** `fontego help --agent` is the one guide: it knows this CLI's version
+  and the commands of the Fontego in use, so nothing else copies it. `fontego setup` (`commands/setup.ts`) writes a
+  short skill (`SKILL`, the open Agent Skills format) into the user-level skill folders of the agents installed here
+  (`skillsFolders` in `agents.ts`: one folder per set of agents, so none sees it twice), and only says when to use
+  fontego and to run that guide. It marks what it writes, never touches a `fontego` skill it didn't write, and runs
+  only when the person asks: nothing is written at install time. The docs publish the guide and the skill
+  (`fontego-app/docs`, page "For agents", and llms.txt).
+- **One executable per system** (`scripts/build.ts`, `bun run build`): `bun build --compile` for Linux, macOS and
+  Windows, x64 and arm64, so people need neither Bun nor Node. The same build makes the GitHub release files
+  (`fontego-<os>-<arch>`, `SHA256SUMS`, `install.sh`) and the npm packages: `fontego`, a Node launcher with no
+  dependencies and no install script (`scripts/npm-launcher.cjs`, which passes signals and the exit code), and one
+  `@fontego/cli-<os>-<arch>` per system as its optional dependencies, which npm picks by `os` and `cpu`. `install.sh`
+  (Linux and macOS, no sudo) checks the download against `SHA256SUMS`. The version is written once, in
+  `cli/package.json` (`version.ts`).
 - **`core` is the contract.** The API types, the path rules (`normalizePath`) and the Git blob hash (`blobHash`) must
   give the same result on the server and in every client. A change here is a change to the API: update `fontego-app`
   in the same go.
@@ -61,6 +77,10 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/builtins.ts` | Collects the built-in commands for dispatch, help and the reference docs. Instance and sign-in commands live in `cli/src/commands/instances.ts` and synced-folder commands in `cli/src/commands/folders.ts` |
 | `cli/src/declared.ts` | Commands the server declares: cache, checks, building the request, printing the answer |
 | `cli/src/help.ts` | `fontego help`, `fontego help COMMAND` and `fontego help --agent`, built from the commands themselves |
+| `cli/src/agents.ts` | The coding agents fontego knows: the variables that tell one runs it, how to see one is installed, and the folders each reads user-level skills from |
+| `cli/src/commands/setup.ts` | `fontego setup`: the skill and writing or removing it |
+| `cli/src/version.ts` | The CLI's version, read from `cli/package.json` |
+| `scripts/build.ts`, `scripts/npm-launcher.cjs`, `scripts/npm-readme.md`, `install.sh` | The release: executables, npm packages and the install script (see above) |
 | `cli/src/client.ts` | HTTP client for `/v1`: a token per request, and one more try after renewing on a 401 |
 | `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock |
 | `cli/src/auth.ts` | Signing in (browser or device flow), a stored session that renews itself, signing out on the server |
@@ -75,8 +95,17 @@ bun install
 bun test                 # needs fontego-app next to this repo (../fontego-app), or FONTEGO_APP_DIR
 bun run typecheck
 bun cli/src/main.ts help
+bun run build            # dist/release (executables, SHA256SUMS, install.sh) and dist/npm (the npm packages)
+bun run build --only linux-x64 --out /tmp/fontego-dist
 ```
 
+- **Releasing** isn't automated yet, and nothing is published until the repos are public. A release is: bump
+  `cli/package.json`, `bun run build`, upload `dist/release/*` to a GitHub release `vX.Y.Z`, then `npm publish` each
+  folder of `dist/npm` (the `@fontego/cli-*` ones first, `fontego` last, with `--access public`). macOS executables
+  built on Linux aren't signed: build those on a Mac (codesign) before a real release.
+
+- `cli/test/build.test.ts` builds this system's executable and uses it as a person would: on its own, through the
+  npm launcher, and installed by `install.sh` from a local server laid out like GitHub releases.
 - The tests run the server in a temporary folder on a free port; they never touch real data. They set
   `FONTEGO_CREDENTIAL_STORE=file` and `FONTEGO_BROWSER=none`, so they never write to the keychain or open a browser;
   `login.test.ts` plays the browser itself.

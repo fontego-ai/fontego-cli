@@ -12,6 +12,8 @@ import {
   type SyncResponse,
   type WorkspaceInfo,
 } from "@fontego/core";
+import { agentName } from "./agents.ts";
+import { USER_AGENT } from "./version.ts";
 
 export class ClientError extends Error {
   constructor(
@@ -35,22 +37,15 @@ export interface AuthProvider {
   recover?(): Promise<void>;
 }
 
-/** Which agent runs this CLI, if any: the server's log then says "Ana, from claude-code". A label, not a guarantee. */
-export function agentName(env = process.env): string | null {
-  const named = env.FONTEGO_AGENT?.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 40);
-  if (named) return named;
-  if (env.CLAUDECODE === "1") return "claude-code";
-  return null;
-}
-
 export class Client {
   private readonly auth: AuthProvider;
+  /** Which agent runs this CLI (agents.ts): the server's log then says "Ana, from claude-code". A label, not a guarantee. */
   private readonly agent = agentName();
 
   constructor(
     readonly baseUrl: string,
     auth: string | AuthProvider,
-    private readonly userAgent = "fontego-cli/0.1.0",
+    private readonly userAgent = USER_AGENT,
   ) {
     this.auth = typeof auth === "string" ? { token: async () => auth } : auth;
   }

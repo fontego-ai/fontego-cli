@@ -50,10 +50,14 @@ function serverLine(cache: CachedCommands | null, stale: boolean, where: Where):
 const othersLine = (where: Where) =>
   where.others.length ? `You also have ${where.others.join(", ")}: fontego help --instance ${where.others[0]}` : null;
 
-export function generalHelp(builtins: Usage[], cache: CachedCommands | null, stale: boolean, version: string, where: Where = { alias: null, others: [] }): string {
+/** For an agent that runs the plain help or gets a usage error: where its own guide is. */
+export const agentPointer = (agent: string) => `Running from ${agent}: fontego help --agent is the guide for agents, in Markdown.`;
+
+export function generalHelp(builtins: Usage[], cache: CachedCommands | null, stale: boolean, version: string, where: Where = { alias: null, others: [] }, agent: string | null = null): string {
   const declared = visible(cache);
   const width = columnWidth([...builtins, ...declared]);
   const out = [`fontego ${version}`, ""];
+  if (agent) out.push(agentPointer(agent), "");
   for (const [group, items] of grouped(builtins)) out.push(group, ...lines(items, width), "");
   out.push(serverLine(cache, stale, where), "");
   for (const [group, items] of grouped(declared, GROUP_ORDER)) out.push(group, ...lines(items, width), "");
@@ -107,7 +111,8 @@ export function describe(u: Usage | CommandSpec): string {
   return out.join("\n");
 }
 
-const AGENT_INTRO = `# Using \`fontego\` from an agent
+/** The part of `fontego help --agent` that doesn't depend on the server; the docs publish it too. */
+export const AGENT_INTRO = `# Using \`fontego\` from an agent
 
 \`fontego\` gives access to shared workspaces: folders of files hosted on a server (a Fontego), with history and
 per-workspace access.
@@ -133,8 +138,9 @@ A synced folder is a normal folder with a hidden \`.fontego/\` (don't touch it).
 - \`fontego sync --json\`: send your changes and get everyone else's. Run it when you finish a piece of work, or leave
   \`fontego watch\` running so it happens by itself.
 - If someone changed the same lines, your version is saved next to the file as
-  \`name (conflict <who> <date>).ext\` and the file keeps the server's version. \`fontego conflicts --json\` lists them:
-  merge the copy into the file by hand, then delete the copy and sync.
+  \`name (conflict <who> <date>).ext\` and the file keeps the server's version. The copy syncs to everyone, so they
+  see there is something to merge. \`fontego conflicts --json\` lists them: merge the copy into the file by hand, then
+  delete the copy and sync. When it isn't clear which version should win, ask your person first.
 - Changes are rejected when you are a reader, or for secrets (\`.env\`, keys) and oversized files; \`fontego sync\`
   reports them as "skipped".
 

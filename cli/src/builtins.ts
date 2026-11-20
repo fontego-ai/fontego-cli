@@ -4,14 +4,17 @@
 import type { Builtin, RunContext } from "./commands/command.ts";
 import { folderCommands } from "./commands/folders.ts";
 import { instanceCommands } from "./commands/instances.ts";
+import { setupCommands } from "./commands/setup.ts";
+import { agentName } from "./agents.ts";
 import { listInstances } from "./config.ts";
 import type { Connection } from "./connect.ts";
 import { readCommands, refreshCommands, type CachedCommands } from "./declared.ts";
+import { VERSION } from "./version.ts";
 import { agentHelp, commandHelp, generalHelp } from "./help.ts";
 
 export type { Builtin, RunContext } from "./commands/command.ts";
 export { describeReport } from "./commands/folders.ts";
-export const VERSION = "0.1.0";
+export { VERSION } from "./version.ts";
 
 /** The saved commands of the instance help is about, refreshed if possible (quickly: help must not hang). */
 async function commandsForHelp(rc: RunContext): Promise<{ cache: CachedCommands | null; stale: boolean; alias: string | null }> {
@@ -44,9 +47,10 @@ export const BUILTINS: Builtin[] = [
         .filter((a) => a !== alias);
       if (parsed.flags.agent === true) return console.log(agentHelp(BUILTINS, cache, stale, { alias, others }));
       if (parsed.args.COMMAND) return console.log(commandHelp(parsed.args.COMMAND.split(" "), BUILTINS, cache));
-      console.log(generalHelp(BUILTINS, cache, stale, VERSION, { alias, others }));
+      console.log(generalHelp(BUILTINS, cache, stale, VERSION, { alias, others }, agentName()));
     },
   },
+  ...setupCommands,
   {
     name: "version",
     summary: "The version of this CLI",

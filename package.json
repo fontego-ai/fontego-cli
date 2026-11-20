@@ -10,7 +10,8 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
-    "fontego": "bun cli/src/main.ts"
+    "fontego": "bun cli/src/main.ts",
+    "build": "bun scripts/build.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

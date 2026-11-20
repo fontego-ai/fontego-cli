@@ -1,4 +1,5 @@
 import type { Credential as SavedCredential } from "../config.ts";
+import { AGENTS, installed } from "../agents.ts";
 import { UsageError } from "../args.ts";
 import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, openInBrowser, revokeSession } from "../auth.ts";
 import { Client } from "../client.ts";
@@ -22,6 +23,7 @@ import {
 import { ensureMigrated } from "../connect.ts";
 import { forgetCommands, refreshCommands } from "../declared.ts";
 import type { Builtin, RunContext } from "./command.ts";
+import { skillInstalled } from "./setup.ts";
 
 const DAY = 86_400_000;
 const when = (iso: string) => new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
@@ -150,6 +152,7 @@ export const instanceCommands: Builtin[] = [
         default: defaultAlias() === alias,
         config: configPath(),
         store: store.kind,
+        agentSkill: skillInstalled(),
       };
       if (rc.json) return console.log(JSON.stringify(result));
       console.log(
@@ -157,6 +160,8 @@ export const instanceCommands: Builtin[] = [
           ? `Signed in to ${info.name} (${alias}) as ${email}. The session ends on ${when(cred.expiresAt)} unless you use it before.`
           : `Signed in to ${info.name} (${alias}) as ${email}, with a token.`,
       );
+      // The first time, say how the agents here learn to use fontego.
+      if (!result.agentSkill && AGENTS.some((a) => installed(a))) console.log("To teach the AI agents on this machine to use fontego: fontego setup");
     },
   },
   {

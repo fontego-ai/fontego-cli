@@ -5,12 +5,13 @@
 // each server declares (declared.ts), learned from GET /v1/commands and kept in a cache. A machine can be signed in
 // to several servers (connect.ts says which one a command goes to). Every command accepts --json.
 
+import { agentName } from "./agents.ts";
 import { leadingWords, parseCommand, readGlobals, resolveName, UsageError } from "./args.ts";
 import { BUILTIN_NAMES, BUILTINS, type RunContext } from "./builtins.ts";
 import { ClientError } from "./client.ts";
 import { connect, type Connection } from "./connect.ts";
 import { findCommand, nameLength, readCommands, refreshCommands, runCommand, type CachedCommands } from "./declared.ts";
-import { describe } from "./help.ts";
+import { agentPointer, describe } from "./help.ts";
 import { findRoot, loadState } from "./sync/state.ts";
 import { LockedError } from "./sync/watch.ts";
 
@@ -97,8 +98,14 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     if (e instanceof UsageError) {
-      if (json) console.log(JSON.stringify({ error: { code: "usage", message: e.message } }));
-      else console.error(`usage: ${e.message}`);
+      // An agent that gets a command wrong is told where its guide is.
+      const agent = agentName();
+      const hint = agent ? agentPointer(agent) : undefined;
+      if (json) console.log(JSON.stringify({ error: { code: "usage", message: e.message, ...(hint ? { hint } : {}) } }));
+      else {
+        console.error(`usage: ${e.message}`);
+        if (hint) console.error(`hint: ${hint}`);
+      }
       process.exit(1);
     }
     if (e instanceof ClientError) {
