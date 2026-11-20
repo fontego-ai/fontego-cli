@@ -186,6 +186,7 @@ export const ActivityQuery = z.object({
   limit: Opt,
   cursor: Opt,
 });
+export type ActivityRequest = z.input<typeof ActivityQuery>;
 export const SyncQuery = z.object({ since: Opt });
 export const SearchQuery = z.object({ q: z.string(), path: Opt, limit: Opt });
 
