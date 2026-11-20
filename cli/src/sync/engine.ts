@@ -18,10 +18,9 @@ import {
   readBytes,
   readEntry,
   insideRoot,
-  removeLocal,
+  replaceIf,
   UnsafePathError,
   scan,
-  writeLocal,
   type LocalEntry,
   type Unreadable,
 } from "./local.ts";
@@ -125,12 +124,18 @@ export class SyncEngine {
     return { bytes: f.bytes, mode: f.mode, hash: f.hash };
   }
 
-  /** Writes the server's version of a file here, unless the local file changed since we looked at it. */
+  /**
+   * Writes the server's version of a file here, unless the local file changed since we looked at it: checked before
+   * downloading, and again, without a gap, when the new version goes in (replaceIf), so an edit saved during the
+   * download stays and goes up next.
+   */
   private async writeIfUnchanged(path: string, expected: LocalEntry | undefined, rev: string): Promise<boolean> {
     const now = await readEntry(this.root, path, expected);
     if (!same(now ?? undefined, expected)) return false;
     const f = await this.download(path, rev);
-    this.state.files[path] = await writeLocal(this.root, path, f.bytes, f.mode);
+    const done = await replaceIf(this.root, path, { bytes: f.bytes, mode: f.mode }, expected, { who: this.state.user });
+    if (!done) return false;
+    this.state.files[path] = done.entry!;
     return true;
   }
 
@@ -191,8 +196,8 @@ export class SyncEngine {
       if (!changedHere && l) {
         // Gone from the workspace. A file the rules here ignore stays, as one of this copy's own; any other goes.
         await rules.prepare(path);
-        if (!rules.match(path, false).ignored) {
-          await removeLocal(this.root, path);
+        // Only if it is still what we scanned: an edit saved since then stays, and goes back up as a new file.
+        if (!rules.match(path, false).ignored && (await replaceIf(this.root, path, null, l, { who: this.state.user }))) {
           report.pulled.push({ path, status: "delete" });
         }
       }
@@ -334,17 +339,22 @@ export class SyncEngine {
             continue;
           }
           if (op?.op === "put" && l && c.currentHash && rev) {
-            const copy = conflictName(c.path, this.state.user);
-            const bytes = await readBytes(this.root, c.path, l.mode);
-            await writeLocal(this.root, copy, bytes, l.mode);
+            // The server's version first; then, in one go, the file here (as it is at that moment, with any edit saved
+            // meanwhile) moves to the conflict copy and the server's takes its place.
             const f = await this.download(c.path, rev);
-            this.state.files[c.path] = await writeLocal(this.root, c.path, f.bytes, f.mode);
-            report.conflicts.push({ path: c.path, reason: c.reason, copy, message: `${c.message} Your version is in "${copy}".` });
+            const done = await replaceIf(this.root, c.path, { bytes: f.bytes, mode: f.mode }, undefined, {
+              who: this.state.user,
+              keepAs: conflictName(c.path, this.state.user),
+            });
+            if (done) this.state.files[c.path] = done.entry!;
+            const copy = done?.keptAs;
+            report.conflicts.push({ path: c.path, reason: c.reason, copy, message: copy ? `${c.message} Your version is in "${copy}".` : c.message });
             continue;
           }
           if (op?.op === "delete" && c.currentHash && rev) {
             const f = await this.download(c.path, rev);
-            this.state.files[c.path] = await writeLocal(this.root, c.path, f.bytes, f.mode);
+            const done = await replaceIf(this.root, c.path, { bytes: f.bytes, mode: f.mode }, undefined, { who: this.state.user });
+            if (done) this.state.files[c.path] = done.entry!;
             report.conflicts.push({ path: c.path, reason: c.reason, message: `${c.path} changed on the server, so it was not deleted; it's back with the new version.` });
             continue;
           }

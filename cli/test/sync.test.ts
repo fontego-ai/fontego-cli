@@ -277,6 +277,113 @@ describe("sync between two copies", () => {
   });
 });
 
+describe("an edit saved while sync is busy is never lost", () => {
+  /** A client that, at a chosen point (a download just done, a change set about to go), runs what a person does there. */
+  class Busy extends Client {
+    hooks: Array<{ at: "file" | "change"; path?: string; run: () => unknown }> = [];
+    private async fire(at: "file" | "change", path?: string) {
+      const i = this.hooks.findIndex((h) => h.at === at && (!h.path || h.path === path));
+      if (i >= 0) await this.hooks.splice(i, 1)[0]!.run();
+    }
+    override async file(ws: string, path: string, rev?: string) {
+      const f = await super.file(ws, path, rev);
+      await this.fire("file", path);
+      return f;
+    }
+    override async change(ws: string, cs: Parameters<Client["change"]>[1]) {
+      await this.fire("change");
+      return super.change(ws, cs);
+    }
+  }
+  const TEXT = "one\ntwo\nthree\nfour\nfive\n";
+  let n = 0;
+  async function pair() {
+    const ws = `busy${++n}`;
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: ws });
+    for (const who of ["ana", "bea"]) await s.call(s.adminToken, "PUT", `/v1/workspaces/${ws}/members/${who}@example.org`, { role: "editor" });
+    await s.call(ana.token, "POST", `/v1/workspaces/${ws}/changes`, {
+      baseCommit: null,
+      ops: [
+        { op: "put", path: "doc.md", content: TEXT, baseHash: null },
+        { op: "put", path: "z-gone.md", content: "soon gone\n", baseHash: null },
+      ],
+    });
+    const A = await copy(ana.token, "Ana", ws);
+    const bea2 = new Busy(s.url, bea.token);
+    const B0 = await copy(bea.token, "Bea", ws);
+    const B = new SyncEngine(B0.root, bea2, B0.state);
+    const onServer = async (path: string) => {
+      const r = await s.call(ana.token, "GET", `/v1/workspaces/${ws}/files/${path}`);
+      return r.status === 200 ? (r.data as string) : null;
+    };
+    return { ws, A, B, client: bea2, onServer };
+  }
+
+  test("saved during a download: it stays, and goes up merged with what came", async () => {
+    const { A, B, client, onServer } = await pair();
+    write(A, "doc.md", TEXT.replace("one", "ONE by Ana"));
+    await A.sync();
+    client.hooks.push({ at: "file", path: "doc.md", run: () => write(B, "doc.md", TEXT.replace("five", "FIVE by Bea")) });
+    await B.sync();
+    const both = TEXT.replace("one", "ONE by Ana").replace("five", "FIVE by Bea");
+    expect(read(B, "doc.md")).toBe(both);
+    expect(await onServer("doc.md")).toBe(both);
+  });
+
+  test("saved while the server's merge comes down: it stays, and is merged next", async () => {
+    const { ws, B, client, onServer } = await pair();
+    // Ana commits between Bea's pull and her change set, so the server merges; while the merged text comes down,
+    // Bea saves once more.
+    client.hooks.push({
+      at: "change",
+      run: async () => {
+        const hash = (await s.call(ana.token, "GET", `/v1/workspaces/${ws}/files/doc.md?meta=1`)).data.hash;
+        await s.call(ana.token, "PUT", `/v1/workspaces/${ws}/files/doc.md`, { content: TEXT.replace("one", "ONE by Ana"), baseHash: hash });
+      },
+    });
+    client.hooks.push({
+      at: "file",
+      path: "doc.md",
+      run: () => write(B, "doc.md", read(B, "doc.md").replace("three", "THREE by Bea, later")),
+    });
+    write(B, "doc.md", TEXT.replace("five", "FIVE by Bea"));
+    await B.sync();
+    expect(read(B, "doc.md")).toContain("THREE by Bea, later");
+    await B.sync();
+    const all = TEXT.replace("one", "ONE by Ana").replace("three", "THREE by Bea, later").replace("five", "FIVE by Bea");
+    expect(await onServer("doc.md")).toBe(all);
+    expect(read(B, "doc.md")).toBe(all);
+  });
+
+  test("saved after the scan to a file deleted on the server: it stays, and goes back up", async () => {
+    const { A, B, client, onServer } = await pair();
+    // On the server: doc.md changes and z-gone.md goes. While doc.md comes down (after Bea's scan), she edits z-gone.md.
+    write(A, "doc.md", TEXT.replace("two", "TWO by Ana"));
+    unlinkSync(join(A.root, "z-gone.md"));
+    await A.sync();
+    expect(await onServer("z-gone.md")).toBeNull();
+    client.hooks.push({ at: "file", path: "doc.md", run: () => write(B, "z-gone.md", "kept by Bea\n") });
+    const r = await B.sync();
+    expect(r.pulled.map((p) => p.path)).not.toContain("z-gone.md");
+    expect(read(B, "z-gone.md")).toBe("kept by Bea\n");
+    expect(await onServer("z-gone.md")).toBe("kept by Bea\n");
+  });
+
+  test("saved while a conflict is being resolved: the conflict copy has it", async () => {
+    const { A, B, client, onServer } = await pair();
+    write(A, "doc.md", TEXT.replace("three", "three by Ana"));
+    await A.sync();
+    // Bea changed the same line; her change set conflicts, and while the server's version comes down she saves again.
+    client.hooks.push({ at: "file", path: "doc.md", run: () => write(B, "doc.md", TEXT.replace("three", "three by Bea, saved again")) });
+    write(B, "doc.md", TEXT.replace("three", "three by Bea"));
+    const r = await B.sync();
+    const copies = r.conflicts.map((c) => c.copy).filter(Boolean) as string[];
+    const kept = copies.map((c) => read(B, c)).join("") + read(B, "doc.md") + ((await onServer("doc.md")) ?? "");
+    expect(kept).toContain("three by Bea, saved again");
+    expect(read(B, "doc.md")).toContain("three by Ana");
+  });
+});
+
 describe("big sends go in batches the server takes", () => {
   const files = async (ws: string) => (await s.call(s.adminToken, "GET", `/v1/workspaces/${ws}/tree?recursive=1`)).data.entries.filter((e: any) => e.type === "blob").length;
   const linkDir = async (ws: string, make: (dir: string) => void, client?: Client, batchBytes?: number) => {

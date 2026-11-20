@@ -1,7 +1,7 @@
 // The local side of sync: scanning the folder, reading and writing files safely.
 
 import { blobHash, normalizePath, PathError } from "@fontego/core";
-import { lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
 import { BUILT_IN, IgnoreRules, isJunk, STATE_DIR, type IgnoreMatch } from "./ignore.ts";
@@ -217,14 +217,9 @@ export class UnsafePathError extends Error {
   }
 }
 
-/** Writes a file atomically (temp file + rename) and returns its new entry. */
-export async function writeLocal(root: string, path: string, bytes: Uint8Array, mode: string): Promise<LocalEntry> {
-  await insideRoot(root, path);
-  const full = join(root, path);
-  await mkdir(dirname(full), { recursive: true });
-  const tmpDir = join(root, STATE_DIR, "tmp");
-  await mkdir(tmpDir, { recursive: true });
-  const tmp = join(tmpDir, randomBytes(8).toString("hex"));
+/** Writes the bytes to a new temporary file inside the folder (so a rename or link to their place stays on one disk). */
+async function prepare(root: string, path: string, bytes: Uint8Array, mode: string): Promise<string> {
+  const tmp = join(await tmpDir(root), randomBytes(8).toString("hex"));
   if (mode === "120000") {
     const target = new TextDecoder().decode(bytes);
     const lands = posix.normalize(posix.join(posix.dirname(path), target));
@@ -235,23 +230,150 @@ export async function writeLocal(root: string, path: string, bytes: Uint8Array, 
   } else {
     await writeFile(tmp, bytes, { mode: mode === "100755" ? 0o755 : 0o644 });
   }
+  return tmp;
+}
+
+async function tmpDir(root: string): Promise<string> {
+  const dir = join(root, STATE_DIR, "tmp");
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+/** Refuses to put a file where a folder is. */
+async function notAFolder(full: string, path: string) {
   try {
-    const st = await lstat(full);
-    if (st.isDirectory()) throw new Error(`${path} is a folder here; it can't become a file.`);
+    if ((await lstat(full)).isDirectory()) throw new Error(`${path} is a folder here; it can't become a file.`);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-      await rm(tmp, { force: true });
-      throw e;
-    }
+    if (!absent(e)) throw e;
+  }
+}
+
+/** Writes a file atomically (temp file + rename) and returns its new entry. */
+export async function writeLocal(root: string, path: string, bytes: Uint8Array, mode: string): Promise<LocalEntry> {
+  await insideRoot(root, path);
+  const full = join(root, path);
+  await mkdir(dirname(full), { recursive: true });
+  const tmp = await prepare(root, path, bytes, mode);
+  try {
+    await notAFolder(full, path);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
   }
   await rename(tmp, full);
   return (await readEntry(root, path))!;
+}
+
+/**
+ * Puts `src` at `dst` only if nothing is there, in one step: link() never overwrites, so a file saved at `dst` in the
+ * meantime stays. Where a hard link isn't possible (a symlink, or a file system without them) it checks and renames,
+ * with only that instant in between. False if `dst` was taken.
+ */
+async function placeNew(src: string, dst: string): Promise<boolean> {
+  if (!(await lstat(src)).isSymbolicLink()) {
+    try {
+      await link(src, dst);
+      await rm(src, { force: true });
+      return true;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (code === "EEXIST") return false;
+      if (!["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK"].includes(code)) throw e;
+    }
+  }
+  try {
+    await lstat(dst);
+    return false;
+  } catch (e) {
+    if (!absent(e)) throw e;
+  }
+  await rename(src, dst);
+  return true;
+}
+
+/** Puts `src` at `path`, or, if that is taken, at the first free "path 2", "path 3"... next to it. Returns where. */
+async function placeAt(root: string, src: string, path: string): Promise<string> {
+  await insideRoot(root, path);
+  await mkdir(dirname(join(root, path)), { recursive: true });
+  const dot = posix.basename(path).lastIndexOf(".");
+  const cut = dot > 0 ? path.length - posix.basename(path).length + dot : path.length;
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? path : `${path.slice(0, cut)} ${n}${path.slice(cut)}`;
+    if (await placeNew(src, join(root, candidate))) return candidate;
+  }
+}
+
+const sameFile = (a: LocalEntry | null | undefined, b: LocalEntry | undefined) => (!a && !b) || (!!a && !!b && a.hash === b.hash && a.mode === b.mode);
+
+/**
+ * Changes the file at `path` (to `next`, or deletes it when `next` is null) only if it still is `expected` (undefined:
+ * nothing there), so that an edit saved here while sync was busy is never lost. The file there is first moved aside in
+ * one step (rename) and checked there, and the new one goes in with placeNew, which never overwrites:
+ * - it wasn't the expected one: it goes back to its place, or, if a new file took that place meanwhile, next to it as a
+ *   conflict copy, and nothing changes;
+ * - a new file took the place after it was moved aside: that one stays and nothing changes;
+ * - with `keepAs` (a conflict: keep both), whatever is there goes to that path, checked or not, and the new one in.
+ * Returns the new entry (null for a delete) and where the old file went, or null when it left things as they were.
+ */
+export async function replaceIf(
+  root: string,
+  path: string,
+  next: { bytes: Uint8Array; mode: string } | null,
+  expected: LocalEntry | undefined,
+  opts: { who: string; keepAs?: string },
+): Promise<{ entry: LocalEntry | null; keptAs?: string } | null> {
+  await insideRoot(root, path);
+  const full = join(root, path);
+  const dir = await tmpDir(root);
+  let tmp: string | null = null;
+  let entry: LocalEntry | null = null;
+  if (next) {
+    await mkdir(dirname(full), { recursive: true });
+    tmp = await prepare(root, path, next.bytes, next.mode);
+    entry = await readEntry(root, posix.join(STATE_DIR, "tmp", posix.basename(tmp)));
+  }
+  const name = randomBytes(8).toString("hex");
+  const aside = join(dir, name);
+  try {
+    await notAFolder(full, path);
+    let moved = true;
+    try {
+      await rename(full, aside);
+    } catch (e) {
+      if (!absent(e)) throw e;
+      moved = false;
+    }
+    let keptAs: string | undefined;
+    if (opts.keepAs) {
+      if (moved) keptAs = await placeAt(root, aside, opts.keepAs);
+    } else {
+      const there = moved ? await readEntry(root, posix.join(STATE_DIR, "tmp", name)) : null;
+      if (!sameFile(there, expected)) {
+        // Edited (or made, or deleted) here since the scan: leave it be.
+        if (moved && !(await placeNew(aside, full))) await placeAt(root, aside, conflictName(path, opts.who));
+        return null;
+      }
+    }
+    if (tmp && !(await placeNew(tmp, full))) return null; // a file saved here just now: it stays
+    if (!next) await removeEmptyFolders(root, path);
+    // The entry is the temporary file's: a link or a rename keeps its mtime, while reading the place again could
+    // already see an edit saved right after, and take it for what the server sent.
+    return { entry, ...(keptAs ? { keptAs } : {}) };
+  } finally {
+    if (tmp) await rm(tmp, { force: true });
+    await rm(aside, { force: true });
+  }
 }
 
 /** Deletes a file and the folders it leaves empty (never the root). */
 export async function removeLocal(root: string, path: string) {
   await insideRoot(root, path);
   await rm(join(root, path), { force: true });
+  await removeEmptyFolders(root, path);
+}
+
+/** Removes the folders above `path` that are left empty (never the root). */
+async function removeEmptyFolders(root: string, path: string) {
   let dir = posix.dirname(path);
   while (dir && dir !== ".") {
     try {

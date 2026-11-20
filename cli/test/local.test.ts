@@ -2,10 +2,10 @@
 // no write through a symlinked folder, no symlink that points out.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { removeLocal, UnsafePathError, writeLocal } from "../src/sync/local.ts";
+import { readEntry, removeLocal, replaceIf, UnsafePathError, writeLocal } from "../src/sync/local.ts";
 
 let outer: string;
 let root: string;
@@ -49,5 +49,57 @@ describe("writing and deleting stay inside the folder", () => {
       await expect(writeLocal(root, "docs/out", text(target), "120000")).rejects.toThrow("points outside");
     }
     expect(existsSync(join(root, "docs/out"))).toBe(false);
+  });
+});
+
+describe("a change here only replaces what was expected", () => {
+  const who = { who: "Ana" };
+  const put = (p: string, s: string) => {
+    mkdirSync(join(root, p, ".."), { recursive: true });
+    writeFileSync(join(root, p), s);
+  };
+
+  test("the expected file is replaced, and its entry is the new one", async () => {
+    put("a.md", "v1\n");
+    const expected = (await readEntry(root, "a.md"))!;
+    const done = await replaceIf(root, "a.md", { bytes: text("v2\n"), mode: "100644" }, expected, who);
+    expect(readFileSync(join(root, "a.md"), "utf8")).toBe("v2\n");
+    expect(done?.entry?.hash).toBe((await readEntry(root, "a.md"))!.hash);
+  });
+
+  test("a file that changed since it was looked at stays as it is", async () => {
+    put("a.md", "v1\n");
+    const expected = (await readEntry(root, "a.md"))!;
+    put("a.md", "edited here\n");
+    expect(await replaceIf(root, "a.md", { bytes: text("from the server\n"), mode: "100644" }, expected, who)).toBeNull();
+    expect(await replaceIf(root, "a.md", null, expected, who)).toBeNull();
+    expect(readFileSync(join(root, "a.md"), "utf8")).toBe("edited here\n");
+  });
+
+  test("a file made where none was expected stays", async () => {
+    put("new.md", "made here\n");
+    expect(await replaceIf(root, "new.md", { bytes: text("from the server\n"), mode: "100644" }, undefined, who)).toBeNull();
+    expect(readFileSync(join(root, "new.md"), "utf8")).toBe("made here\n");
+  });
+
+  test("a delete takes the empty folders with it, and leaves nothing behind in .fontego", async () => {
+    put("deep/er/a.md", "v1\n");
+    const expected = (await readEntry(root, "deep/er/a.md"))!;
+    expect(await replaceIf(root, "deep/er/a.md", null, expected, who)).toEqual({ entry: null });
+    expect(existsSync(join(root, "deep"))).toBe(false);
+    expect(readdirSync(join(root, ".fontego/tmp"))).toEqual([]);
+  });
+
+  test("in a conflict both stay: what is here goes to the copy, the new one takes its place", async () => {
+    put("plan.md", "mine, last saved\n");
+    const done = await replaceIf(root, "plan.md", { bytes: text("theirs\n"), mode: "100644" }, undefined, { who: "Ana", keepAs: "plan (conflict).md" });
+    expect(done?.keptAs).toBe("plan (conflict).md");
+    expect(readFileSync(join(root, "plan (conflict).md"), "utf8")).toBe("mine, last saved\n");
+    expect(readFileSync(join(root, "plan.md"), "utf8")).toBe("theirs\n");
+    // A copy by that name already there is never overwritten: the next one gets a number.
+    put("plan.md", "mine again\n");
+    const again = await replaceIf(root, "plan.md", { bytes: text("theirs 2\n"), mode: "100644" }, undefined, { who: "Ana", keepAs: "plan (conflict).md" });
+    expect(again?.keptAs).toBe("plan (conflict) 2.md");
+    expect(readFileSync(join(root, "plan (conflict).md"), "utf8")).toBe("mine, last saved\n");
   });
 });
