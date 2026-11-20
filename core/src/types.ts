@@ -529,6 +529,9 @@ export interface ChangeSetResult {
   changes: Array<{ status: "put" | "delete"; path: string; hash?: string; merged?: boolean }>;
 }
 
+// --- Live: the event streams and who is in each workspace now ---
+
+/** A new commit in a workspace (GET /workspaces/{ws}/events, and GET /events for every workspace someone reads). */
 export interface CommitEvent {
   type: "commit";
   workspace: string;
@@ -536,6 +539,77 @@ export interface CommitEvent {
   parent: string | null;
   author: { name: string; email: string };
   client: string;
+  /** The agent the writer's client said it runs under ("claude-code"), or null for the person themself */
+  agent: string | null;
+  /** The first line of the commit's message */
+  message: string;
   changes: Array<{ status: "put" | "delete"; path: string }>;
   at: string;
 }
+
+/** What someone is doing in a workspace: reading it, editing a file in the web, or working in it (writing). */
+export type PresenceActivity = "reading" | "editing" | "working";
+
+/** Someone in a workspace now: a person, or one of their agents (each shows once, with what it does most). */
+export interface PresenceEntry {
+  workspace: string;
+  /** The account, as it is today (its name may have changed since it last wrote) */
+  user: { id: number; name: string; email: string };
+  /** The agent ("claude-code"), or null for the person themself */
+  agent: string | null;
+  activity: PresenceActivity;
+  /** The file or folder (a folder ends in /), or null for the whole workspace */
+  path: string | null;
+  /** Where it comes from: a tab of the web app, the CLI, or another client of the API */
+  via: "web" | "cli" | "api";
+  /** For people: "working in clients/harbor-cafe/", "reading in the web", "editing notes.md in the web" */
+  doing: string;
+  since: string;
+  /** When it fades if nothing renews it */
+  until: string;
+}
+
+/** Who is around: in every workspace someone reads, or in one (GET /presence). */
+export interface PresenceResponse {
+  here: PresenceEntry[];
+}
+
+/** After announcing yourself in a workspace: your entry there, and everyone in it now. */
+export interface PresenceAnnouncement {
+  workspace: string;
+  you: PresenceEntry;
+  here: PresenceEntry[];
+}
+
+/** After clearing your announcement: who is still there. */
+export interface PresenceCleared {
+  workspace: string;
+  here: PresenceEntry[];
+}
+
+/** First event of GET /events, on every (re)connection: compare what you show, here is everyone around. */
+export interface ReadyEvent {
+  type: "ready";
+  /** How often the server sends something; a client that hears nothing for two of these can take the line as dead */
+  heartbeat: number;
+  presence: PresenceEntry[];
+}
+
+/** Who is in a workspace now, whole, each time it changes */
+export interface PresenceEvent {
+  type: "presence";
+  workspace: string;
+  here: PresenceEntry[];
+}
+
+/**
+ * The workspaces someone sees, or what GET /workspaces says of one, changed (added to one, removed, a new role,
+ * renamed, archived, deleted): read the list again.
+ */
+export interface WorkspacesEvent {
+  type: "workspaces";
+  workspace: string | null;
+}
+
+/** What GET /events sends after ready */
+export type LiveEvent = CommitEvent | PresenceEvent | WorkspacesEvent;

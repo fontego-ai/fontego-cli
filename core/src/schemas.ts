@@ -171,6 +171,30 @@ export const HistoryQuery = z.object({ path: Opt, rev: Opt, limit: Opt });
 export const SyncQuery = z.object({ since: Opt });
 export const SearchQuery = z.object({ q: z.string(), path: Opt, limit: Opt });
 
+// --- Live: who is in each workspace now ---
+
+export const PRESENCE_ACTIVITIES = ["reading", "editing", "working"] as const;
+/** How long an announcement lasts without being renewed, in minutes */
+export const PRESENCE_MINUTES = { default: 15, max: 120 } as const;
+
+/** Who is around: in every workspace you read, or in one */
+export const PresenceQuery = z.object({ workspace: Opt });
+
+/**
+ * Announcing yourself in a workspace. A tab of a client (`tab`, its own id) is in one workspace at a time and renews
+ * itself; without one, the announcement is the caller's credential and agent's, and repeating it renews it.
+ */
+export const SetPresenceBody = z.object({
+  activity: z.enum(PRESENCE_ACTIVITIES).default("working"),
+  /** A file, or a folder ending in / */
+  path: Text(1024).optional(),
+  tab: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "use 8 to 64 letters, digits, - or _").optional(),
+  minutes: z.number().int().min(1).max(PRESENCE_MINUTES.max).default(PRESENCE_MINUTES.default),
+});
+export type SetPresenceRequest = z.input<typeof SetPresenceBody>;
+
+export const ClearPresenceQuery = z.object({ tab: Opt });
+
 // --- For server admins ---
 
 /** A destructive action says yes on purpose. */
