@@ -56,10 +56,11 @@ export const BUILTINS: Builtin[] = [
   ...setupCommands,
   {
     name: "version",
+    aliases: ["--version", "-v"],
     summary: "The version of this CLI",
     group: "This machine",
-    async run() {
-      console.log(VERSION);
+    async run({ print }) {
+      print({ version: VERSION }, () => VERSION);
     },
   },
   ...folderCommands,

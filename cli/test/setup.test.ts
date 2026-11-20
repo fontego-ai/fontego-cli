@@ -1,10 +1,12 @@
-// `fontego setup` and the hints for agents. No server: setup only writes files in the home it is given.
+// What needs no server: `fontego setup` (it only writes files in the home it is given), the hints for agents and the
+// version.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentName } from "../src/agents.ts";
 import { SKILL, SKILL_NAME } from "../src/commands/setup.ts";
+import { VERSION } from "../src/version.ts";
 import { tempDir } from "./server.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
@@ -127,5 +129,18 @@ describe("hints for agents", () => {
     expect(person.err).toContain("hint: Run: fontego help setup"); // the command's help, not the agents' guide
     expect(person.err).not.toContain("help --agent");
     expect((await fontego(home, ["help"], { CLAUDECODE: "1" })).out).toContain("Running from claude-code: fontego help --agent");
+  });
+});
+
+describe("the version", () => {
+  test("fontego version, --version and -v say it, and with --json as JSON", async () => {
+    const home = tempDir("fontego-version-");
+    for (const args of [["version"], ["--version"], ["-v"]]) {
+      const r = await fontego(home, args);
+      expect(r).toEqual({ out: `${VERSION}\n`, err: "", code: 0 });
+    }
+    for (const args of [["--version", "--json"], ["--json", "-v"]]) {
+      expect(JSON.parse((await fontego(home, args)).out)).toEqual({ version: VERSION });
+    }
   });
 });

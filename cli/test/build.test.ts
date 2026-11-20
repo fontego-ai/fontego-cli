@@ -40,6 +40,7 @@ describe("the release build", () => {
   test("the executable runs on its own, and says its version", async () => {
     const bin = join(out, "release", `fontego-${target}${exe}`);
     expect((await run([bin, "version"])).out.trim()).toBe(VERSION);
+    expect((await run([bin, "--version"])).out.trim()).toBe(VERSION);
     expect((await run([bin, "setup", "--print"])).out).toBe(SKILL);
     const sums = readFileSync(join(out, "release", "SHA256SUMS"), "utf8");
     expect(sums).toMatch(new RegExp(`^[0-9a-f]{64}  fontego-${target}${exe.replace(".", "\\.")}$`, "m"));

@@ -33,7 +33,9 @@ async function main(): Promise<void> {
   try {
     const globals = readGlobals(process.argv.slice(2));
     json = globals.json;
-    const { help, instance, tokens } = globals;
+    const { help, instance } = globals;
+    // `fontego --version` (or -v), the first thing people type after installing, is `fontego version`.
+    const tokens = ["--version", "-v"].includes(globals.tokens[0] ?? "") ? ["version", ...globals.tokens.slice(1)] : globals.tokens;
     const print = (data: unknown, text: () => string) => console.log(json ? JSON.stringify(data, null, 2) : text());
     /** A command's help, as text, or with --json as {"command", "help"} */
     const showHelp = (command: string, text: string) => print({ command, help: text }, () => text);
