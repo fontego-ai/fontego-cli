@@ -10,6 +10,8 @@ import {
   renderTemplate,
   splitTarget,
   templateVars,
+  type CommandColumn,
+  type CommandDetails,
   type CommandOutput,
   type CommandSpec,
   type CommandsManifest,
@@ -89,6 +91,8 @@ export function nameLength(spec: CommandSpec, words: string[]): number {
 
 // --- Checking a declaration ---
 
+const FIELD = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/;
+
 /** What would keep this CLI from running a declared command; an empty list means it can. */
 export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): string[] {
   const out: string[] = [];
@@ -114,6 +118,10 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
     if (f.short && !/^[A-Za-z]$/.test(f.short)) out.push(`${at}: -${f.short} must be one letter`);
   }
   if (!["table", "lines", "record", "message", "raw"].includes(spec.output.kind)) out.push(`${at}: unknown output "${spec.output.kind}"`);
+  if ((spec.output.kind === "table" || spec.output.kind === "lines") && spec.output.details) {
+    const d = spec.output.details;
+    for (const f of [d.rows, ...(d.total !== undefined ? [d.total] : [])]) if (!FIELD.test(f)) out.push(`${at}: "${f}" doesn't name a field`);
+  }
   // A secret never goes into what is printed.
   const vars = new Set(["url", ...args.filter((a) => !a.secret).map((a) => a.name), ...flags.map((f) => f.name)]);
   for (const t of outputTemplates(spec.output)) {
@@ -167,34 +175,56 @@ function rowsOf(data: unknown, field: string | undefined): unknown[] {
   return Array.isArray(v) ? v : [];
 }
 
-function table(rows: unknown[], columns: Array<{ header: string; value: string }>, vars: TemplateVars): string {
-  const cells = rows.map((r) => columns.map((c) => renderTemplate(c.value, r, vars)));
+/** The lines under one row: one per item of its list, then how many more there are when the list was cut. */
+function detailLines(details: CommandDetails | undefined, row: unknown, vars: TemplateVars): string[] {
+  if (!details) return [];
+  const items = rowsOf(row, details.rows);
+  const lines = items.map((item) => `  ${renderTemplate(details.line, item, vars)}`);
+  const total = details.total !== undefined ? Number((row as Record<string, unknown> | null)?.[details.total]) : NaN;
+  if (Number.isFinite(total) && total > items.length) lines.push(`  … ${total - items.length} more`);
+  return lines;
+}
+
+function table(rows: unknown[], all: CommandColumn[], details: CommandDetails | undefined, vars: TemplateVars): string {
+  const rendered = rows.map((r) => all.map((c) => renderTemplate(c.value, r, vars)));
+  // An optional column nobody filled is left out.
+  const keep = all.map((c, i) => !c.optional || rendered.some((row) => row[i] !== ""));
+  const columns = all.filter((_, i) => keep[i]);
+  const cells = rendered.map((row) => row.filter((_, i) => keep[i]));
   const widths = columns.map((c, i) => Math.max(c.header.length, ...cells.map((row) => row[i]!.length)));
   const line = (values: string[]) =>
     values
       .map((v, i) => (i === values.length - 1 ? v : v.padEnd(widths[i]!)))
       .join("  ")
       .trimEnd();
-  return [line(columns.map((c) => c.header)), ...cells.map(line)].join("\n");
+  return [line(columns.map((c) => c.header)), ...cells.flatMap((row, i) => [line(row), ...detailLines(details, rows[i], vars)])].join("\n");
 }
 
-/** A record line is left out when every field in it came out empty. */
+/** A record line (or a footer) is left out when every field in it came out empty. */
 function recordLine(template: string, data: unknown, vars: TemplateVars): string | null {
   const fields = template.match(/\{[^{}]*\}/g) ?? [];
   if (fields.length && fields.every((f) => renderTemplate(f, data, vars) === "")) return null;
   return renderTemplate(template, data, vars);
 }
 
+const withFooter = (text: string, footer: string[] | undefined, data: unknown, vars: TemplateVars) => {
+  const lines = (footer ?? []).map((f) => recordLine(f, data, vars)).filter((l): l is string => l !== null);
+  return lines.length ? `${text}\n\n${lines.join("\n")}` : text;
+};
+
 /** Text for a person; with --json the answer is printed as the API sent it. */
 export function renderOutput(output: CommandOutput, data: unknown, vars: TemplateVars): string {
   switch (output.kind) {
     case "table": {
       const rows = rowsOf(data, output.rows);
-      return rows.length ? table(rows, output.columns, vars) : (output.empty ?? "(none)");
+      return withFooter(rows.length ? table(rows, output.columns, output.details, vars) : (output.empty ?? "(none)"), output.footer, data, vars);
     }
     case "lines": {
       const rows = rowsOf(data, output.rows);
-      return rows.length ? rows.map((r) => renderTemplate(output.line, r, vars)).join("\n") : (output.empty ?? "(none)");
+      const text = rows.length
+        ? rows.flatMap((r) => [renderTemplate(output.line, r, vars), ...detailLines(output.details, r, vars)]).join("\n")
+        : (output.empty ?? "(none)");
+      return withFooter(text, output.footer, data, vars);
     }
     case "record": {
       const lines = output.lines.map((l) => recordLine(l, data, vars)).filter((l): l is string => l !== null);

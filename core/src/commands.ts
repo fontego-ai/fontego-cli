@@ -49,13 +49,34 @@ export type Template = string;
 export interface CommandColumn {
   header: string;
   value: Template;
+  /** Left out when it comes out empty in every row: a column only some answers fill (`ls --last`) */
+  optional?: boolean;
+}
+
+/**
+ * Under each row of a table or of lines: one indented line per item of a list in that row (a commit's files). When
+ * the row's field `total` is larger than the items, a last line says how many more there are.
+ */
+export interface CommandDetails {
+  rows: string;
+  line: Template;
+  total?: string;
+}
+
+/**
+ * Extras of a list output: lines under each row, and lines after them all, filled from the whole answer; a footer line
+ * whose fields come out empty is left out (the next page's cursor when there is one).
+ */
+interface ListExtras {
+  details?: CommandDetails;
+  footer?: Template[];
 }
 
 export type CommandOutput =
   /** A table, one row per item of the list in `rows` (or of the whole answer if it is a list) */
-  | { kind: "table"; rows?: string; columns: CommandColumn[]; empty?: string }
+  | ({ kind: "table"; rows?: string; columns: CommandColumn[]; empty?: string } & ListExtras)
   /** One line per item */
-  | { kind: "lines"; rows?: string; line: Template; empty?: string }
+  | ({ kind: "lines"; rows?: string; line: Template; empty?: string } & ListExtras)
   /** A few lines about one object; lines that come out empty are left out. Then, maybe, a list in it */
   | { kind: "record"; lines: Template[]; list?: RecordList }
   | { kind: "message"; text: Template }
@@ -72,13 +93,15 @@ export interface RecordList {
   line: Template;
 }
 
-/** Every template of an output, to check it (the server's tests, and the CLI before it runs a command). */
+/**
+ * Every template of an output, to check it (the server's tests, and the CLI before it runs a command): its columns or
+ * line, the lines under each row and the footer, or a record's lines and its list.
+ */
 export function outputTemplates(o: CommandOutput): Template[] {
   switch (o.kind) {
     case "table":
-      return o.columns.map((c) => c.value);
     case "lines":
-      return [o.line];
+      return [...(o.kind === "table" ? o.columns.map((c) => c.value) : [o.line]), ...(o.details ? [o.details.line] : []), ...(o.footer ?? [])];
     case "record":
       return [...o.lines, ...(o.list ? [o.list.title, o.list.line] : [])];
     case "message":
