@@ -467,11 +467,36 @@ export interface TreeEntry {
   size: number | null;
   /** A top-level folder's description, when it has one */
   description?: string;
+  /**
+   * With last=1: the newest commit that changed it (a folder: anything below it). Null when the server stopped reading
+   * the history before reaching it (lastComplete is false then).
+   */
+  last?: LastChange | null;
 }
 
 export interface TreeResponse {
   rev: string | null;
   entries: TreeEntry[];
+  /** With last=1: the newest change in the folder listed (at the top, in the whole workspace) */
+  last?: LastChange | null;
+  /**
+   * With last=1: false when the server stopped reading the history before finding every entry's last change (a very
+   * long history); those entries have last: null, and asking again goes on from where it stopped.
+   */
+  lastComplete?: boolean;
+}
+
+/**
+ * The newest commit that changed a file or folder, on the line the workspace's head moved along (first parents): a
+ * merge counts for what it brought.
+ */
+export interface LastChange {
+  commit: string;
+  date: string;
+  /** The first line of its message */
+  subject: string;
+  author: { name: string; email: string };
+  by: ChangeBy;
 }
 
 export interface FileMeta {
@@ -483,6 +508,10 @@ export interface FileMeta {
   text: boolean;
 }
 
+/**
+ * One change: a commit. GET /history and GET /activity answer with the same shape; `workspace` only in activity,
+ * `files` and `filesTotal` only when asked for (files=1).
+ */
 export interface Commit {
   commit: string;
   parents: string[];
@@ -490,6 +519,62 @@ export interface Commit {
   date: string;
   message: string;
   trailers: Record<string, string>;
+  /** Who made it, resolved by the server */
+  by?: ChangeBy;
+  /** In activity: the workspace it is in (its id) */
+  workspace?: string;
+  /** What it changed, against its first parent (a merge: what it brought), the first FILES_PER_CHANGE of them */
+  files?: CommitFile[];
+  /** How many files it changed in all; more than files.length when the list was cut */
+  filesTotal?: number;
+}
+
+/** At most this many files of one change come in an answer; filesTotal says how many there are. */
+export const FILES_PER_CHANGE = 100;
+
+/** A file a commit changed. Renames aren't followed: moving a file is deleting it and adding it, as in sync. */
+export interface CommitFile {
+  /** A change of type (a file becoming a link) is "modified" */
+  status: "added" | "modified" | "deleted";
+  path: string;
+  /** Its new mode, unless it was deleted */
+  mode?: string;
+  /** The workspace rejects this path today, so sync leaves this change out of everyone's copies */
+  rejected?: true;
+}
+
+/**
+ * Who made a change, as the server resolves it. A commit the gate wrote is the person its change log names (checked
+ * against the ids in the commit, so a commit brought in from elsewhere can't claim anyone); any other commit (an
+ * imported history) is the account that has its author's email today.
+ */
+export interface ChangeBy {
+  /** The account, with its name and email of today; null when none matches (the author is all there is) */
+  user: { id: number; name: string; email: string } | null;
+  /** The agent the client said it ran under (claude-code, codex...); only for changes written through the gate */
+  agent: string | null;
+  /** The client that sent it: fontego (the CLI), web, api... */
+  client: string | null;
+  /** How the writer had signed in, with the label it has today: a session ("cli", "joel-laptop") or a token */
+  credential: { type: "session" | "token"; id: number; kind: Credential["kind"]; label: string } | null;
+}
+
+/** GET /history: commits, newest first. */
+export interface HistoryResponse {
+  commits: Commit[];
+}
+
+/** GET /activity: changes of every workspace someone can read, newest first, a page at a time. */
+export interface ActivityResponse {
+  /** Each with its workspace and who made it */
+  commits: Commit[];
+  /** Ask with cursor=next for the older ones; null when there are none */
+  next: string | null;
+  /**
+   * Workspaces whose history the server is still reading (just upgraded, or catching up after a failure): their
+   * changes may be missing from this answer for now. Absent when there are none.
+   */
+  indexing?: string[];
 }
 
 export interface SyncChange {

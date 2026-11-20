@@ -12,12 +12,16 @@ let s: TestServer;
 let ana: { token: string; id: number };
 let home: string;
 
+/** The variables that tell fontego an agent runs it (agents.ts), all off */
+const NO_AGENT = { FONTEGO_AGENT: "", CLAUDECODE: "", CODEX_THREAD_ID: "", COPILOT_CLI: "", OPENCODE: "", CURSOR_AGENT: "", GEMINI_CLI: "" };
+
 /** `input`: what comes on stdin, which is then not a terminal. */
 async function fontego(args: string[], env: Record<string, string> = {}, input?: string) {
   const proc = Bun.spawn(["bun", MAIN, ...args], {
     stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
-    // Never the real keychain or browser: credentials go to a file in the test home, and links are not opened.
-    env: { ...process.env, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", ...env },
+    // Never the real keychain or browser: credentials go to a file in the test home, and links are not opened. No
+    // agent either, unless a test names one: the tests may run under one, and its name would land in every commit.
+    env: { ...process.env, ...NO_AGENT, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -238,6 +242,42 @@ describe("commands the server declares", () => {
     expect(info).toContain("your role: editor");
     expect((await fontego(["whoami"])).out).toContain(`ana@example.org on ${s.url}`);
     expect((await fontego(["ls", "notes", "-r"])).out).toContain("travel/japan.md");
+  });
+
+  test("activity, log --files and ls --last: who made each change and its files, from the same commands as the web", async () => {
+    const act = (await fontego(["activity", "--files"])).out.split("\n");
+    expect(act[0]).toMatch(/^COMMIT\s+DATE\s+WORKSPACE\s+WHO\s+MESSAGE$/); // no AGENT column: nobody used one
+    const seed = act.findIndex((l) => l.includes("Seed"));
+    expect(act[seed]).toContain("notes");
+    expect(act[seed]).toContain("Ana");
+    expect(act.slice(seed + 1, seed + 3)).toEqual(["  A README.md", "  A travel/japan.md"]);
+    // A page at a time: the last line says how to go on
+    const one = (await fontego(["activity", "--limit", "1"])).out;
+    const cursor = /--cursor (\S+)$/m.exec(one)?.[1];
+    expect(cursor).toBeTruthy();
+    const json = JSON.parse((await fontego(["activity", "--limit", "1", "--cursor", cursor!, "--json"])).out);
+    expect(json.commits.length).toBe(1);
+    expect(one).not.toContain(json.commits[0].commit.slice(0, 10));
+    // An agent's change shows its agent
+    expect((await fontego(["write", "notes", "agent.md", "--message", "From the agent"], { FONTEGO_AGENT: "claude-code" }, "by an agent\n")).code).toBe(0);
+    const agents = (await fontego(["activity", "--agents"])).out.split("\n");
+    expect(agents[0]).toMatch(/^COMMIT\s+DATE\s+WORKSPACE\s+WHO\s+AGENT\s+MESSAGE$/);
+    expect(agents.slice(1).join("\n")).toMatch(/Ana\s+claude-code\s+From the agent/);
+    expect((await fontego(["activity", "--people"])).out).not.toContain("From the agent");
+
+    const log = (await fontego(["log", "notes", "--files"])).out;
+    expect(log).toMatch(/From the agent\n  A agent\.md/);
+    const ls = (await fontego(["ls", "notes", "--last"])).out.split("\n");
+    expect(ls[0]).toMatch(/^PATH\s+SIZE\s+LAST CHANGE\s+BY\s+MESSAGE$/);
+    expect(ls.find((l) => l.startsWith("agent.md"))).toMatch(/Ana\s+From the agent$/);
+    // A folder's last change is the newest one below it: the first of its history
+    const travel = JSON.parse((await fontego(["log", "notes", "travel", "--limit", "1", "--json"])).out).commits[0];
+    expect(ls.find((l) => l.startsWith("travel/"))?.endsWith(`Ana  ${travel.message.split("\n")[0]}`)).toBe(true);
+    // Without --last, the same table as before
+    expect((await fontego(["ls", "notes"])).out.split("\n")[0]).toMatch(/^PATH\s+SIZE$/);
+    const lsJson = JSON.parse((await fontego(["ls", "notes", "--last", "--json"])).out);
+    expect(lsJson.lastComplete).toBe(true);
+    expect(lsJson.last.subject).toBe("From the agent");
   });
 
   test("an admin manages workspaces, members, people and tokens from the CLI", async () => {

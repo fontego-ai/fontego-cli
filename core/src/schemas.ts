@@ -165,9 +165,27 @@ const Flag = z.string().optional();
 const Opt = z.string().optional();
 
 export const WorkspacesQuery = z.object({ category: Opt });
-export const TreeQuery = z.object({ path: Opt, rev: Opt, recursive: Flag });
+/** last=1: each entry's last change (TreeEntry.last) */
+export const TreeQuery = z.object({ path: Opt, rev: Opt, recursive: Flag, last: Flag });
 export const FileQuery = z.object({ rev: Opt, meta: Flag, download: Flag });
-export const HistoryQuery = z.object({ path: Opt, rev: Opt, limit: Opt });
+/** files=1: each commit's files (Commit.files) */
+export const HistoryQuery = z.object({ path: Opt, rev: Opt, limit: Opt, files: Flag });
+
+/**
+ * The changes of every workspace someone can read, newest first. `person` is an account's id or an email (an email
+ * no account has finds that author as is); `kind` keeps the changes made by people (no agent) or by agents;
+ * archived workspaces only come with archived=1 or when named in `workspace`; `cursor` is the `next` of the answer
+ * before.
+ */
+export const ActivityQuery = z.object({
+  workspace: Opt,
+  person: Opt,
+  kind: z.enum(["people", "agents"], "is people or agents").optional(),
+  archived: Flag,
+  files: Flag,
+  limit: Opt,
+  cursor: Opt,
+});
 export const SyncQuery = z.object({ since: Opt });
 export const SearchQuery = z.object({ q: z.string(), path: Opt, limit: Opt });
 
