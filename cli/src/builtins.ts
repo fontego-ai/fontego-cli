@@ -4,6 +4,7 @@
 import type { Builtin, RunContext } from "./commands/command.ts";
 import { folderCommands } from "./commands/folders.ts";
 import { instanceCommands } from "./commands/instances.ts";
+import { liveCommands } from "./commands/live.ts";
 import { setupCommands } from "./commands/setup.ts";
 import { agentName } from "./agents.ts";
 import { listInstances } from "./config.ts";
@@ -62,6 +63,7 @@ export const BUILTINS: Builtin[] = [
     },
   },
   ...folderCommands,
+  ...liveCommands,
 ];
 
 export const BUILTIN_NAMES = BUILTINS.map((b) => b.name);

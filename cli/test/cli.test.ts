@@ -577,3 +577,91 @@ describe("for scripts and agents: --json always parses, never asks, and every fa
     rmSync(parent, { recursive: true, force: true });
   });
 });
+
+describe("live: who is around, and what happens as it happens", () => {
+  // The agent is named, so the tests read the same whether an agent runs them or not.
+  const asAna = () => ({ FONTEGO_URL: s.url, FONTEGO_TOKEN: ana.token, FONTEGO_AGENT: "test-agent" });
+
+  test("here shows you in a workspace for a while, who lists everyone, here clear takes you out", async () => {
+    const here = await fontego(["here", "notes", "travel/", "--minutes", "20"], asAna());
+    expect(here.code).toBe(0);
+    expect(here.out).toContain("In notes you show as working in travel/ until");
+    expect(here.out).toContain("fontego here clear notes");
+    const table = (await fontego(["who", "notes"], asAna())).out.split("\n");
+    expect(table[0]).toMatch(/^WORKSPACE\s+WHO\s+AGENT\s+DOING\s+SINCE$/);
+    // Ana's own writes show her working too (what she seeded); her agent's announcement is apart
+    expect(table.some((l) => /^notes\s+Ana\s+test-agent\s+working in travel\/\s+\d{4}-\d\d-\d\d \d\d:\d\d$/.test(l))).toBe(true);
+    const all = JSON.parse((await fontego(["who", "--json"], asAna())).out);
+    expect(all.here).toContainEqual(expect.objectContaining({ workspace: "notes", user: expect.objectContaining({ email: "ana@example.org" }), agent: "test-agent", activity: "working", via: "cli" }));
+    const reading = JSON.parse((await fontego(["here", "notes", "--doing", "reading", "--json"], asAna())).out);
+    expect(reading.you).toMatchObject({ activity: "reading", path: null, doing: "reading" });
+    expect((await fontego(["here", "clear", "notes"], asAna())).out).toContain("You no longer show in notes.");
+    expect((await fontego(["who", "notes"], asAna())).out).not.toContain("test-agent");
+  });
+
+  test("who and here keep to the workspaces you read; bad input says what is wrong", async () => {
+    const missing = JSON.parse((await fontego(["who", "secret", "--json"], asAna())).out);
+    expect(missing.error.code).toBe("not_found");
+    const r = await fontego(["here", "notes", "../x", "--json"], asAna());
+    expect([r.code, JSON.parse(r.out).error.code]).toEqual([1, "path_escapes"]);
+    expect(JSON.parse((await fontego(["here", "notes", "--minutes", "500", "--json"], asAna())).out).error.code).toBe("invalid_body");
+  });
+
+  test("events prints what happens, one line each, or one JSON object per line", async () => {
+    const run = (json: boolean) =>
+      Bun.spawn(["bun", MAIN, "events", ...(json ? ["--json"] : [])], {
+        env: { ...process.env, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", FONTEGO_INSTANCE: "", ...asAna() },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    const lines = (p: ReturnType<typeof run>) => {
+      const out: string[] = [];
+      void (async () => {
+        const dec = new TextDecoder();
+        let buf = "";
+        for await (const chunk of p.stdout) {
+          buf += dec.decode(chunk);
+          const parts = buf.split("\n");
+          buf = parts.pop()!;
+          out.push(...parts);
+        }
+      })();
+      return out;
+    };
+    const until = async (out: string[], test: (l: string) => boolean) => {
+      for (let i = 0; i < 300 && !out.some(test); i++) await Bun.sleep(20);
+      expect(out.some(test)).toBe(true);
+    };
+    const text = run(false);
+    const json = run(true);
+    const t = lines(text);
+    const j = lines(json);
+    await until(t, (l) => l.includes("connected;"));
+    await until(j, (l) => l.startsWith('{"type":"ready"'));
+    await s.call(ana.token, "POST", "/v1/workspaces/notes/changes", { baseCommit: null, message: "Live from a test", ops: [{ op: "put", path: "live.md", content: "now\n", baseHash: null }] });
+    await until(t, (l) => /notes {2}Ana: Live from a test \(1 file\)$/.test(l));
+    await until(j, (l) => l.includes('"type":"commit"'));
+    const commit = JSON.parse(j.find((l) => l.includes('"type":"commit"'))!);
+    expect(commit).toMatchObject({ type: "commit", workspace: "notes", message: "Live from a test", changes: [{ status: "put", path: "live.md" }] });
+    await s.call(ana.token, "PUT", "/v1/workspaces/notes/presence", { path: "travel/" });
+    // Others may be there from earlier tests: what counts is Ana's line
+    const hereLine = (l: string) => l.includes("  notes  here now: ") || l.includes("  notes  nobody here now");
+    await until(t, (l) => hereLine(l) && l.includes("Ana, working in travel/"));
+    await until(j, (l) => l.includes('"type":"presence"'));
+    const seen = t.length;
+    await s.call(ana.token, "DELETE", "/v1/workspaces/notes/presence");
+    await until(t, (l) => t.indexOf(l) >= seen && hereLine(l) && !l.includes("working in travel/"));
+    text.kill("SIGINT");
+    json.kill("SIGINT");
+    expect(await text.exited).toBe(0);
+    expect(await json.exited).toBe(0);
+    // --json: stdout is only events
+    expect(j.every((l) => JSON.parse(l).type)).toBe(true);
+  }, 30_000);
+
+  test("events, signed out: it ends with exit 2 and what to do", async () => {
+    const r = await fontego(["events", "--json"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: "fontego_wrong" });
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.out).error).toMatchObject({ code: "unauthenticated", hint: expect.any(String) });
+  }, 20_000);
+});

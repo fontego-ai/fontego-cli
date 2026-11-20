@@ -17,7 +17,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `fontego-server` and use it from the outside.
 - **Most commands come from the server.** Built-in commands (`builtins.ts`) work with this machine or a synced
   folder: login, logout, sessions (rename, forget), use, open, help, version, clone, link, status, sync, watch,
-  conflicts, check-ignore. Everything else is declared
+  conflicts, check-ignore, and events (the person's live stream, `commands/live.ts`). Everything else is declared
   by the server (`GET /v1/commands`): a description of one API call, never code, run by `declared.ts` and cached per
   server in `$XDG_CACHE_HOME/fontego/commands/`. Every answer carries the version of the server's commands
   (`fontego-commands` header); a different one refreshes the cache. With `--json`, a declared command prints exactly
@@ -85,7 +85,8 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/commands/setup.ts` | `fontego setup`: the skill and writing or removing it |
 | `cli/src/version.ts` | The CLI's version, read from `cli/package.json` |
 | `scripts/build.ts`, `scripts/npm-launcher.cjs`, `scripts/npm-readme.md`, `install.sh` | The release: executables, npm packages and the install script (see above) |
-| `cli/src/client.ts` | HTTP client for `/v1`: a token per request, and one more try after renewing on a 401 |
+| `cli/src/client.ts` | HTTP client for `/v1`: a token per request, and one more try after renewing on a 401. Event streams (`events` for watch, `personEvents` for `fontego events`): the server says how often it beats in `ready`, and a line silent for two and a half beats is taken as dead, so the caller connects again |
+| `cli/src/commands/live.ts` | `fontego events`: the person's stream (commits, who is in each workspace, changes in their list), one line per event or one JSON object per line, connecting again by itself. `who` and `here` come from the server |
 | `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock |
 | `cli/src/auth.ts` | Signing in (browser or device flow), a stored session that renews itself (and takes the account's address as the server has it then: a server admin may have changed it), signing out on the server |
 | `cli/src/connect.ts` | Which instance a command goes to, and a client signed in there; `FONTEGO_URL` with `FONTEGO_TOKEN` override it all |
