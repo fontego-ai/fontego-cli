@@ -7,7 +7,7 @@
 //
 // A real conflict keeps both: the server's version stays in place and ours is saved next to it as a conflict copy.
 
-import { blobHash, MAX_OPS, textContent, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
+import { blobHash, MAX_OPS, roleAtLeast, textContent, type ChangeOp, type Conflict, type FileMode, type Role } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
 import { loadIgnoreRules } from "./ignore.ts";
@@ -24,7 +24,7 @@ import {
   type LocalEntry,
   type Unreadable,
 } from "./local.ts";
-import { saveState, type SyncState } from "./state.ts";
+import { saveState, type Skipped, type SyncState } from "./state.ts";
 
 export interface SyncReport {
   head: string | null;
@@ -55,6 +55,18 @@ const same = (a: LocalEntry | undefined, b: LocalEntry | undefined) =>
  */
 export const BATCH_BYTES = 32 * 1024 * 1024;
 
+/** How long a refused file waits before the same content goes again: 5 min, doubling up to 6 h. */
+export const retryDelay = (tries: number) => Math.min(5 * 60_000 * 2 ** (tries - 1), 6 * 3_600_000);
+/** How long a copy that can only read waits before asking the server for its role again: 1 min, doubling up to 1 h. */
+export const roleDelay = (tries: number) => Math.min(60_000 * 2 ** (tries - 1), 3_600_000);
+
+export interface EngineOptions {
+  /** Most JSON in one change set (BATCH_BYTES) */
+  batchBytes?: number;
+  /** The clock, for tests */
+  now?: () => number;
+}
+
 /** One local change waiting to go up; its bytes are read only when its batch is made. */
 interface Outgoing {
   path: string;
@@ -72,12 +84,52 @@ export class SyncEngine {
   private running: Promise<SyncReport> | null = null;
   private again = false;
 
+  private readonly batchBytes: number;
+  private readonly now: () => number;
+  /** When a copy that can only read asks for its role again, and how many times it asked in vain */
+  private roleCheckAt = 0;
+  private roleTries = 0;
+
   constructor(
     readonly root: string,
     private readonly client: Client,
     readonly state: SyncState,
-    private readonly batchBytes = BATCH_BYTES,
-  ) {}
+    opts: EngineOptions = {},
+  ) {
+    this.batchBytes = opts.batchBytes ?? BATCH_BYTES;
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** Sets a file aside after a refusal of this content, with when to try it again. */
+  private skip(path: string, hash: string, reason: string) {
+    const before = this.state.skipped[path];
+    const tries = before && before.hash === hash ? (before.tries ?? 0) + 1 : 1;
+    const entry: Skipped = { hash, reason, retryAt: new Date(this.now() + retryDelay(tries)).toISOString(), tries };
+    this.state.skipped[path] = entry;
+  }
+
+  /**
+   * A copy that can only read, with changes waiting: asks the server whether it may write now (a reader made an
+   * editor, or a refusal that was a one-off), at most once per roleDelay, so a lasting refusal costs few calls.
+   */
+  private async mayWriteAgain(): Promise<boolean> {
+    if (this.now() < this.roleCheckAt) return false;
+    let role: Role | null;
+    try {
+      role = (await this.client.workspace(this.state.workspace)).role;
+    } catch (e) {
+      if (e instanceof ClientError && (e.status === 0 || e.status >= 500)) return false; // offline: next round
+      throw e;
+    }
+    if (roleAtLeast(role, "editor")) {
+      this.state.readOnly = false;
+      this.roleTries = 0;
+      this.roleCheckAt = 0;
+      return true;
+    }
+    this.roleCheckAt = this.now() + roleDelay(++this.roleTries);
+    return false;
+  }
 
   /** Runs a round; if one is already running, runs one more right after it. */
   sync(): Promise<SyncReport> {
@@ -233,12 +285,14 @@ export class SyncEngine {
       const l = local.get(path);
       const s = this.state.files[path];
       if (same(l, s)) continue;
+      // Refused before with this same content: it waits until its retryAt (the rules may have changed by then).
       const skip = this.state.skipped[path];
-      if (skip && skip.hash === (l?.hash ?? "deleted")) continue;
+      if (skip && skip.hash === (l?.hash ?? "deleted") && skip.retryAt && Date.parse(skip.retryAt) > this.now()) continue;
       if (l || s) todo.push({ path, local: l, base: s });
     }
     report.pending = todo.length;
-    if (todo.length === 0 || this.state.readOnly) return "done";
+    if (todo.length === 0) return "done";
+    if (this.state.readOnly && !(await this.mayWriteAgain())) return "done";
 
     type Ready = { item: Outgoing; op: ChangeOp; size: number };
     let carry: Ready | null = null;
@@ -309,7 +363,9 @@ export class SyncEngine {
     } catch (e) {
       if (!(e instanceof ClientError)) throw e;
       if (e.status === 403) {
+        // Can only read here (or so it says now): the changes wait, and the role is asked again later (mayWriteAgain).
         this.state.readOnly = true;
+        this.roleCheckAt = this.now() + roleDelay(++this.roleTries);
         return "done";
       }
       if (e.code === "unknown_base") {
@@ -322,7 +378,7 @@ export class SyncEngine {
         // rest, and try it again once it changes here. A refused delete is set aside too: the file stays there.
         const path = (e.details as { path?: string } | undefined)?.path;
         if (!path || !ops.some((o) => o.op !== "move" && o.path === path)) throw e;
-        this.state.skipped[path] = { hash: local.get(path)?.hash ?? "deleted", reason: e.message };
+        this.skip(path, local.get(path)?.hash ?? "deleted", e.message);
         report.skipped.push({ path, reason: e.message });
         return "retry";
       }
@@ -359,7 +415,7 @@ export class SyncEngine {
             continue;
           }
           // Can't be resolved by keeping both (e.g. a file where a folder is): leave it out until it changes.
-          this.state.skipped[c.path] = { hash: l?.hash ?? "deleted", reason: c.message };
+          this.skip(c.path, l?.hash ?? "deleted", c.message);
           report.conflicts.push({ path: c.path, reason: c.reason, message: c.message });
         }
         return "retry";

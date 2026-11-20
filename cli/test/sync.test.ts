@@ -277,6 +277,103 @@ describe("sync between two copies", () => {
   });
 });
 
+describe("a copy that couldn't send tries again once it may", () => {
+  const space = async (ws: string, people: Array<[string, string]>, seed = true) => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: ws });
+    for (const [who, role] of people) await s.call(s.adminToken, "PUT", `/v1/workspaces/${ws}/members/${who}@example.org`, { role });
+    if (seed) await s.call(s.adminToken, "PUT", `/v1/workspaces/${ws}/files/readme.md`, { content: "hi\n" });
+  };
+  const fileOn = async (ws: string, path: string) => {
+    const r = await s.call(s.adminToken, "GET", `/v1/workspaces/${ws}/files/${path}`);
+    return r.status === 200 ? (r.data as string) : null;
+  };
+
+  test("a reader made an editor while watch runs: the edit that waited goes up, untouched", async () => {
+    await space("promote", [["carl", "reader"]]);
+    let clock = Date.now();
+    let asked = 0;
+    class Counting extends Client {
+      override workspace(ws: string) {
+        asked++;
+        return super.workspace(ws);
+      }
+    }
+    const client = new Counting(s.url, carl.token);
+    const C0 = await copy(carl.token, "Carl", "promote");
+    const C = new SyncEngine(C0.root, client, C0.state, { now: () => clock });
+    write(C, "note.md", "carl's edit\n");
+    const first = await C.sync();
+    expect([first.readOnly, first.pending]).toEqual([true, 1]);
+    const w = new Watcher(C, client, { debounceMs: 100, safetyMs: 150 });
+    await w.start();
+    await Bun.sleep(700); // several rounds while still a reader: none of them asks for the role yet
+    expect(asked).toBe(0);
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/promote/members/carl@example.org", { role: "editor" });
+    clock += 61_000;
+    const t0 = Date.now();
+    while ((await fileOn("promote", "note.md")) === null && Date.now() - t0 < 10_000) await Bun.sleep(100);
+    await w.stop();
+    expect(await fileOn("promote", "note.md")).toBe("carl's edit\n");
+    expect(C.state.readOnly).toBe(false);
+    expect(asked).toBe(1);
+  });
+
+  test("a file the rules refused goes up once they allow it, untouched; until then it isn't sent again", async () => {
+    await space("allow", [["ana", "editor"]]);
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/allow/paths/protected/plans/**");
+    let clock = Date.now();
+    const A0 = await copy(ana.token, "Ana", "allow");
+    const A = new SyncEngine(A0.root, new Client(s.url, ana.token), A0.state, { now: () => clock });
+    write(A, "plans/q1.md", "the plan\n");
+    expect((await A.sync()).skipped.map((x) => x.path)).toEqual(["plans/q1.md"]);
+    const soon = await A.sync(); // same content, too soon: it isn't sent again
+    expect([soon.skipped, soon.pushed]).toEqual([[], []]);
+    await s.call(s.adminToken, "DELETE", "/v1/workspaces/allow/paths/protected/plans/**");
+    clock += 5 * 60_000 + 1000;
+    expect((await A.sync()).pushed.map((p) => p.path)).toEqual(["plans/q1.md"]);
+    expect(await fileOn("allow", "plans/q1.md")).toBe("the plan\n");
+    expect(A.state.skipped["plans/q1.md"]).toBeUndefined();
+  });
+
+  test("a refusal that keeps coming waits longer each time", async () => {
+    await space("refuse", [["ana", "editor"]]);
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/refuse/paths/protected/locked.md");
+    let clock = Date.now();
+    const A0 = await copy(ana.token, "Ana", "refuse");
+    const A = new SyncEngine(A0.root, new Client(s.url, ana.token), A0.state, { now: () => clock });
+    write(A, "locked.md", "no\n");
+    const waits: number[] = [];
+    for (let n = 0; n < 3; n++) {
+      await A.sync();
+      const at = Date.parse(A.state.skipped["locked.md"]!.retryAt!);
+      waits.push(at - clock);
+      clock = at + 1;
+    }
+    expect(waits).toEqual([5 * 60_000, 10 * 60_000, 20 * 60_000]);
+  });
+
+  test("a one-off 403 doesn't leave the copy read-only", async () => {
+    await space("oneoff", [["ana", "editor"]]);
+    class ForbiddenOnce extends Client {
+      done = false;
+      override change(ws: string, cs: Parameters<Client["change"]>[1]) {
+        if (this.done) return super.change(ws, cs);
+        this.done = true;
+        return Promise.reject(new ClientError(403, "forbidden", "Not right now."));
+      }
+    }
+    let clock = Date.now();
+    const A0 = await copy(ana.token, "Ana", "oneoff");
+    const A = new SyncEngine(A0.root, new ForbiddenOnce(s.url, ana.token), A0.state, { now: () => clock });
+    write(A, "x.md", "x\n");
+    expect((await A.sync()).readOnly).toBe(true);
+    clock += 61_000;
+    const r = await A.sync();
+    expect(r.readOnly).toBe(false);
+    expect(r.pushed.map((p) => p.path)).toEqual(["x.md"]);
+  });
+});
+
 describe("an edit saved while sync is busy is never lost", () => {
   /** A client that, at a chosen point (a download just done, a change set about to go), runs what a person does there. */
   class Busy extends Client {
@@ -395,7 +492,7 @@ describe("big sends go in batches the server takes", () => {
     // What `fontego link` does: a state with no files yet, then a sync that sends everything up.
     const state = newState(s.url, ws, "Ana");
     await saveState(dir, state);
-    return { dir, engine: new SyncEngine(dir, client ?? new Client(s.url, ana.token), state, batchBytes) };
+    return { dir, engine: new SyncEngine(dir, client ?? new Client(s.url, ana.token), state, { batchBytes }) };
   };
 
   test("a link of 1,001 files sends them all, past the 1,000 operations of one change set", async () => {
@@ -444,7 +541,7 @@ describe("big sends go in batches the server takes", () => {
     expect(sent).toBeGreaterThan(0);
     expect(sent).toBeLessThan(30);
     // What the first batch committed is in the saved state: `fontego sync` (a new process) sends only the rest.
-    const again = new SyncEngine(dir, new Client(s.url, ana.token), await loadState(dir), 1024);
+    const again = new SyncEngine(dir, new Client(s.url, ana.token), await loadState(dir), { batchBytes: 1024 });
     const r = await again.sync();
     expect(r.pushed).toHaveLength(30 - sent);
     expect(await files("halfway")).toBe(30);

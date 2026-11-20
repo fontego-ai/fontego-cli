@@ -114,7 +114,9 @@ export const folderCommands: Builtin[] = [
           ...st.modified.map((p) => `modified  ${p}`),
           ...st.deleted.map((p) => `deleted   ${p}`),
           ...st.unreadable.map((u) => `unreadable ${u.path} (${u.reason}): left as it was, nothing in it counts as deleted`),
-          ...Object.entries(st.skipped).map(([p, s]) => `skipped   ${p}: ${s.reason}`),
+          ...Object.entries(st.skipped).map(
+            ([p, s]) => `skipped   ${p}: ${s.reason}${s.retryAt ? ` (sent again after ${new Date(s.retryAt).toLocaleString()}, or once it changes)` : ""}`,
+          ),
           ...(rc.parsed.flags.ignored ? st.ignored.map((p) => `ignored   ${p}`) : []),
         ];
         const notes = trackedIgnored.map(

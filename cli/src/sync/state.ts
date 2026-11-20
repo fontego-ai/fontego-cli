@@ -15,10 +15,22 @@ export interface SyncState {
   head: string | null;
   /** Each file as it was at "head" (the base for the next edit) */
   files: Record<string, LocalEntry>;
-  /** Files the server refused (policy), by the hash that was refused; retried when the file changes */
-  skipped: Record<string, { hash: string; reason: string }>;
-  /** Set when the server says this person can only read */
+  /**
+   * Files the server refused (policy), by the hash that was refused: retried when the file changes, and, the same
+   * content, from `retryAt` on (the rules may have changed), waiting longer after each refusal (`tries`)
+   */
+  skipped: Record<string, Skipped>;
+  /** Set when the server says this person can only read; the role is checked again while changes wait to go up */
   readOnly?: boolean;
+}
+
+export interface Skipped {
+  hash: string;
+  reason: string;
+  /** When to send the same content again (ISO time); none (a state from an earlier version): at the next round */
+  retryAt?: string;
+  /** Refusals of this same content so far */
+  tries?: number;
 }
 
 export const statePath = (root: string) => join(root, STATE_DIR, "state.json");
