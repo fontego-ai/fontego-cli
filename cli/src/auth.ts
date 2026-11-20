@@ -12,7 +12,7 @@ import type { DeviceAuthorization, InstanceInfo, TokenResponse } from "@fontego/
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { ClientError, type AuthProvider } from "./client.ts";
-import { normalizeUrl, withLock, type Credential, type CredentialStore, type Instance } from "./config.ts";
+import { normalizeUrl, setInstanceEmail, withLock, type Credential, type CredentialStore, type Instance } from "./config.ts";
 import { USER_AGENT } from "./version.ts";
 
 export const CLIENT_ID = "fontego-cli";
@@ -93,6 +93,11 @@ export class StoredAuth implements AuthProvider {
       }
       this.cred = fromTokenResponse((await res.json()) as TokenResponse);
       await this.store.set(url, this.cred);
+      // The account's address as the server says it now: a server admin may have changed it since this machine signed in.
+      if (this.cred.email !== this.instance.email) {
+        setInstanceEmail(this.instance.alias, this.cred.email);
+        this.instance.email = this.cred.email;
+      }
     });
   }
 }

@@ -245,7 +245,7 @@ describe("commands the server declares", () => {
     expect((await fontego(["workspace", "create", "shared", "--name", "Shared", "--category", "team"], env)).out).toContain("Workspace shared created");
     expect((await fontego(["admin", "users", "add", "bea@example.org", "--name", "Bea"], env)).out).toContain("User bea@example.org created");
     const set = await fontego(["members", "set", "shared", "bea@example.org", "reader"], env);
-    expect(set.out).toMatch(/bea@example\.org\s+reader\s+Bea/);
+    expect(set.out).toMatch(/bea@example\.org\s+reader\s+no-password\s+-\s+Bea/);
     expect((await fontego(["workspace", "edit", "shared", "--description", "For everyone"], env)).out).toContain("Updated shared.");
     const token = JSON.parse((await fontego(["admin", "tokens", "create", "bea@example.org", "--agent", "--label", "Bea's agent", "--json"], env)).out);
     expect(token.kind).toBe("agent");
@@ -255,6 +255,56 @@ describe("commands the server declares", () => {
     // Ana is no admin: the server says no, with the usual exit codes.
     expect((await fontego(["admin", "users"])).code).toBe(5);
     expect((await fontego(["members", "set", "notes", "nobody@example.org", "reader"])).code).toBe(5);
+  });
+
+  test("people: everyone with an account, the workspaces you share, and one person by email or id", async () => {
+    const dot = await s.person("dot@example.org", "Dot");
+    const list = (await fontego(["people"])).out;
+    expect(list.split("\n")[0]).toMatch(/^EMAIL\s+NAME\s+ADMIN\s+WORKSPACES$/);
+    expect(list).toMatch(/admin@example\.org\s+Admin\s+yes\s+.*\bnotes\b/);
+    expect(list).toMatch(/dot@example\.org\s+Dot\s+-/);
+    const json = JSON.parse((await fontego(["people", "--json"])).out);
+    expect(json.people.find((p: any) => p.email === "ana@example.org").workspaces).toContainEqual({ slug: "notes", name: "Notes", role: "editor" });
+    const one = (await fontego(["people", "show", "admin@example.org"])).out;
+    expect(one).toContain("admin@example.org");
+    expect(one).toContain("server admin");
+    expect(one).toMatch(/^workspaces: .*\bnotes\b/m);
+    expect(one).not.toContain("account "); // status and last activity are for server admins
+    expect(JSON.parse((await fontego(["people", "show", String(dot.id), "--json"])).out).email).toBe("dot@example.org");
+    const none = await fontego(["people", "show", "nobody@example.org", "--json"]);
+    expect(none.code).toBe(3);
+    expect(JSON.parse(none.out).error.hint).toContain("fontego people");
+    const forAdmin = (await fontego(["people", "show", "ana@example.org"], asAdmin())).out;
+    expect(forAdmin).toMatch(/account no-password · last active \d{4}-\d\d-\d\d/);
+  });
+
+  test("your account: who you are, your name, your sessions", async () => {
+    const eli = await s.person("eli@example.org", "Eli");
+    const as = { FONTEGO_URL: s.url, FONTEGO_TOKEN: eli.token };
+    expect((await fontego(["account"], as)).out).toContain("name: Eli");
+    expect((await fontego(["account", "set", "--name", "Eli Moss"], as)).out).toBe(`Your name on ${s.url} is Eli Moss now.\n`);
+    expect(JSON.parse((await fontego(["whoami", "--json"], as)).out).user.name).toBe("Eli Moss");
+    const empty = await fontego(["account", "set", "--json"], as);
+    expect(empty.code).not.toBe(0);
+    expect(JSON.parse(empty.out).error.message).toContain("say what to change");
+    // A token is no session: nothing open, and nothing marked as the one in use
+    expect((await fontego(["account", "sessions"], as)).out).toBe("(no open sessions)\n");
+    expect((await fontego(["account", "sessions", "close", "1"], as)).code).toBe(3);
+  });
+
+  test("a server admin changes someone's name and email", async () => {
+    const fin = await s.person("fin@example.org", "Fin");
+    const edited = await fontego(["admin", "users", "edit", "fin@example.org", "--name", "Fin Lee", "--email", "fin@new.example.org"], asAdmin());
+    expect(edited.code).toBe(0);
+    expect(edited.out).toContain("Saved: fin@new.example.org · Fin Lee");
+    expect(edited.out).toContain("It was fin@example.org.");
+    expect(edited.out).toContain("Mail to the old address: held (no SMTP is configured)");
+    expect(edited.out).toContain("Mail to the new address: held");
+    expect((await fontego(["whoami"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: fin.token })).out).toContain("fin@new.example.org on");
+    expect((await fontego(["admin", "users", "edit", String(fin.id), "--name", "Fin"], asAdmin())).out).toBe("Saved: fin@new.example.org · Fin\n");
+    const taken = await fontego(["admin", "users", "edit", "fin@new.example.org", "--email", "ana@example.org", "--json"], asAdmin());
+    expect(JSON.parse(taken.out).error.code).toBe("email_taken");
+    expect((await fontego(["admin", "users", "edit", "ana@example.org", "--name", "Ana"])).code).toBe(5);
   });
 
   test("an admin starts a workspace from a template, or imports a Git repository the server can reach", async () => {
@@ -402,7 +452,7 @@ describe("commands the server declares", () => {
     expect((await fontego(["ls", "notes", "--nope"])).err).toContain("has no option --nope");
     expect((await fontego(["log", "notes", "--limit", "many"])).err).toContain("needs a number");
     expect((await fontego(["frobnicate"])).err).toContain('Unknown command "frobnicate"');
-    expect((await fontego(["members", "set", "--help"])).out).toContain("Calls PUT /v1/workspaces/{workspace}/members/{email}");
+    expect((await fontego(["members", "set", "--help"])).out).toContain("Calls PUT /v1/workspaces/{workspace}/members/{person}");
   });
 
   test("a stale list of commands is refreshed by the next answer", async () => {

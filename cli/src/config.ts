@@ -121,6 +121,15 @@ export function saveInstance(i: Instance, opts: { makeDefault?: boolean } = {}, 
   writeRegistry(r, env);
 }
 
+/** Who is signed in to an instance, as the server says now: a server admin may have changed their address. */
+export function setInstanceEmail(alias: string, email: string, env = process.env) {
+  const r = readRegistry(env);
+  const i = r.instances[alias];
+  if (!i || i.email === email) return;
+  i.email = email;
+  writeRegistry(r, env);
+}
+
 export function setDefault(alias: string, env = process.env) {
   const r = readRegistry(env);
   if (!r.instances[alias]) throw new Error(`No instance "${alias}".`);

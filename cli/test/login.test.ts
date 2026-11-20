@@ -148,6 +148,31 @@ describe("signing in through the browser", () => {
     expect((await fontego(["whoami"])).code).toBe(0);
   }, 30_000);
 
+  test("your own sessions, from the CLI; and an address a server admin changed shows after the next renewal", async () => {
+    const mine = JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions as any[];
+    expect(mine.filter((x) => x.current)).toEqual([expect.objectContaining({ kind: "cli" })]);
+    expect((await fontego(["account", "sessions"])).out).toMatch(/cli\s+\S+ \(this one\)/);
+
+    // Another browser of hers, signed out from here
+    const web = await fetch(`${s.url}/v1/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "ana@example.org", password: GOOD }) });
+    const other = (web.headers.get("set-cookie") ?? "").split(";")[0]!;
+    const id = JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions.find((x: any) => x.kind === "web" && !x.current).id;
+    expect((await fontego(["account", "sessions", "close", String(id)])).out).toBe(`Session ${id} closed.\n`);
+    expect((await fetch(`${s.url}/v1/me`, { headers: { cookie: other } })).status).toBe(401);
+
+    const renew = async () => {
+      const c = credentials();
+      writeFileSync(credentialsFile(), JSON.stringify({ ...c, [s.url]: { ...c[s.url], accessExpiresAt: new Date(0).toISOString() } }));
+      return fontego(["whoami"]);
+    };
+    expect((await s.call(s.adminToken, "PATCH", "/v1/admin/users/ana@example.org", { email: "ana@new.example.org" })).status).toBe(200);
+    expect((await renew()).out).toContain("ana@new.example.org on");
+    expect(JSON.parse((await fontego(["sessions", "--json"])).out).instances[0]).toMatchObject({ alias: "fontego", email: "ana@new.example.org" });
+    expect((await s.call(s.adminToken, "PATCH", "/v1/admin/users/ana@new.example.org", { email: "ana@example.org" })).status).toBe(200);
+    await renew();
+    expect(JSON.parse((await fontego(["sessions", "--json"])).out).instances[0].email).toBe("ana@example.org");
+  });
+
   test("signing out closes the session on the server too", async () => {
     const access = credentials()[s.url].accessToken;
     expect((await fontego(["logout"])).out).toContain("Signed out of fontego");
