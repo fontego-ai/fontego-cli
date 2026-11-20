@@ -1,5 +1,6 @@
 // Types of the HTTP API (version 1): what the server answers. What requests carry is in schemas.ts.
 
+import type { PreferenceKey, Preferences } from "./preferences.ts";
 import { ROLES, type Role } from "./schemas.ts";
 
 /** reader < editor < admin */
@@ -334,6 +335,33 @@ export interface WorkspaceInfo {
   archivedAt?: string;
 }
 
+/**
+ * A top-level folder of a workspace and the line its admins wrote to say what goes in it. A description stays when its
+ * folder goes (deleted, or moved under another name), marked as not there, until an admin takes it away; if the folder
+ * comes back, so does its line.
+ */
+export interface FolderInfo {
+  /** The folder's name: only top-level folders take a description */
+  path: string;
+  /** What goes in it; null when nobody has said */
+  description: string | null;
+  /** Whether the folder is in the workspace now (at its head); false: its description waits to be taken away */
+  exists: boolean;
+  /** With a description: when it was last set, and by whom (their name, or their email) */
+  updatedAt?: string;
+  updatedBy?: string | null;
+}
+
+/** The top-level folders of a workspace with their descriptions, then the descriptions whose folder is gone. */
+export interface FoldersResponse {
+  folders: FolderInfo[];
+}
+
+/** One workspace (GET /workspaces/{workspace}): what lists show, plus its top-level folders. */
+export interface WorkspaceDetails extends WorkspaceInfo {
+  folders: FolderInfo[];
+}
+
 /** The workspaces someone can see, with their role in each (GET /workspaces). */
 export interface WorkspacesResponse {
   workspaces: WorkspaceInfo[];
@@ -381,6 +409,40 @@ export interface TemplateInfo {
   from: "built-in" | "instance";
 }
 
+/**
+ * The categories of a Fontego (GET /categories). With `fixed`, its admins chose the list, and a workspace's category is
+ * one of these or none; otherwise a category is any text, and these are the ones in use.
+ */
+export interface CategoriesResponse {
+  fixed: boolean;
+  categories: Array<{
+    name: string;
+    /** How many of the workspaces you see have it */
+    workspaces: number;
+  }>;
+}
+
+/** One of your preferences, with the type of its key. */
+export type PreferenceEntry = {
+  [K in PreferenceKey]: {
+    key: K;
+    /** In effect now: what you set, or the default */
+    value: Preferences[K];
+    default: Preferences[K];
+    /** Whether you set it; false while the default applies */
+    set: boolean;
+    description: string;
+    /** The value as text, for showing: "notes, handbook", "(none)" */
+    display: string;
+    /** When you last set it */
+    updatedAt: string | null;
+  };
+}[PreferenceKey];
+
+export interface PreferencesResponse {
+  preferences: PreferenceEntry[];
+}
+
 /** Someone in a workspace. Anyone who reads the workspace sees whether they can sign in and when they last came. */
 export interface Member {
   userId: number;
@@ -403,6 +465,8 @@ export interface TreeEntry {
   mode: string;
   hash: string;
   size: number | null;
+  /** A top-level folder's description, when it has one */
+  description?: string;
 }
 
 export interface TreeResponse {

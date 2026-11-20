@@ -22,6 +22,9 @@ const Text = (max: number) => z.string().max(max);
 
 // --- Workspaces and members ---
 
+/** A category's name is at most this long; an instance may fix the list (setting workspaces.categories). */
+export const MAX_CATEGORY = 100;
+
 /** A template's name: what `fontego workspace templates` lists. */
 export const TEMPLATE_NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 
@@ -34,7 +37,7 @@ export const CreateWorkspaceBody = z
     slug: Slug,
     name: Text(200).optional(),
     description: Text(5000).optional(),
-    category: Text(100).optional(),
+    category: Text(MAX_CATEGORY).optional(),
     template: z.string().regex(TEMPLATE_NAME, "is not a template name").optional(),
     git: Text(2000).optional(),
     branch: Text(200).optional(),
@@ -47,11 +50,25 @@ export type CreateWorkspaceRequest = z.input<typeof CreateWorkspaceBody>;
 export const UpdateWorkspaceBody = z.object({
   name: Text(200).optional(),
   description: Text(5000).optional(),
-  category: Text(100).optional(),
+  category: Text(MAX_CATEGORY).optional(),
 });
 export type UpdateWorkspaceRequest = z.input<typeof UpdateWorkspaceBody>;
 
 export const SetMemberBody = z.object({ role: RoleSchema });
+
+/** The line that says what goes in a top-level folder: one line, so it fits on the folder's tile and in `fontego ls`. */
+export const MAX_FOLDER_DESCRIPTION = 300;
+/** How many folders of one workspace can have a description. */
+export const MAX_FOLDER_DESCRIPTIONS = 100;
+
+export const FolderDescriptionBody = z.object({
+  description: z
+    .string()
+    .trim()
+    .min(1, "write what goes in the folder (to take its description away: fontego workspace folders unset)")
+    .max(MAX_FOLDER_DESCRIPTION, `use at most ${MAX_FOLDER_DESCRIPTION} characters`)
+    .regex(/^[^\u0000-\u001f\u007f]*$/, "use one line, without line breaks or tabs"),
+});
 
 // --- People, passwords and tokens ---
 
@@ -103,6 +120,11 @@ export const UseLinkBody = z.object({ password: NewPassword, name: Text(200).opt
 export const PasswordResetBody = z.object({ email: Email });
 
 export const MailTestBody = z.object({ to: Email });
+
+// --- Your own preferences (preferences.ts lists them) ---
+
+/** A new value for one of your preferences: its type in JSON, or text (a list as names split on commas). */
+export const PreferenceValueBody = z.object({ value: z.union([z.string(), z.array(z.string())], "a value is required") });
 
 // --- OAuth, for the CLI to sign in through the browser. Field names are the standard's (RFC 6749, 7636, 8628). ---
 
