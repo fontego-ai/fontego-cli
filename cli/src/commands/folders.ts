@@ -24,6 +24,7 @@ function describeSyncIssues(r: SyncReport): string[] {
   for (const p of r.invalid) lines.push(`skipped ${p}: this name can't be synced`);
   for (const u of r.unreadable) lines.push(`can't read ${u.path} (${u.reason}): left as it was, nothing in it sent or deleted`);
   if (r.readOnly && r.pending) lines.push(`${r.pending} local change(s) not sent: you can only read this workspace.`);
+  else if (r.pending) lines.push(`${r.pending} local change(s) not sent yet: run fontego sync again to send them.`);
   return lines;
 }
 
@@ -81,7 +82,11 @@ export const folderCommands: Builtin[] = [
       const dir = resolve(parsed.args.DIR ?? ".");
       if (!existsSync(dir)) throw new UsageError(`${dir} doesn't exist.`);
       const existing = findRoot(dir);
-      if (existing) throw new UsageError(`${existing} is already synced with "${(await loadState(existing)).workspace}".`);
+      if (existing) {
+        throw new UsageError(
+          `${existing} is already synced with "${(await loadState(existing)).workspace}". If a link there stopped halfway, carry on with: fontego sync ${existing}`,
+        );
+      }
       const { role, report } = await firstSync(conn, ws, dir);
       print({ dir, workspace: ws, role, ...report }, () =>
         [

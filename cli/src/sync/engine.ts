@@ -7,11 +7,12 @@
 //
 // A real conflict keeps both: the server's version stays in place and ours is saved next to it as a conflict copy.
 
-import { textContent, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
+import { blobHash, MAX_OPS, textContent, type ChangeOp, type Conflict, type FileMode } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
 import { loadIgnoreRules } from "./ignore.ts";
 import {
+  absent,
   conflictName,
   insideUnreadable,
   readBytes,
@@ -38,13 +39,31 @@ export interface SyncReport {
    * them wait: the copy stays at its last full step (state.head) until they can be read again.
    */
   unreadable: Unreadable[];
-  /** Local changes that couldn't go up (read-only access) */
+  /**
+   * Local changes not sent in this round: with read-only access (readOnly), or because the round gave up (the server
+   * kept refusing without saying which file). The next round tries them again.
+   */
   pending: number;
   readOnly: boolean;
 }
 
 const same = (a: LocalEntry | undefined, b: LocalEntry | undefined) =>
   a === b || (!!a && !!b && a.hash === b.hash && a.mode === b.mode);
+
+/**
+ * At most this much JSON per change set: well under the smallest body a server takes (64 MiB). A file bigger than this
+ * goes on its own, which always fits: a server takes a body of twice its largest file.
+ */
+export const BATCH_BYTES = 32 * 1024 * 1024;
+
+/** One local change waiting to go up; its bytes are read only when its batch is made. */
+interface Outgoing {
+  path: string;
+  /** The file here (none: deleted here) */
+  local?: LocalEntry;
+  /** The file at the last sync, its base */
+  base?: LocalEntry;
+}
 
 function emptyReport(): SyncReport {
   return { head: null, pulled: [], pushed: [], conflicts: [], skipped: [], invalid: [], unreadable: [], pending: 0, readOnly: false };
@@ -58,6 +77,7 @@ export class SyncEngine {
     readonly root: string,
     private readonly client: Client,
     readonly state: SyncState,
+    private readonly batchBytes = BATCH_BYTES,
   ) {}
 
   /** Runs a round; if one is already running, runs one more right after it. */
@@ -84,9 +104,14 @@ export class SyncEngine {
   private async round(): Promise<SyncReport> {
     const report = emptyReport();
     await this.pull(report);
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const outcome = await this.push(report);
-      if (outcome !== "retry") break;
+    // A refused file (the server names one per answer), a conflict or a stale base sends the round back to scan and
+    // try again. It goes on as long as each try gets somewhere, so five refusals in a row don't keep a sixth, valid,
+    // file waiting; five tries in a row without progress end it, and what is left shows in `pending`.
+    const progress = () => report.pushed.length + report.skipped.length + report.conflicts.length;
+    for (let idle = 0, tries = 0; idle < 5 && tries < 10_000; tries++) {
+      const before = progress();
+      if ((await this.push(report)) !== "retry") break;
+      idle = progress() > before ? 0 : idle + 1;
     }
     if (report.pushed.length) await this.pull(report);
     report.head = this.state.head;
@@ -185,13 +210,18 @@ export class SyncEngine {
     // else: changed on both sides; push sends ours with its original base and the server merges
   }
 
+  /**
+   * Sends what changed here, in batches the server takes: at most MAX_OPS operations and BATCH_BYTES of JSON each,
+   * reading the files of one batch at a time. What each batch commits is saved in the state at once, so an interrupted
+   * round (a link of thousands of files, a lost connection) goes on from there with the next `fontego sync`.
+   */
   private async push(report: SyncReport): Promise<"done" | "retry"> {
     const scanned = await scan(this.root, await loadIgnoreRules(this.root), this.state.files);
     report.invalid = scanned.invalid;
     report.unreadable = scanned.unreadable;
     const local = scanned.files;
 
-    const ops: ChangeOp[] = [];
+    const todo: Outgoing[] = [];
     const paths = new Set([...local.keys(), ...Object.keys(this.state.files)]);
     for (const path of [...paths].sort()) {
       if (insideUnreadable(scanned.unreadable, path)) continue; // unknown here: neither sent nor deleted
@@ -200,23 +230,72 @@ export class SyncEngine {
       if (same(l, s)) continue;
       const skip = this.state.skipped[path];
       if (skip && skip.hash === (l?.hash ?? "deleted")) continue;
-      if (l) {
-        const bytes = await readBytes(this.root, path, l.mode);
-        const op: ChangeOp = { op: "put", path, baseHash: s?.hash ?? null, mode: l.mode as FileMode };
-        const text = textContent(bytes);
-        if (text === null) op.contentBase64 = Buffer.from(bytes).toString("base64");
-        else op.content = text;
-        ops.push(op);
-      } else if (s) {
-        ops.push({ op: "delete", path, baseHash: s.hash });
-      }
+      if (l || s) todo.push({ path, local: l, base: s });
     }
-    if (ops.length === 0) return "done";
-    if (this.state.readOnly) {
-      report.pending = ops.length;
-      return "done";
-    }
+    report.pending = todo.length;
+    if (todo.length === 0 || this.state.readOnly) return "done";
 
+    type Ready = { item: Outgoing; op: ChangeOp; size: number };
+    let carry: Ready | null = null;
+    for (let i = 0; i < todo.length || carry; ) {
+      const batch: Array<{ item: Outgoing; op: ChangeOp }> = [];
+      let bytes = 0;
+      while (batch.length < MAX_OPS) {
+        let next: Ready | null = carry;
+        carry = null;
+        if (!next) {
+          if (i >= todo.length) break;
+          const item = todo[i++]!;
+          const op = await this.opFor(item);
+          if (!op) continue; // gone since the scan: the next round sees it
+          next = { item, op, size: Buffer.byteLength(JSON.stringify(op)) };
+        }
+        if (batch.length && bytes + next.size > this.batchBytes) {
+          carry = next;
+          break;
+        }
+        batch.push(next);
+        bytes += next.size;
+      }
+      if (!batch.length) break;
+      const outcome = await this.send(report, batch, local);
+      if (outcome !== "sent") return outcome;
+      report.pending = todo.length - i + (carry ? 1 : 0);
+      // What the server confirmed stays confirmed, even if a later batch fails or the process is stopped.
+      await saveState(this.root, this.state);
+    }
+    report.pending = 0;
+    return "done";
+  }
+
+  /** The operation for one local change, with the bytes read now; null if the file is gone since the scan. */
+  private async opFor(item: Outgoing): Promise<ChangeOp | null> {
+    const { path, local: l, base: s } = item;
+    if (!l) return { op: "delete", path, baseHash: s!.hash };
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBytes(this.root, path, l.mode);
+    } catch (e) {
+      if (absent(e)) return null;
+      throw e;
+    }
+    // Edited between the scan and now: what goes up is what was read, so that is what the state must remember.
+    const hash = blobHash(bytes);
+    if (hash !== l.hash) item.local = { ...l, hash, size: bytes.length, mtimeMs: -1 };
+    const op: ChangeOp = { op: "put", path, baseHash: s?.hash ?? null, mode: l.mode as FileMode };
+    const text = textContent(bytes);
+    if (text === null) op.contentBase64 = Buffer.from(bytes).toString("base64");
+    else op.content = text;
+    return op;
+  }
+
+  /** Sends one batch as a change set and takes in the answer. */
+  private async send(
+    report: SyncReport,
+    batch: Array<{ item: Outgoing; op: ChangeOp }>,
+    local: Map<string, LocalEntry>,
+  ): Promise<"sent" | "retry" | "done"> {
+    const ops = batch.map((b) => b.op);
     const names = ops.map((o) => (o.op === "move" ? o.to : o.path));
     const message = `${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""} (from ${hostname()})`;
     let result;
@@ -226,7 +305,6 @@ export class SyncEngine {
       if (!(e instanceof ClientError)) throw e;
       if (e.status === 403) {
         this.state.readOnly = true;
-        report.pending = ops.length;
         return "done";
       }
       if (e.code === "unknown_base") {
@@ -280,17 +358,14 @@ export class SyncEngine {
     }
 
     const byPath = new Map(result.changes.map((c) => [c.path, c]));
-    for (const op of ops) {
-      if (op.op === "move") continue;
-      const path = op.path;
+    for (const { item } of batch) {
+      const { path, local: l } = item;
       const change = byPath.get(path);
-      const l = local.get(path);
-      if (op.op === "delete") {
+      if (!l) {
         delete this.state.files[path];
         if (change) report.pushed.push({ path, status: "delete" });
         continue;
       }
-      if (!l) continue;
       if (change?.merged && result.commit) {
         // The server merged our edit with someone else's: bring the merged text here.
         // If it changed again meanwhile, keep the original base: the next round merges once more.
@@ -302,7 +377,7 @@ export class SyncEngine {
       delete this.state.skipped[path];
       if (change) report.pushed.push({ path, status: "put" });
     }
-    return "done";
+    return "sent";
   }
 }
 

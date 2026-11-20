@@ -6,7 +6,7 @@ import { startTestServer, tempDir, type TestServer } from "./server.ts";
 import { Client, ClientError } from "../src/client.ts";
 import { localStatus, SyncEngine } from "../src/sync/engine.ts";
 import { isConflictCopy } from "../src/sync/local.ts";
-import { newState, saveState } from "../src/sync/state.ts";
+import { loadState, newState, saveState } from "../src/sync/state.ts";
 import { acquireLock, LockedError, Watcher } from "../src/sync/watch.ts";
 
 let s: TestServer;
@@ -274,6 +274,89 @@ describe("sync between two copies", () => {
     await w.stop();
     expect(errors.some((m) => m.includes("Can't reach"))).toBe(true);
     expect(synced).toBe(true);
+  });
+});
+
+describe("big sends go in batches the server takes", () => {
+  const files = async (ws: string) => (await s.call(s.adminToken, "GET", `/v1/workspaces/${ws}/tree?recursive=1`)).data.entries.filter((e: any) => e.type === "blob").length;
+  const linkDir = async (ws: string, make: (dir: string) => void, client?: Client, batchBytes?: number) => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: ws });
+    await s.call(s.adminToken, "PUT", `/v1/workspaces/${ws}/members/ana@example.org`, { role: "editor" });
+    const dir = tempDir(`fontego-link-${ws}-`);
+    dirs.push(dir);
+    make(dir);
+    // What `fontego link` does: a state with no files yet, then a sync that sends everything up.
+    const state = newState(s.url, ws, "Ana");
+    await saveState(dir, state);
+    return { dir, engine: new SyncEngine(dir, client ?? new Client(s.url, ana.token), state, batchBytes) };
+  };
+
+  test("a link of 1,001 files sends them all, past the 1,000 operations of one change set", async () => {
+    const { engine } = await linkDir("thousand", (dir) => {
+      for (let n = 0; n < 1001; n++) writeFileSync(join(dir, `f${String(n).padStart(4, "0")}.md`), `file ${n}\n`);
+    });
+    const r = await engine.sync();
+    expect(r.pushed).toHaveLength(1001);
+    expect(r.pending).toBe(0);
+    expect(await files("thousand")).toBe(1001);
+  });
+
+  test("files that together pass the server's body limit go in several change sets", async () => {
+    // 4 files of 17 MiB: each under the 20 MiB file limit, 68 MiB together, over the smallest body limit (64 MiB).
+    const line = "a plain line of text to fill a big file with\n";
+    const big = line.repeat(Math.ceil((17 * 1024 * 1024) / line.length));
+    const { engine } = await linkDir("heavy", (dir) => {
+      for (const n of [1, 2, 3, 4]) writeFileSync(join(dir, `big${n}.txt`), big);
+    });
+    const r = await engine.sync();
+    expect(r.pushed.map((p) => p.path)).toEqual(["big1.txt", "big2.txt", "big3.txt", "big4.txt"]);
+    expect(await files("heavy")).toBe(4);
+    const commits = (await s.call(ana.token, "GET", "/v1/workspaces/heavy/history?limit=10")).data.commits;
+    expect(commits.length).toBeGreaterThan(1);
+  }, 60_000);
+
+  test("a link stopped after a batch carries on with the next sync of that folder", async () => {
+    class Dropped extends Client {
+      calls = 0;
+      override change(ws: string, cs: Parameters<Client["change"]>[1]) {
+        if (++this.calls === 2) return Promise.reject(new Error("connection lost"));
+        return super.change(ws, cs);
+      }
+    }
+    // Small batches (1 KiB) so that 30 files take several change sets.
+    const { dir, engine } = await linkDir(
+      "halfway",
+      (d) => {
+        for (let n = 0; n < 30; n++) writeFileSync(join(d, `n${String(n).padStart(2, "0")}.md`), `note ${n} `.repeat(20) + "\n");
+      },
+      new Dropped(s.url, ana.token),
+      1024,
+    );
+    await expect(engine.sync()).rejects.toThrow("connection lost");
+    const sent = await files("halfway");
+    expect(sent).toBeGreaterThan(0);
+    expect(sent).toBeLessThan(30);
+    // What the first batch committed is in the saved state: `fontego sync` (a new process) sends only the rest.
+    const again = new SyncEngine(dir, new Client(s.url, ana.token), await loadState(dir), 1024);
+    const r = await again.sync();
+    expect(r.pushed).toHaveLength(30 - sent);
+    expect(await files("halfway")).toBe(30);
+    const B = await copy(ana.token, "Bea", "halfway");
+    expect(read(B, "n29.md")).toBe("note 29 ".repeat(20) + "\n");
+  });
+
+  test("five refused files in a row don't keep a sixth, valid one from going up", async () => {
+    const { engine } = await linkDir("refusals", (dir) => {
+      for (const n of [1, 2, 3, 4, 5]) {
+        mkdirSync(join(dir, `s${n}`));
+        writeFileSync(join(dir, `s${n}/.env`), `TOKEN=${n}\n`);
+      }
+      writeFileSync(join(dir, "valid.md"), "fine\n");
+    });
+    const r = await engine.sync();
+    expect(r.skipped.map((x) => x.path).sort()).toEqual(["s1/.env", "s2/.env", "s3/.env", "s4/.env", "s5/.env"]);
+    expect(r.pushed.map((p) => p.path)).toEqual(["valid.md"]);
+    expect(r.pending).toBe(0);
   });
 });
 

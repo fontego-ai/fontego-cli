@@ -18,7 +18,7 @@ export interface LocalEntry {
 const toPosix = (p: string) => (sep === "/" ? p : p.split(sep).join("/"));
 
 /** Whether an error means the thing isn't there (as opposed to being there and unreadable). */
-const absent = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
+export const absent = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
 const reasonOf = (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
 
 /** A folder or file the scan couldn't read: what is there is unknown, so nothing under it counts as added or gone. */
