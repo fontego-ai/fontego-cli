@@ -74,6 +74,21 @@ export const CreateTokenBody = z.object({
   kind: z.enum(["person", "agent"]).optional(),
 });
 
+/** A person's name, as others see it beside what they change: never empty once it is changed. */
+const PersonName = z.string().trim().min(1, "can't be empty").max(200, "use at most 200 characters");
+
+/** Your own account: what you may change yourself. The email is changed by a server admin (UpdateUserBody). */
+export const UpdateMeBody = z
+  .object({ name: PersonName.optional() })
+  .refine((b) => b.name !== undefined, { message: "say what to change: a name (--name)" });
+export type UpdateMeRequest = z.input<typeof UpdateMeBody>;
+
+/** A server admin changes someone's name or email. The email is what they sign in with. */
+export const UpdateUserBody = z
+  .object({ name: PersonName.optional(), email: Email.optional() })
+  .refine((b) => b.name !== undefined || b.email !== undefined, { message: "say what to change: a name (--name), an email (--email) or both" });
+export type UpdateUserRequest = z.input<typeof UpdateUserBody>;
+
 /** Invites someone: creates their account, without a password, and sends them a one-time link to set one. */
 export const InviteBody = z.object({
   email: Email,

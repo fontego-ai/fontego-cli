@@ -12,12 +12,13 @@
 //     if:TEXT             TEXT when the value is set and not false, otherwise nothing
 //     or:PATH             the value at PATH when this one is empty
 //     map:a=x,b=y         x for a, y for b, nothing for anything else
+//     join, join:FIELD    a list as one text, "a, b": its items, or that field of each ({workspaces|join:slug})
 
 export type TemplateVars = Record<string, unknown>;
 
 const TOKEN = /\{([^{}]*)\}/g;
 const FILTERS_WITH_ARG = new Set(["if", "or", "map"]);
-const FILTERS = new Set(["short", "date", "datetime", "firstLine", "bytes", "dash", ...FILTERS_WITH_ARG]);
+const FILTERS = new Set(["short", "date", "datetime", "firstLine", "bytes", "dash", "join", ...FILTERS_WITH_ARG]);
 
 function valueAt(data: unknown, path: string): unknown {
   let v: unknown = data;
@@ -65,6 +66,8 @@ function applyFilter(v: unknown, filter: string, data: unknown, vars: TemplateVa
       return !empty(v) && v !== false ? arg : "";
     case "or":
       return empty(v) ? resolve(arg, data, vars) : v;
+    case "join":
+      return Array.isArray(v) ? v.map((item) => text(arg ? valueAt(item, arg) : item)).filter((t) => t !== "").join(", ") : v;
     case "map": {
       for (const pair of arg.split(",")) {
         const eq = pair.indexOf("=");

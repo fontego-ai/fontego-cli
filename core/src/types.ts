@@ -29,6 +29,31 @@ export interface Me {
   credential: Credential;
 }
 
+/** A signed-in browser or CLI. */
+export interface SessionInfo {
+  id: number;
+  kind: "web" | "cli";
+  /** The browser or the machine */
+  label: string;
+  createdAt: string;
+  lastUsedAt: string;
+  /** When it ends if nothing else happens: unused too long, or at its maximum */
+  expiresAt: string;
+  /** The session the request that listed it came with */
+  current: boolean;
+}
+
+/** Your own open sessions (GET /me/sessions), newest first. */
+export interface MySessionsResponse {
+  sessions: SessionInfo[];
+}
+
+/** A session closed by its owner (DELETE /me/sessions/{id}); when it was the one in use, that was signing out. */
+export interface ClosedSession {
+  closed: number;
+  current: boolean;
+}
+
 /** How long sessions last on a server, decided by its admin. */
 export interface SessionPolicies {
   web: { idleDays: number; maxDays: number };
@@ -83,8 +108,71 @@ export interface UserSummary {
   isAdmin: boolean;
   disabled: boolean;
   status: AccountStatus;
-  /** For server admins: when they last used the API */
+  /** When they last used the API, to the minute; null if never. Only server admins get a UserSummary */
+  lastActiveAt: string | null;
+}
+
+/** A workspace someone is in, as another person may see it. */
+export interface PersonWorkspace {
+  slug: string;
+  name: string;
+  /** Their role in it */
+  role: Role;
+  /** Only server admins see archived ones: when it was archived */
+  archivedAt?: string;
+}
+
+/**
+ * Someone with an account, as the people who use this Fontego see each other (GET /people). Anyone signed in sees
+ * every account that isn't disabled; a server admin sees them all, with their status and last activity.
+ */
+export interface Person {
+  id: number;
+  email: string;
+  name: string;
+  /** A server admin of this Fontego */
+  isAdmin: boolean;
+  /**
+   * The workspaces they are in that the caller sees: the ones both are in, not archived; for a server admin, all of
+   * theirs, archived ones too
+   */
+  workspaces: PersonWorkspace[];
+  /** Server admins only */
+  status?: AccountStatus;
+  /** Server admins only: when they last used the API, to the minute; null if never */
   lastActiveAt?: string | null;
+}
+
+export interface PeopleResponse {
+  people: Person[];
+}
+
+/** One person's page (GET /people/{person}). */
+export interface PersonDetail extends Person {
+  /** Server admins only: where they are signed in, newest first */
+  sessions?: SessionInfo[];
+}
+
+/** What changed when a server admin edited someone's account (PATCH /admin/users/{person}). */
+export interface AccountEdit {
+  user: UserSummary;
+  /** When the email changed (not just its capitals): what was sent where */
+  emailChange?: EmailChange;
+}
+
+/**
+ * Someone's email changed. Every one-time link sent to the old address stopped working; sessions and tokens stay
+ * open, since the person is the same.
+ */
+export interface EmailChange {
+  previous: string;
+  /** The notice to the old address */
+  previousNotice: Delivery;
+  /**
+   * What went to the new address: a notice; or, when an invitation was waiting, a new invitation in its place, with
+   * its link while the mail is held
+   */
+  newAddress: { kind: "notice" | "invitation"; delivery: Delivery; expiresAt?: string };
 }
 
 // --- For server admins ---
@@ -95,15 +183,9 @@ export interface PersonRef {
   name: string;
 }
 
-export interface AdminSession {
-  id: number;
+/** Someone's session, in the lists of server admins */
+export interface AdminSession extends SessionInfo {
   user: PersonRef;
-  kind: "web" | "cli";
-  /** The browser or the machine */
-  label: string;
-  createdAt: string;
-  lastUsedAt: string;
-  expiresAt: string;
 }
 
 export interface AdminToken {
@@ -299,11 +381,20 @@ export interface TemplateInfo {
   from: "built-in" | "instance";
 }
 
+/** Someone in a workspace. Anyone who reads the workspace sees whether they can sign in and when they last came. */
 export interface Member {
   userId: number;
   email: string;
   name: string;
   role: Role;
+  status: AccountStatus;
+  /** When they last used the API, to the minute; null if never */
+  lastActiveAt: string | null;
+}
+
+/** Who is in a workspace (GET /workspaces/{ws}/members, and what changing a member answers). */
+export interface MembersResponse {
+  members: Member[];
 }
 
 export interface TreeEntry {
