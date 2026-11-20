@@ -139,6 +139,10 @@ per-workspace access.
 - \`fontego info WORKSPACE --json\` says what the workspace is for and, in \`folders\`, what goes in each top-level
   folder, as its admins wrote it. Put new files where their folder says; a line marked \`"exists": false\` is of a
   folder that is gone. \`fontego ls WORKSPACE\` shows the same lines next to the folders.
+- \`fontego activity --workspace WORKSPACE --files --json\` says what changed lately, who did it (\`by\`: the person,
+  and their agent if one did it) and in which files; without \`--workspace\`, in every workspace you can read. Pages go
+  on with \`--cursor\` and the \`next\` of the answer. \`fontego ls WORKSPACE --last\` says when each file or folder
+  last changed. Look before reworking something someone just changed.
 
 ## Work on a synced folder
 

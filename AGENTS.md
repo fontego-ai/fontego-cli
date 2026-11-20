@@ -74,7 +74,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 
 | Path | What |
 |---|---|
-| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; `outputTemplates` finds every template in one) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
+| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; a table or lines may print a list under each row, such as a commit's files, with how many more the API cut (`details`), lines after them all that are left out when empty, such as the next page's cursor (`footer`), and columns left out when nobody filled them (`optional`); `outputTemplates` finds every template in one) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Reads the command line and runs a built-in or a declared command |
 | `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`: 6 the server can't be reached, 7 a sync that did only part) |
 | `cli/src/args.ts` | Command words, arguments and flags, and usage lines |
@@ -111,7 +111,8 @@ bun run build --only linux-x64 --out /tmp/fontego-dist
 
 - `cli/test/build.test.ts` builds this system's executable and uses it as a person would: on its own, through the
   npm launcher, and installed by `install.sh` from a local server laid out like GitHub releases.
-- The tests run the server in a temporary folder on a free port; they never touch real data. They set
+- The tests run the server in a temporary folder on a free port; they never touch real data. They run as no agent
+  (`NO_AGENT` in `cli.test.ts`), whatever runs them, unless a test names one: its name would land in every commit. They set
   `FONTEGO_CREDENTIAL_STORE=file` and `FONTEGO_BROWSER=none`, so they never write to the keychain or open a browser;
   `login.test.ts` plays the browser itself.
 - Bun 1.3.14, and git 2.38 or newer for the server.
