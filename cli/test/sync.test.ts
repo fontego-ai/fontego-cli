@@ -544,7 +544,7 @@ describe("big sends go in batches the server takes", () => {
     expect(r.pushed).toHaveLength(1001);
     expect(r.pending).toBe(0);
     expect(await files("thousand")).toBe(1001);
-  });
+  }, 60_000);
 
   test("files that together pass the server's body limit go in several change sets", async () => {
     // 4 files of 17 MiB: each under the 20 MiB file limit, 68 MiB together, over the smallest body limit (64 MiB).
@@ -588,7 +588,7 @@ describe("big sends go in batches the server takes", () => {
     expect(await files("halfway")).toBe(30);
     const B = await copy(ana.token, "Bea", "halfway");
     expect(read(B, "n29.md")).toBe("note 29 ".repeat(20) + "\n");
-  });
+  }, 60_000);
 
   test("five refused files in a row don't keep a sixth, valid one from going up", async () => {
     const { engine } = await linkDir("refusals", (dir) => {

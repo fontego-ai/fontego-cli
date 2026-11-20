@@ -3,14 +3,19 @@
 
 import { exactText } from "@fontego/core";
 import { UsageError } from "./args.ts";
+import { canAsk } from "./output.ts";
 
-/** Reads a secret: typed on the terminal without echo, or the first line of stdin when that is not a terminal. */
-export async function readSecret(label: string): Promise<string> {
+/**
+ * Reads a secret: the first line of stdin when that is not a terminal, else typed on the terminal without echo, but
+ * only when fontego may ask (canAsk: never with --json, where a script or an agent waits for the answer).
+ */
+export async function readSecret(label: string, json = false): Promise<string> {
   if (!process.stdin.isTTY) {
     const line = (await Bun.stdin.text()).split(/\r?\n/)[0] ?? "";
     if (!line) throw new UsageError(`${label} is a secret: type it when asked, or pipe it in on stdin. Nothing came on stdin.`);
     return line;
   }
+  if (!canAsk(json)) throw new UsageError(`${label} is a secret, and with --json nothing is asked: pipe it in on stdin.`);
   const stdin = process.stdin;
   process.stderr.write(`${label} (not shown): `);
   stdin.setRawMode(true);

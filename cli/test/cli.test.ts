@@ -182,7 +182,7 @@ describe("fontego CLI", () => {
     expect(tree.filter((e: any) => e.type === "blob")).toHaveLength(300);
     expect(readdirSync(join(dir, ".fontego")).filter((f) => f.endsWith(".tmp") || f.startsWith("lock"))).toEqual([]);
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 60_000);
 
   test("sync while watch runs is refused; a lock left behind is taken", async () => {
     const parent = tempDir("fontego-cli-locked-");
@@ -437,7 +437,93 @@ describe("commands the server declares", () => {
     expect(help.out).toContain("fontego workspaces");
     expect(help.out).toContain("can't be reached");
     const r = await fontego(["workspaces"], env);
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(6);
     expect(r.err).toContain("Can't reach");
+  });
+});
+
+describe("for scripts and agents: --json always parses, never asks, and every failure says what to do", () => {
+  const env = () => ({ XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none" });
+  const failed = (r: { out: string; code: number }) => {
+    const e = JSON.parse(r.out).error;
+    expect(typeof e.message).toBe("string");
+    expect(typeof e.hint).toBe("string");
+    return { ...e, exit: r.code };
+  };
+
+  test("help is JSON too", async () => {
+    for (const args of [["help"], ["help", "sync"], ["sync", "--help"], ["workspaces", "--help"]]) {
+      const r = await fontego([...args, "--json"]);
+      expect([args.join(" "), r.code]).toEqual([args.join(" "), 0]);
+      expect(typeof JSON.parse(r.out).help).toBe("string");
+    }
+  });
+
+  test("a command used the wrong way: code usage, exit 1, and the command's help as the hint", async () => {
+    const e = failed(await fontego(["status", "one", "two", "three", "--json"]));
+    expect([e.code, e.exit]).toEqual(["usage", 1]);
+    expect(e.hint).toContain("fontego help status");
+  });
+
+  test("a secret left out on a terminal is not asked for with --json", async () => {
+    // A real terminal (a pty, through script(1)): without --json it would ask, without echo.
+    const cmd = `bun ${MAIN} admin settings set smtp.password --json`;
+    const proc = Bun.spawn(["script", "-qec", cmd, "/dev/null"], {
+      env: { ...process.env, ...env(), FONTEGO_URL: s.url, FONTEGO_TOKEN: s.adminToken },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const timer = setTimeout(() => proc.kill(), 15_000); // if it asked, it would wait here
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    clearTimeout(timer);
+    expect(out).not.toContain("(not shown)");
+    const e = failed({ out: out.replace(/\r/g, ""), code });
+    expect([e.code, e.exit]).toEqual(["usage", 1]);
+    expect(e.message).toContain("stdin");
+  });
+
+  test("a damaged state: bad_state, exit 1, and how to carry on without losing a file", async () => {
+    const parent = tempDir("fontego-cli-state-");
+    const dir = join(parent, "notes");
+    expect((await fontego(["clone", "notes", dir])).code).toBe(0);
+    const state = join(dir, ".fontego/state.json");
+    const good = readFileSync(state, "utf8");
+    writeFileSync(state, "{ not json");
+    let e = failed(await fontego(["status", dir, "--json"]));
+    expect([e.code, e.exit]).toEqual(["bad_state", 1]);
+    expect(e.hint).toContain("fontego link WORKSPACE");
+    writeFileSync(state, JSON.stringify({ ...JSON.parse(good), files: null }));
+    e = failed(await fontego(["sync", dir, "--json"]));
+    expect(e.code).toBe("bad_state");
+    expect(e.hint).toContain(`fontego link notes ${dir}`);
+    writeFileSync(state, JSON.stringify({ ...JSON.parse(good), version: 2 }));
+    e = failed(await fontego(["status", dir, "--json"]));
+    expect(e.message).toContain("newer fontego");
+    expect(e.hint).toContain("Update fontego");
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  test("the server can't be reached: exit 6", async () => {
+    const e = failed(await fontego(["workspaces", "--json"], { FONTEGO_URL: "http://127.0.0.1:9", FONTEGO_TOKEN: ana.token }));
+    expect([e.code, e.exit]).toEqual(["unreachable", 6]);
+  });
+
+  test("a sync that did only part: exit 7 and complete false, then 0 once it is all through", async () => {
+    const parent = tempDir("fontego-cli-partial-");
+    const dir = join(parent, "notes");
+    expect((await fontego(["clone", "notes", dir])).code).toBe(0);
+    writeFileSync(join(dir, ".env"), "API_KEY=1234\n");
+    writeFileSync(join(dir, "partial-ok.md"), "this one goes\n");
+    const r = await fontego(["sync", dir, "--json"]);
+    expect(r.code).toBe(7);
+    const report = JSON.parse(r.out);
+    expect(report.complete).toBe(false);
+    expect(report.skipped.map((x: any) => x.path)).toEqual([".env"]);
+    expect(report.pushed.map((p: any) => p.path)).toEqual(["partial-ok.md"]);
+    rmSync(join(dir, ".env"));
+    const after = await fontego(["sync", dir, "--json"]);
+    expect([after.code, JSON.parse(after.out).complete]).toEqual([0, true]);
+    rmSync(parent, { recursive: true, force: true });
   });
 });

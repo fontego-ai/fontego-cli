@@ -117,14 +117,15 @@ describe("hints for agents", () => {
     expect(agentName({})).toBeNull();
   });
 
-  test("an agent that gets a command wrong is pointed to help --agent; a person isn't", async () => {
+  test("an agent that gets a command wrong is pointed to help --agent; a person, to the command's help", async () => {
     const home = tempDir("fontego-setup-");
     const agent = await fontego(home, ["setup", "--no-such-flag", "--json"], { CLAUDECODE: "1" });
     expect(agent.code).toBe(1);
     expect(JSON.parse(agent.out).error.hint).toContain("fontego help --agent");
     const person = await fontego(home, ["setup", "--no-such-flag"]);
     expect(person.err).toContain("usage:");
-    expect(person.err).not.toContain("hint:");
+    expect(person.err).toContain("hint: Run: fontego help setup"); // the command's help, not the agents' guide
+    expect(person.err).not.toContain("help --agent");
     expect((await fontego(home, ["help"], { CLAUDECODE: "1" })).out).toContain("Running from claude-code: fontego help --agent");
   });
 });

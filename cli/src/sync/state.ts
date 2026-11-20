@@ -40,8 +40,61 @@ export function newState(url: string, workspace: string, user: string): SyncStat
   return { version: 1, url, workspace, user, head: null, files: {}, skipped: {} };
 }
 
+/** A synced folder's state that can't be used: damaged, or written by a newer fontego. The hint says what to do. */
+export class StateError extends Error {
+  constructor(
+    message: string,
+    readonly hint: string,
+  ) {
+    super(message);
+  }
+}
+
+/** What is wrong with a parsed state, or null. */
+function stateProblem(s: unknown): string | null {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return "it isn't an object";
+  const o = s as Record<string, unknown>;
+  const str = (k: string) => typeof o[k] === "string" && (o[k] as string).length > 0;
+  const map = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v);
+  if (!str("url") || !str("workspace") || typeof o.user !== "string") return "url, workspace or user is missing";
+  if (o.head !== null && typeof o.head !== "string") return "head is neither a commit nor null";
+  if (!map(o.files) || !map(o.skipped)) return "files or skipped is missing";
+  for (const [path, f] of Object.entries(o.files as Record<string, unknown>)) {
+    const e = f as Record<string, unknown> | null;
+    if (!e || typeof e.hash !== "string" || typeof e.mode !== "string" || typeof e.size !== "number" || typeof e.mtimeMs !== "number") {
+      return `the entry of ${path} is broken`;
+    }
+  }
+  for (const [path, k] of Object.entries(o.skipped as Record<string, unknown>)) {
+    const e = k as Record<string, unknown> | null;
+    if (!e || typeof e.hash !== "string" || typeof e.reason !== "string") return `the skipped entry of ${path} is broken`;
+  }
+  if (o.readOnly !== undefined && typeof o.readOnly !== "boolean") return "readOnly is neither true nor false";
+  return null;
+}
+
+/** Reads a synced folder's state, checking it is one this fontego can use. */
 export async function loadState(root: string): Promise<SyncState> {
-  return JSON.parse(await readFile(statePath(root), "utf8")) as SyncState;
+  const path = statePath(root);
+  // Without the state the files are still all there: link the folder again and only what differs moves.
+  const relink = (ws?: string) =>
+    `The files are fine. Move ${join(root, STATE_DIR)} aside (keep it until you're sure) and run \`fontego link ${ws ?? "WORKSPACE"} ${root}\`: what is the same as the workspace stays, anything different goes up or into a conflict copy.`;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(path, "utf8"));
+  } catch (e) {
+    throw new StateError(`${path} can't be read: ${(e as Error).message}.`, relink());
+  }
+  const version = (raw as { version?: unknown } | null)?.version;
+  if (typeof version === "number" && version > 1) {
+    throw new StateError(
+      `${path} was written by a newer fontego (state version ${version}; this one reads version 1).`,
+      "Update fontego (the same way you installed it), then run this again.",
+    );
+  }
+  const problem = version === 1 ? stateProblem(raw) : "it has no version 1";
+  if (problem) throw new StateError(`${path} is damaged: ${problem}.`, relink((raw as { workspace?: string } | null)?.workspace));
+  return raw as SyncState;
 }
 
 export async function saveState(root: string, state: SyncState) {

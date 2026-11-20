@@ -22,6 +22,7 @@ import {
 } from "../config.ts";
 import { ensureMigrated } from "../connect.ts";
 import { forgetCommands, refreshCommands } from "../declared.ts";
+import { canAsk } from "../output.ts";
 import type { Builtin, RunContext } from "./command.ts";
 import { skillInstalled } from "./setup.ts";
 
@@ -51,7 +52,7 @@ async function loginTarget(rc: RunContext): Promise<string> {
   if (given) return given;
   const all = listInstances();
   if (!all.length) throw new UsageError("fontego login URL   (the address you open in the browser)");
-  if (rc.json || !process.stdin.isTTY) throw new UsageError(`fontego login ALIAS or URL. Yours: ${listed()}`);
+  if (!canAsk(rc.json)) throw new UsageError(`fontego login ALIAS or URL. Yours: ${listed()}`);
   const store = await credentialStore();
   console.log("Sign in to which Fontego?");
   for (const [n, i] of all.entries()) {

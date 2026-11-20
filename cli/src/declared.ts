@@ -211,7 +211,7 @@ export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Clie
   // A secret left out is asked for; it lands in parsed, so trying the command again doesn't ask twice.
   for (const a of spec.args ?? []) {
     if (parsed.args[a.name] !== undefined) continue;
-    if (a.secret) parsed.args[a.name] = await readSecret(a.name);
+    if (a.secret) parsed.args[a.name] = await readSecret(a.name, opts.json);
     else if (a.stdin) parsed.args[a.name] = await readStdin(a.name, usageLine(spec));
   }
   const req = buildRequest(spec, parsed);

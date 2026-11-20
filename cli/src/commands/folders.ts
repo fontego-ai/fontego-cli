@@ -9,6 +9,7 @@ import { loadIgnoreRules, type IgnoreMatch } from "../sync/ignore.ts";
 import { isConflictCopy, scan } from "../sync/local.ts";
 import { findRoot, loadState, newState, saveState, statePath } from "../sync/state.ts";
 import { acquireLock, Watcher } from "../sync/watch.ts";
+import { EXIT, incomplete } from "../output.ts";
 import type { Builtin, RunContext } from "./command.ts";
 
 export function describeReport(r: SyncReport): string[] {
@@ -99,7 +100,8 @@ export const folderCommands: Builtin[] = [
       const dir = resolve(parsed.args.DIR ?? ws);
       if (existsSync(dir) && readdirSync(dir).length > 0) throw new UsageError(`${dir} is not empty. Clone into a new or empty folder.`);
       const { role, report } = await firstSync(conn, ws, dir, "fontego clone");
-      print({ dir, workspace: ws, role, ...report }, () =>
+      if (incomplete(report)) process.exitCode = EXIT.partial;
+      print({ dir, workspace: ws, role, complete: !incomplete(report), ...report }, () =>
         [`Cloned ${ws} into ${dir} (${report.pulled.length} file(s), you are ${role}).`, `Keep it in sync with: fontego watch ${dir}`].join("\n"),
       );
     },
@@ -117,7 +119,8 @@ export const folderCommands: Builtin[] = [
       const existing = findRoot(dir);
       if (existing) throw alreadySynced(existing, (await loadState(existing)).workspace);
       const { role, report } = await firstSync(conn, ws, dir, "fontego link");
-      print({ dir, workspace: ws, role, ...report }, () =>
+      if (incomplete(report)) process.exitCode = EXIT.partial;
+      print({ dir, workspace: ws, role, complete: !incomplete(report), ...report }, () =>
         [
           `Linked ${dir} to ${ws}: ${report.pushed.length} file(s) sent, ${report.pulled.length} received.`,
           ...describeSyncIssues(report),
@@ -201,7 +204,8 @@ export const folderCommands: Builtin[] = [
       const { root, engine, release } = await lockedFolder(rc, rc.parsed.args.DIR, "fontego sync");
       try {
         const r = await engine.sync();
-        rc.print({ root, ...r }, () => describeReport(r).join("\n") || "Up to date.");
+        rc.print({ root, complete: !incomplete(r), ...r }, () => describeReport(r).join("\n") || "Up to date.");
+        if (incomplete(r)) process.exitCode = EXIT.partial;
       } finally {
         await release();
       }

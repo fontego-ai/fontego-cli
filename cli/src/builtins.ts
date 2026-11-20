@@ -45,9 +45,11 @@ export const BUILTINS: Builtin[] = [
       const others = listInstances()
         .map((i) => i.alias)
         .filter((a) => a !== alias);
-      if (parsed.flags.agent === true) return console.log(agentHelp(BUILTINS, cache, stale, { alias, others }));
-      if (parsed.args.COMMAND) return console.log(commandHelp(parsed.args.COMMAND.split(" "), BUILTINS, cache));
-      console.log(generalHelp(BUILTINS, cache, stale, VERSION, { alias, others }, agentName()));
+      // With --json, help is JSON too: {"help": text}, and the command it is about.
+      const show = (text: string, command?: string) => rc.print({ ...(command ? { command } : {}), help: text }, () => text);
+      if (parsed.flags.agent === true) return show(agentHelp(BUILTINS, cache, stale, { alias, others }));
+      if (parsed.args.COMMAND) return show(commandHelp(parsed.args.COMMAND.split(" "), BUILTINS, cache), parsed.args.COMMAND);
+      show(generalHelp(BUILTINS, cache, stale, VERSION, { alias, others }, agentName()));
     },
   },
   ...setupCommands,

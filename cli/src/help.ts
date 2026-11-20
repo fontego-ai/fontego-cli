@@ -127,7 +127,11 @@ per-workspace access.
   CI) uses that server and token instead.
 - Errors are printed as \`error: <message>\` plus a \`hint:\` line saying what to do. With \`--json\` they come as
   \`{"error": {"code", "message", "hint"}}\` on stdout and the exit code is not 0.
-- Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict, 5 not allowed.
+- Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict, 5 not allowed, 6 the server
+  can't be reached, 7 a sync that did only part (something was refused or couldn't be read this time, or changes
+  still wait: the output says what, with \`"complete": false\`, and the next sync tries again).
+- With \`--json\` nothing is ever asked: a secret left out has to come on stdin. \`--help\` and \`fontego help\` print
+  \`{"help": ...}\` too.
 - \`fontego help COMMAND\` shows the arguments and options of one command.
 
 ## Work on a synced folder

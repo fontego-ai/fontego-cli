@@ -12,10 +12,9 @@ import { ClientError } from "./client.ts";
 import { connect, type Connection } from "./connect.ts";
 import { findCommand, nameLength, readCommands, refreshCommands, runCommand, type CachedCommands } from "./declared.ts";
 import { agentPointer, describe } from "./help.ts";
+import { failureOf, printFailure } from "./output.ts";
 import { findRoot, loadState } from "./sync/state.ts";
-import { LockedError } from "./sync/watch.ts";
 
-const EXIT: Record<number, number> = { 401: 2, 404: 3, 409: 4, 403: 5 };
 const DAY = 86_400_000;
 
 /** Inside a synced folder, the URL of the instance it belongs to. */
@@ -28,12 +27,16 @@ async function main(): Promise<void> {
   let json = process.argv.includes("--json");
   let conn: Connection | null = null;
   let cache: CachedCommands | null = null;
+  /** The command being run, once known: a usage error points to its help */
+  let commandName: string | null = null;
 
   try {
     const globals = readGlobals(process.argv.slice(2));
     json = globals.json;
     const { help, instance, tokens } = globals;
     const print = (data: unknown, text: () => string) => console.log(json ? JSON.stringify(data, null, 2) : text());
+    /** A command's help, as text, or with --json as {"command", "help"} */
+    const showHelp = (command: string, text: string) => print({ command, help: text }, () => text);
     const chosen = instance || process.env.FONTEGO_INSTANCE;
     const signIn: RunContext["connect"] = async (opts = {}) => {
       if (!conn) conn = await connect({ alias: instance, folderUrl: opts.folderUrl ?? (chosen ? undefined : await folderUrl()) });
@@ -45,7 +48,8 @@ async function main(): Promise<void> {
 
     if (builtinName) {
       const b = BUILTINS.find((x) => x.name === builtinName)!;
-      if (help && builtinName !== "help") return console.log(describe(b));
+      commandName = b.name;
+      if (help && builtinName !== "help") return showHelp(b.name, describe(b));
       const rest = tokens.slice(words.length ? builtinName.split(" ").length : 0);
       await b.run({ parsed: parseCommand(b, rest), json, instance, print, connect: signIn });
     } else {
@@ -58,7 +62,8 @@ async function main(): Promise<void> {
         spec = findCommand(cache, words);
       }
       if (!spec) throw new UsageError(`Unknown command "${words.join(" ") || tokens[0]}". Run: fontego help`);
-      if (help) return console.log(describe(spec));
+      commandName = spec.name;
+      if (help) return showHelp(spec.name, describe(spec));
       const parsed = parseCommand(spec, tokens.slice(nameLength(spec, words)));
       try {
         await runCommand(spec, parsed, client, { json });
@@ -92,31 +97,14 @@ async function main(): Promise<void> {
       }
     }
   } catch (e) {
-    if (e instanceof LockedError) {
-      if (json) console.log(JSON.stringify({ error: { code: "locked", message: e.message } }));
-      else console.error(`error: ${e.message}`);
-      process.exit(1);
-    }
-    if (e instanceof UsageError) {
-      // An agent that gets a command wrong is told where its guide is.
-      const agent = agentName();
-      const hint = agent ? agentPointer(agent) : undefined;
-      if (json) console.log(JSON.stringify({ error: { code: "usage", message: e.message, ...(hint ? { hint } : {}) } }));
-      else {
-        console.error(`usage: ${e.message}`);
-        if (hint) console.error(`hint: ${hint}`);
-      }
-      process.exit(1);
-    }
-    if (e instanceof ClientError) {
-      if (json) console.log(JSON.stringify({ error: { code: e.code, message: e.message, hint: e.hint, details: e.details } }, null, 2));
-      else {
-        console.error(`error: ${e.message}`);
-        if (e.hint) console.error(`hint: ${e.hint}`);
-      }
-      process.exit(EXIT[e.status] ?? 1);
-    }
-    throw e;
+    if (process.env.FONTEGO_DEBUG === "1") throw e;
+    // A command used the wrong way points to its help, and an agent also to its guide.
+    const agent = agentName();
+    const help = `Run: fontego help${commandName && commandName !== "help" ? ` ${commandName}` : ""}`;
+    const usageHint = agent ? `${help}. ${agentPointer(agent)}` : help;
+    const failure = failureOf(e, usageHint);
+    printFailure(failure, json);
+    process.exit(failure.exit);
   }
 }
 
