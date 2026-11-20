@@ -134,6 +134,12 @@ per-workspace access.
   \`{"help": ...}\` too.
 - \`fontego help COMMAND\` shows the arguments and options of one command.
 
+## Find your way in a workspace
+
+- \`fontego info WORKSPACE --json\` says what the workspace is for and, in \`folders\`, what goes in each top-level
+  folder, as its admins wrote it. Put new files where their folder says; a line marked \`"exists": false\` is of a
+  folder that is gone. \`fontego ls WORKSPACE\` shows the same lines next to the folders.
+
 ## Work on a synced folder
 
 A synced folder is a normal folder with a hidden \`.fontego/\` (don't touch it). Edit files with your usual tools.

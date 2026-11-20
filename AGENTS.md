@@ -74,7 +74,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 
 | Path | What |
 |---|---|
-| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), what a declared command looks like (`commands.ts`) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
+| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; `outputTemplates` finds every template in one) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Reads the command line and runs a built-in or a declared command |
 | `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`: 6 the server can't be reached, 7 a sync that did only part) |
 | `cli/src/args.ts` | Command words, arguments and flags, and usage lines |
