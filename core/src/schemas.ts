@@ -55,8 +55,8 @@ export const SetMemberBody = z.object({ role: RoleSchema });
 
 // --- People, passwords and tokens ---
 
-/** NIST SP 800-63B: at least 15 characters when a password is the only thing that proves who you are. */
-export const MIN_PASSWORD = 15;
+/** At least 8 characters, the floor of NIST SP 800-63B; failed sign-ins are throttled (accounts/). Longer is welcome. */
+export const MIN_PASSWORD = 8;
 export const MAX_PASSWORD = 256;
 const NewPassword = z
   .string()
