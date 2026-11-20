@@ -1,5 +1,6 @@
 // .fontego/state.json: what the folder looked like after the last sync. Without .git, this is all the client keeps.
 
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -46,7 +47,8 @@ export async function loadState(root: string): Promise<SyncState> {
 export async function saveState(root: string, state: SyncState) {
   const path = statePath(root);
   await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
+  // A temporary file of its own: two writers never write into the same one (and a lock keeps them apart anyway).
+  const tmp = `${path}.${process.pid}-${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(tmp, JSON.stringify(state, null, 1) + "\n", { mode: 0o600 });
   await rename(tmp, path);
 }

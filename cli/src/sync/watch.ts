@@ -3,7 +3,9 @@
 // when the server is back. Only one watcher per folder.
 
 import { watch as fsWatch, type FSWatcher } from "node:fs";
-import { open, readFile, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { link, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { ClientError, type Client } from "../client.ts";
 import type { SyncEngine, SyncReport } from "./engine.ts";
@@ -18,35 +20,138 @@ export interface WatchOptions {
   onEvent?: (message: string) => void;
 }
 
+/** Whether a process is running here; one of another user still counts (EPERM). */
 function alive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
 export class LockedError extends Error {}
 
-/** Takes .fontego/lock for this process; fails if another live watcher holds it. */
-export async function acquireLock(root: string): Promise<() => Promise<void>> {
-  const path = join(root, STATE_DIR, "lock");
+/** Who holds a folder's lock. */
+interface Holder {
+  pid: number;
+  host: string;
+  command?: string;
+}
+
+/**
+ * The lock's holder; null if there is no lock. One from an older version (just a pid) counts too. One that can't be
+ * read as either has pid -1: being written right now if it is new, else left broken.
+ */
+async function holderOf(path: string): Promise<Holder | null> {
+  let text: string;
   try {
-    const pid = Number((await readFile(path, "utf8")).trim());
-    if (pid && pid !== process.pid && alive(pid)) {
-      throw new LockedError(`Another fontego watch (pid ${pid}) is already syncing this folder.`);
-    }
+    text = await readFile(path, "utf8");
   } catch (e) {
-    if (e instanceof LockedError) throw e; // a missing or unreadable lock is a stale one
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return { pid: -1, host: hostname() };
   }
-  await rm(path, { force: true });
-  const fh = await open(path, "wx");
-  await fh.writeFile(String(process.pid));
-  await fh.close();
-  return async () => {
-    await rm(path, { force: true });
-  };
+  try {
+    const h = JSON.parse(text) as Holder | number;
+    if (typeof h === "number" && Number.isInteger(h) && h > 0) return { pid: h, host: hostname() };
+    if (h && typeof h === "object" && typeof h.pid === "number") return { pid: h.pid, host: String(h.host ?? hostname()), command: h.command };
+  } catch {
+    // not JSON
+  }
+  return { pid: -1, host: hostname() };
+}
+
+const sameHolder = (a: Holder, b: Holder) => a.pid === b.pid && a.host === b.host;
+
+/**
+ * Makes a file with this text in one step, already whole: written to a temporary file first, then linked into place
+ * (link never overwrites), so nobody ever reads it half written. Where hard links aren't possible, O_EXCL makes it
+ * (and a reader may then see it empty for an instant: holderOf gives pid -1, which waits). False if it exists.
+ */
+async function create(path: string, text: string): Promise<boolean> {
+  const tmp = `${path}.${process.pid}-${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(tmp, text, { mode: 0o600 });
+  try {
+    await link(tmp, path);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "";
+    if (code === "EEXIST") return false;
+    if (!["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK"].includes(code)) throw e;
+  } finally {
+    await rm(tmp, { force: true });
+  }
+  try {
+    const fh = await open(path, "wx", 0o600);
+    try {
+      await fh.writeFile(text);
+    } finally {
+      await fh.close();
+    }
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  }
+}
+
+const ageOf = (path: string) => stat(path).then((st) => Date.now() - st.mtimeMs, () => 0);
+const pause = () => new Promise((r) => setTimeout(r, 10 + Math.random() * 20));
+
+/** A takeover file older than this belongs to a process that died while clearing a lock. */
+const TAKEOVER_STALE_MS = 10_000;
+
+/**
+ * Takes .fontego/lock for this process, so only one fontego at a time writes a folder and its state (watch, sync, and
+ * the first round of clone and link). The lock is made in one step (O_EXCL), so of two processes only one gets it.
+ * One left by a process that is gone is cleared only under a second, short lock (lock.takeover, made the same way)
+ * and after checking, under it, that it still is that one: nobody can put a new lock in its place meanwhile, because
+ * nobody else can clear it. One of a live process, or of another machine (a shared folder), is a LockedError. The
+ * release removes the lock only while it is still this process's.
+ */
+export async function acquireLock(root: string, command = "fontego"): Promise<() => Promise<void>> {
+  const dir = join(root, STATE_DIR);
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "lock");
+  const takeover = `${path}.takeover`;
+  const me: Holder = { pid: process.pid, host: hostname(), command };
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await create(path, JSON.stringify(me))) {
+      return async () => {
+        const h = await holderOf(path);
+        if (h && sameHolder(h, me)) await rm(path, { force: true });
+      };
+    }
+    const holder = await holderOf(path);
+    if (!holder) continue; // released meanwhile
+    if (holder.pid === -1 && (await ageOf(path)) < TAKEOVER_STALE_MS) {
+      await pause(); // being written: look again
+      continue;
+    }
+    const what = `${holder.command ?? "fontego"} (pid ${holder.pid}${holder.host !== me.host ? ` on ${holder.host}` : ""})`;
+    if (holder.host !== me.host) {
+      throw new LockedError(`${what} is working in this folder. If nothing runs there any more, remove ${path}.`);
+    }
+    if (holder.pid !== me.pid && alive(holder.pid)) {
+      throw new LockedError(`Another ${what} is already working in this folder. Let it finish; a fontego watch keeps it in sync by itself.`);
+    }
+    // Left by a process that is gone: clear it under the takeover lock, if it still is that one, and try again.
+    if (await create(takeover, JSON.stringify(me))) {
+      try {
+        const now = await holderOf(path);
+        if (now && sameHolder(now, holder)) await rm(path, { force: true });
+      } finally {
+        await rm(takeover, { force: true });
+      }
+      continue;
+    }
+    // Someone else is clearing it. If that takeover was left by a process that died midway, clear it too.
+    if ((await ageOf(takeover)) > TAKEOVER_STALE_MS) await rm(takeover, { force: true });
+    await pause();
+  }
+  throw new LockedError("Other fontego processes keep taking this folder's lock. Try again in a moment.");
 }
 
 export class Watcher {

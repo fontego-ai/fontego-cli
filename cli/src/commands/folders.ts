@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { UsageError } from "../args.ts";
 import { ClientError } from "../client.ts";
@@ -6,7 +7,7 @@ import type { Connection } from "../connect.ts";
 import { localStatus, SyncEngine, type SyncReport } from "../sync/engine.ts";
 import { loadIgnoreRules, type IgnoreMatch } from "../sync/ignore.ts";
 import { isConflictCopy, scan } from "../sync/local.ts";
-import { findRoot, loadState, newState, saveState } from "../sync/state.ts";
+import { findRoot, loadState, newState, saveState, statePath } from "../sync/state.ts";
 import { acquireLock, Watcher } from "../sync/watch.ts";
 import type { Builtin, RunContext } from "./command.ts";
 
@@ -28,25 +29,57 @@ function describeSyncIssues(r: SyncReport): string[] {
   return lines;
 }
 
-/** The synced folder a command works on, and a client for the instance it belongs to. */
-async function folder(rc: RunContext, dirArg: string | undefined) {
+/** The synced folder a command works on. */
+function rootOf(dirArg: string | undefined): string {
   const root = findRoot(dirArg ?? process.cwd());
   if (!root) throw new UsageError(`${dirArg ?? "This folder"} is not a synced workspace. Create one with: fontego clone WORKSPACE [DIR]`);
-  const state = await loadState(root);
-  const online = async () => {
-    const conn = await rc.connect({ folderUrl: state.url });
-    return { engine: new SyncEngine(root, conn.client, state), client: conn.client, conn };
-  };
-  return { root, state, online };
+  return root;
 }
 
-async function firstSync({ client, url }: Connection, workspace: string, dir: string) {
-  const [info, me] = await Promise.all([client.workspace(workspace), client.me()]);
-  const state = newState(url, workspace, me.user.name || me.user.email.split("@")[0]!);
-  await saveState(dir, state);
-  const report = await new SyncEngine(dir, client, state).sync();
-  return { role: info.role, report };
+/** The synced folder a command only reads, and its state. */
+async function folder(dirArg: string | undefined) {
+  const root = rootOf(dirArg);
+  return { root, state: await loadState(root) };
 }
+
+/**
+ * The synced folder a command changes, with its lock taken before its state is read (so no other fontego changes it
+ * meanwhile), and a sync engine signed in to its instance. `release` gives the lock back.
+ */
+async function lockedFolder(rc: RunContext, dirArg: string | undefined, command: string) {
+  const root = rootOf(dirArg);
+  const release = await acquireLock(root, command);
+  try {
+    const state = await loadState(root);
+    const conn = await rc.connect({ folderUrl: state.url });
+    return { root, state, release, conn, client: conn.client, engine: new SyncEngine(root, conn.client, state) };
+  } catch (e) {
+    await release();
+    throw e;
+  }
+}
+
+/**
+ * The first round of clone and link, under the folder's lock: checked again once the lock is held, so of two at once
+ * the second finds the folder already synced instead of starting it over.
+ */
+async function firstSync({ client, url }: Connection, workspace: string, dir: string, command: string) {
+  const [info, me] = await Promise.all([client.workspace(workspace), client.me()]);
+  await mkdir(dir, { recursive: true });
+  const release = await acquireLock(dir, command);
+  try {
+    if (existsSync(statePath(dir))) throw alreadySynced(dir, (await loadState(dir)).workspace);
+    const state = newState(url, workspace, me.user.name || me.user.email.split("@")[0]!);
+    await saveState(dir, state);
+    const report = await new SyncEngine(dir, client, state).sync();
+    return { role: info.role, report };
+  } finally {
+    await release();
+  }
+}
+
+const alreadySynced = (root: string, workspace: string) =>
+  new UsageError(`${root} is already synced with "${workspace}". If a link there stopped halfway, carry on with: fontego sync ${root}`);
 
 const DIR = { name: "DIR", optional: true } as const;
 
@@ -65,7 +98,7 @@ export const folderCommands: Builtin[] = [
       const ws = parsed.args.WORKSPACE!;
       const dir = resolve(parsed.args.DIR ?? ws);
       if (existsSync(dir) && readdirSync(dir).length > 0) throw new UsageError(`${dir} is not empty. Clone into a new or empty folder.`);
-      const { role, report } = await firstSync(conn, ws, dir);
+      const { role, report } = await firstSync(conn, ws, dir, "fontego clone");
       print({ dir, workspace: ws, role, ...report }, () =>
         [`Cloned ${ws} into ${dir} (${report.pulled.length} file(s), you are ${role}).`, `Keep it in sync with: fontego watch ${dir}`].join("\n"),
       );
@@ -82,12 +115,8 @@ export const folderCommands: Builtin[] = [
       const dir = resolve(parsed.args.DIR ?? ".");
       if (!existsSync(dir)) throw new UsageError(`${dir} doesn't exist.`);
       const existing = findRoot(dir);
-      if (existing) {
-        throw new UsageError(
-          `${existing} is already synced with "${(await loadState(existing)).workspace}". If a link there stopped halfway, carry on with: fontego sync ${existing}`,
-        );
-      }
-      const { role, report } = await firstSync(conn, ws, dir);
+      if (existing) throw alreadySynced(existing, (await loadState(existing)).workspace);
+      const { role, report } = await firstSync(conn, ws, dir, "fontego link");
       print({ dir, workspace: ws, role, ...report }, () =>
         [
           `Linked ${dir} to ${ws}: ${report.pushed.length} file(s) sent, ${report.pulled.length} received.`,
@@ -104,7 +133,7 @@ export const folderCommands: Builtin[] = [
     args: [DIR],
     flags: [{ name: "ignored", type: "boolean", description: "List what the ignore rules keep here (--json always does)" }],
     async run(rc) {
-      const { root, state } = await folder(rc, rc.parsed.args.DIR);
+      const { root, state } = await folder(rc.parsed.args.DIR);
       const st = await localStatus(root, state);
       // A file in the workspace that the rules match keeps syncing; say so, and how to take it out.
       const trackedIgnored = st.trackedIgnored.map((t) => ({ ...t, hash: state.files[t.path]?.hash ?? null }));
@@ -169,9 +198,7 @@ export const folderCommands: Builtin[] = [
     group: FOLDERS,
     args: [DIR],
     async run(rc) {
-      const { root, online } = await folder(rc, rc.parsed.args.DIR);
-      const { engine } = await online();
-      const release = await acquireLock(root);
+      const { root, engine, release } = await lockedFolder(rc, rc.parsed.args.DIR, "fontego sync");
       try {
         const r = await engine.sync();
         rc.print({ root, ...r }, () => describeReport(r).join("\n") || "Up to date.");
@@ -186,9 +213,7 @@ export const folderCommands: Builtin[] = [
     group: FOLDERS,
     args: [DIR],
     async run(rc) {
-      const { root, state, online } = await folder(rc, rc.parsed.args.DIR);
-      const { engine, client, conn } = await online();
-      const release = await acquireLock(root);
+      const { root, state, engine, client, conn, release } = await lockedFolder(rc, rc.parsed.args.DIR, "fontego watch");
       const log = (line: string) =>
         rc.json ? console.log(JSON.stringify({ at: new Date().toISOString(), message: line })) : console.log(`${new Date().toLocaleTimeString()}  ${line}`);
       let lastError = "";
@@ -228,7 +253,7 @@ export const folderCommands: Builtin[] = [
     group: FOLDERS,
     args: [DIR],
     async run(rc) {
-      const { root, state } = await folder(rc, rc.parsed.args.DIR);
+      const { root, state } = await folder(rc.parsed.args.DIR);
       const scanned = await scan(root, await loadIgnoreRules(root), state.files);
       const copies = [...scanned.files.keys()].filter(isConflictCopy).sort();
       rc.print({ root, conflicts: copies }, () => (copies.length ? copies.join("\n") : "No conflict copies."));

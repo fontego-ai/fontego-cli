@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CommandsManifest } from "@fontego/core";
 import { BUILTIN_NAMES } from "../src/builtins.ts";
@@ -162,6 +163,50 @@ describe("fontego CLI", () => {
     expect(await Bun.file(`${other}/sub/b.md`).text()).toBe("b\n");
     rmSync(dir, { recursive: true, force: true });
     rmSync(other, { recursive: true, force: true });
+  });
+
+  test("two links of one folder at once: one sends it, the other finds it taken; the state matches the files", async () => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "twice" });
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/twice/members/ana@example.org", { role: "editor" });
+    const dir = tempDir("fontego-cli-twice-");
+    for (let n = 0; n < 300; n++) await Bun.write(`${dir}/f${n}.md`, `file ${n}\n`);
+    const [a, b] = await Promise.all([fontego(["link", "twice", dir, "--json"]), fontego(["link", "twice", dir, "--json"])]);
+    expect([a.code, b.code].sort()).toEqual([0, 1]);
+    const loser = a.code === 1 ? a : b;
+    expect(loser.out).toMatch(/already synced|working in this folder/);
+    const st = JSON.parse((await fontego(["status", dir, "--json"])).out);
+    expect([st.added, st.modified, st.deleted]).toEqual([[], [], []]);
+    const state = JSON.parse(readFileSync(join(dir, ".fontego/state.json"), "utf8"));
+    expect(Object.keys(state.files)).toHaveLength(300);
+    const tree = (await s.call(ana.token, "GET", "/v1/workspaces/twice/tree?recursive=1")).data.entries;
+    expect(tree.filter((e: any) => e.type === "blob")).toHaveLength(300);
+    expect(readdirSync(join(dir, ".fontego")).filter((f) => f.endsWith(".tmp") || f.startsWith("lock"))).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("sync while watch runs is refused; a lock left behind is taken", async () => {
+    const parent = tempDir("fontego-cli-locked-");
+    const dir = join(parent, "notes");
+    expect((await fontego(["clone", "notes", dir])).code).toBe(0);
+    const watch = Bun.spawn(["bun", MAIN, "watch", dir, "--json"], {
+      env: { ...process.env, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none" },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const t0 = Date.now();
+    while (!existsSync(join(dir, ".fontego/lock")) && Date.now() - t0 < 10_000) await Bun.sleep(50);
+    const refused = await fontego(["sync", dir, "--json"]);
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.out).error.code).toBe("locked");
+    expect(JSON.parse(refused.out).error.message).toContain("fontego watch");
+    watch.kill("SIGTERM");
+    await watch.exited;
+    expect(existsSync(join(dir, ".fontego/lock"))).toBe(false); // given back on the way out
+    // A lock whose process is gone (killed, a crash) doesn't keep the folder locked.
+    writeFileSync(join(dir, ".fontego/lock"), JSON.stringify({ pid: Bun.spawnSync(["true"]).pid, host: hostname(), command: "fontego watch" }));
+    expect((await fontego(["sync", dir])).code).toBe(0);
+    expect(existsSync(join(dir, ".fontego/lock"))).toBe(false);
+    rmSync(parent, { recursive: true, force: true });
   });
 
   test("help for agents is Markdown", async () => {

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { blobHash } from "@fontego/core";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
@@ -204,12 +205,52 @@ describe("sync between two copies", () => {
     expect(read(A, "fine.md")).toBe("fine\n");
   });
 
-  test("one watcher per folder", async () => {
+  test("one fontego per folder: a live holder keeps the lock, a gone one loses it, and only the holder releases it", async () => {
+    const lock = join(A.root, ".fontego/lock");
     const release = await acquireLock(A.root);
-    // the same process may re-take it; another live pid may not
-    writeFileSync(join(A.root, ".fontego/lock"), String(process.ppid));
+    // Another live process holds it (here, as an older version wrote it: just the pid): nobody else gets it, and the
+    // release of a lock that isn't ours any more leaves it be.
+    writeFileSync(lock, String(process.ppid));
     await expect(acquireLock(A.root)).rejects.toBeInstanceOf(LockedError);
     await release();
+    expect(existsSync(lock)).toBe(true);
+    // Left by a process that is gone: taken.
+    const gone = Bun.spawnSync(["true"]).pid;
+    writeFileSync(lock, JSON.stringify({ pid: gone, host: hostname(), command: "fontego watch" }));
+    const mine = await acquireLock(A.root);
+    expect(JSON.parse(readFileSync(lock, "utf8")).pid).toBe(process.pid);
+    await mine();
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("of several processes at once, never two inside, a lock left behind included", async () => {
+    const lock = join(A.root, ".fontego/lock");
+    for (let round = 0; round < 3; round++) {
+      writeFileSync(lock, JSON.stringify({ pid: Bun.spawnSync(["true"]).pid, host: hostname() })); // left behind
+      const log = join(tempDir("fontego-lock-log-"), "log");
+      writeFileSync(log, "");
+      const kids = Array.from({ length: 6 }, () =>
+        Bun.spawn(["bun", join(import.meta.dir, "lock-child.ts"), A.root, log, "80"], { stdout: "ignore", stderr: "inherit" }),
+      );
+      await Promise.all(kids.map((k) => k.exited));
+      const lines = readFileSync(log, "utf8").trim().split("\n");
+      let inside: string | null = null;
+      let entered = 0;
+      for (const line of lines) {
+        const [what, pid] = line.split(" ");
+        if (what === "in") {
+          expect(inside).toBeNull();
+          inside = pid!;
+          entered++;
+        } else if (what === "out") {
+          expect(inside).toBe(pid!);
+          inside = null;
+        }
+      }
+      expect(entered).toBeGreaterThan(0);
+      expect(lines).toHaveLength(6 + entered); // each one either went in and out, or was refused
+      expect(existsSync(lock)).toBe(false);
+    }
   });
 
   test("watchers keep both copies in step within seconds", async () => {
