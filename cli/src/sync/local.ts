@@ -17,14 +17,32 @@ export interface LocalEntry {
 
 const toPosix = (p: string) => (sep === "/" ? p : p.split(sep).join("/"));
 
-/** Reads one local file (or symlink) as a sync entry; null if it doesn't exist or isn't a file. */
+/** Whether an error means the thing isn't there (as opposed to being there and unreadable). */
+const absent = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
+const reasonOf = (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
+
+/** A folder or file the scan couldn't read: what is there is unknown, so nothing under it counts as added or gone. */
+export interface Unreadable {
+  path: string;
+  reason: string;
+}
+
+/** Whether a path is one of `unreadable`, or inside one of them. */
+export const insideUnreadable = (unreadable: Unreadable[], path: string) =>
+  unreadable.some((u) => path === u.path || path.startsWith(`${u.path}/`));
+
+/**
+ * Reads one local file (or symlink) as a sync entry; null if it doesn't exist or isn't a file. A file that is there
+ * but can't be read (permissions, I/O) throws: it must never pass for a deleted one.
+ */
 export async function readEntry(root: string, path: string, cached?: LocalEntry): Promise<LocalEntry | null> {
   const full = join(root, path);
   let st;
   try {
     st = await lstat(full);
-  } catch {
-    return null;
+  } catch (e) {
+    if (absent(e)) return null;
+    throw e;
   }
   if (st.isSymbolicLink()) {
     const target = await readlink(full);
@@ -52,6 +70,8 @@ export interface ScanResult {
   ignored: string[];
   /** Files already in the workspace that the ignore rules match: they keep syncing */
   trackedIgnored: Array<{ path: string } & IgnoreMatch>;
+  /** Folders and files that couldn't be read: left as they were, never taken for deleted */
+  unreadable: Unreadable[];
 }
 
 /** Whether a folder holds a file the workspace doesn't have (junk aside). */
@@ -85,11 +105,18 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
   const invalid: string[] = [];
   const ignored: string[] = [];
   const trackedIgnored: ScanResult["trackedIgnored"] = [];
+  const unreadable: Unreadable[] = [];
   const trackedPaths = Object.keys(tracked);
 
   const add = async (path: string, match?: IgnoreMatch) => {
     const key = path.normalize("NFC");
-    const entry = await readEntry(root, path, tracked[key]);
+    let entry;
+    try {
+      entry = await readEntry(root, path, tracked[key]);
+    } catch (e) {
+      unreadable.push({ path: key, reason: reasonOf(e) });
+      return;
+    }
     if (!entry) return;
     files.set(key, entry);
     if (match?.ignored) trackedIgnored.push({ path: key, ...match });
@@ -100,7 +127,11 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
     let names: string[];
     try {
       names = await readdir(rel ? join(root, rel) : root);
-    } catch {
+    } catch (e) {
+      if (absent(e)) return; // gone while we walked
+      if (!rel) throw new Error(`Can't read the synced folder ${root}: ${reasonOf(e)}.`);
+      // There, but unreadable: what it holds is unknown, so nothing inside counts as deleted.
+      unreadable.push({ path: rel.normalize("NFC"), reason: reasonOf(e) });
       return;
     }
     for (const name of names) {
@@ -108,7 +139,8 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
       let st;
       try {
         st = await lstat(join(root, path));
-      } catch {
+      } catch (e) {
+        if (!absent(e)) unreadable.push({ path: path.normalize("NFC"), reason: reasonOf(e) });
         continue;
       }
       const isDir = st.isDirectory();
@@ -140,7 +172,13 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
     }
   }
   await walk("");
-  return { files, invalid, ignored: ignored.sort(), trackedIgnored: trackedIgnored.sort((a, b) => a.path.localeCompare(b.path)) };
+  return {
+    files,
+    invalid,
+    ignored: ignored.sort(),
+    trackedIgnored: trackedIgnored.sort((a, b) => a.path.localeCompare(b.path)),
+    unreadable: unreadable.sort((a, b) => a.path.localeCompare(b.path)),
+  };
 }
 
 /**

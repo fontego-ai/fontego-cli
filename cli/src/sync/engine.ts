@@ -13,6 +13,7 @@ import { Client, ClientError } from "../client.ts";
 import { loadIgnoreRules } from "./ignore.ts";
 import {
   conflictName,
+  insideUnreadable,
   readBytes,
   readEntry,
   insideRoot,
@@ -21,6 +22,7 @@ import {
   scan,
   writeLocal,
   type LocalEntry,
+  type Unreadable,
 } from "./local.ts";
 import { saveState, type SyncState } from "./state.ts";
 
@@ -31,6 +33,11 @@ export interface SyncReport {
   conflicts: Array<{ path: string; reason: Conflict["reason"]; copy?: string; message: string }>;
   skipped: Array<{ path: string; reason: string }>;
   invalid: string[];
+  /**
+   * Folders and files here that couldn't be read. Nothing under them is sent or deleted, and the server's changes to
+   * them wait: the copy stays at its last full step (state.head) until they can be read again.
+   */
+  unreadable: Unreadable[];
   /** Local changes that couldn't go up (read-only access) */
   pending: number;
   readOnly: boolean;
@@ -40,7 +47,7 @@ const same = (a: LocalEntry | undefined, b: LocalEntry | undefined) =>
   a === b || (!!a && !!b && a.hash === b.hash && a.mode === b.mode);
 
 function emptyReport(): SyncReport {
-  return { head: null, pulled: [], pushed: [], conflicts: [], skipped: [], invalid: [], pending: 0, readOnly: false };
+  return { head: null, pulled: [], pushed: [], conflicts: [], skipped: [], invalid: [], unreadable: [], pending: 0, readOnly: false };
 }
 
 export class SyncEngine {
@@ -111,7 +118,9 @@ export class SyncEngine {
     if (!res.reset && res.head === this.state.head) return;
 
     const rules = await loadIgnoreRules(this.root);
-    const local = (await scan(this.root, rules, this.state.files)).files;
+    const scanned = await scan(this.root, rules, this.state.files);
+    const local = scanned.files;
+    report.unreadable = scanned.unreadable;
     const remote = new Map<string, { hash: string; mode: string } | null>();
     for (const c of res.changes) remote.set(c.path, c.status === "put" ? { hash: c.hash!, mode: c.mode ?? "100644" } : null);
     if (res.reset) {
@@ -119,7 +128,13 @@ export class SyncEngine {
       for (const path of Object.keys(this.state.files)) if (!remote.has(path)) remote.set(path, null);
     }
 
+    let waiting = false;
     for (const [path, r] of remote) {
+      if (insideUnreadable(scanned.unreadable, path)) {
+        // Can't see what is here: leave it, keep its base, and don't step past this change (below).
+        waiting = true;
+        continue;
+      }
       try {
         await this.pullOne(report, path, r, local, rules, res.head);
       } catch (e) {
@@ -129,7 +144,10 @@ export class SyncEngine {
         delete this.state.files[path];
       }
     }
-    this.state.head = res.head;
+    // A change that had to wait keeps the copy at its last full step, so the server sends it again next round. What
+    // was applied meanwhile is in state.files, and comes again as "already identical". (The server only checks that a
+    // change set's baseCommit exists; each file merges from its own baseHash.)
+    if (!waiting) this.state.head = res.head;
   }
 
   private async pullOne(
@@ -170,11 +188,13 @@ export class SyncEngine {
   private async push(report: SyncReport): Promise<"done" | "retry"> {
     const scanned = await scan(this.root, await loadIgnoreRules(this.root), this.state.files);
     report.invalid = scanned.invalid;
+    report.unreadable = scanned.unreadable;
     const local = scanned.files;
 
     const ops: ChangeOp[] = [];
     const paths = new Set([...local.keys(), ...Object.keys(this.state.files)]);
     for (const path of [...paths].sort()) {
+      if (insideUnreadable(scanned.unreadable, path)) continue; // unknown here: neither sent nor deleted
       const l = local.get(path);
       const s = this.state.files[path];
       if (same(l, s)) continue;
@@ -297,12 +317,16 @@ export async function localStatus(root: string, state: SyncState) {
     if (!s) added.push(path);
     else if (!same(l, s)) modified.push(path);
   }
-  for (const path of Object.keys(state.files)) if (!scanned.files.has(path)) deleted.push(path);
+  for (const path of Object.keys(state.files)) {
+    if (!scanned.files.has(path) && !insideUnreadable(scanned.unreadable, path)) deleted.push(path);
+  }
   return {
     added: added.sort(),
     modified: modified.sort(),
     deleted: deleted.sort(),
     invalid: scanned.invalid,
+    /** Folders and files that couldn't be read: nothing under them counts as deleted */
+    unreadable: scanned.unreadable,
     skipped: state.skipped,
     /** New files and folders the ignore rules keep here */
     ignored: scanned.ignored,

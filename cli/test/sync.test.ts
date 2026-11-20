@@ -277,6 +277,50 @@ describe("sync between two copies", () => {
   });
 });
 
+describe("a folder that can't be read is not a deleted one", () => {
+  test("nothing in it is sent or deleted, the server's edits to it wait, and it catches up once readable", async () => {
+    if (process.getuid?.() === 0) return; // root reads every folder, whatever its permissions
+    const onServer = async (path: string) => (await s.call(s.adminToken, "GET", `/v1/workspaces/perm/files/${path}`)).status === 200;
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "perm" });
+    for (const who of ["ana", "bea"]) await s.call(s.adminToken, "PUT", `/v1/workspaces/perm/members/${who}@example.org`, { role: "editor" });
+    await s.call(ana.token, "POST", "/v1/workspaces/perm/changes", {
+      baseCommit: null,
+      ops: [
+        { op: "put", path: "private/plan.md", content: "v1\n", baseHash: null },
+        { op: "put", path: "private/old.md", content: "old\n", baseHash: null },
+        { op: "put", path: "open.md", content: "open\n", baseHash: null },
+      ],
+    });
+    const A = await copy(ana.token, "Ana", "perm");
+    const B = await copy(bea.token, "Bea", "perm");
+    chmodSync(join(A.root, "private"), 0o000);
+    try {
+      write(B, "private/plan.md", "v2 by Bea\n");
+      await B.sync();
+      unlinkSync(join(A.root, "open.md")); // a real delete, next to it
+      const st = await localStatus(A.root, A.state);
+      expect(st.deleted).toEqual(["open.md"]);
+      expect(st.unreadable.map((u) => [u.path, u.reason])).toEqual([["private", "EACCES"]]);
+      const r = await A.sync();
+      expect(r.pushed).toEqual([{ path: "open.md", status: "delete" }]);
+      expect(r.unreadable.map((u) => u.path)).toEqual(["private"]);
+      expect(await onServer("private/plan.md")).toBe(true);
+      expect(await onServer("private/old.md")).toBe(true);
+      expect(await onServer("open.md")).toBe(false);
+    } finally {
+      chmodSync(join(A.root, "private"), 0o755);
+    }
+    // Readable again: the edit that waited arrives, with nothing to do by hand.
+    const back = await A.sync();
+    expect(back.unreadable).toEqual([]);
+    expect(read(A, "private/plan.md")).toBe("v2 by Bea\n");
+    expect(read(A, "private/old.md")).toBe("old\n");
+    await B.sync();
+    expect(existsSync(join(B.root, "open.md"))).toBe(false);
+    expect(read(B, "private/old.md")).toBe("old\n");
+  });
+});
+
 describe("ignore rules never delete", () => {
   // Like Git: an ignore rule only keeps new files from going up. A file already in the workspace keeps syncing.
   let A: SyncEngine;

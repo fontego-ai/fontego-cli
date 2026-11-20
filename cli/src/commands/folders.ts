@@ -22,6 +22,7 @@ function describeSyncIssues(r: SyncReport): string[] {
   for (const c of r.conflicts) lines.push(`! ${c.message}`);
   for (const s of r.skipped) lines.push(`skipped ${s.path}: ${s.reason}`);
   for (const p of r.invalid) lines.push(`skipped ${p}: this name can't be synced`);
+  for (const u of r.unreadable) lines.push(`can't read ${u.path} (${u.reason}): left as it was, nothing in it sent or deleted`);
   if (r.readOnly && r.pending) lines.push(`${r.pending} local change(s) not sent: you can only read this workspace.`);
   return lines;
 }
@@ -107,6 +108,7 @@ export const folderCommands: Builtin[] = [
           ...st.added.map((p) => `new       ${p}`),
           ...st.modified.map((p) => `modified  ${p}`),
           ...st.deleted.map((p) => `deleted   ${p}`),
+          ...st.unreadable.map((u) => `unreadable ${u.path} (${u.reason}): left as it was, nothing in it counts as deleted`),
           ...Object.entries(st.skipped).map(([p, s]) => `skipped   ${p}: ${s.reason}`),
           ...(rc.parsed.flags.ignored ? st.ignored.map((p) => `ignored   ${p}`) : []),
         ];
