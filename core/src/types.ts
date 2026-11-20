@@ -328,9 +328,12 @@ export interface WorkspaceInfo {
   createdAt: string;
   head: string | null;
   role: Role | null;
-  /** Date and author of the last change, if any */
+  /** Date of the last change, if any */
   updatedAt: string | null;
+  /** Who made the last change: their account's name of today, else the commit's author */
   updatedBy: string | null;
+  /** The last change, with who made it (their agent too) */
+  lastChange?: LastChange | null;
   /** When a server admin archived it: hidden from lists and read-only until brought back */
   archivedAt?: string;
 }
