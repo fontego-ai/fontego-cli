@@ -56,6 +56,7 @@ export function parsePreference<K extends PreferenceKey>(key: K, raw: unknown): 
   const r = def.schema.safeParse(v);
   if (r.success) return { value: r.data as Preferences[K] };
   const issue = r.error.issues[0]!;
-  const at = issue.path.length ? `${issue.path.map((p) => (typeof p === "number" ? `item ${p + 1}` : String(p))).join(".")}: ` : "";
-  return { problem: `${at}${issue.message}` };
+  // An item of a list is named by what it is, since blanks and repeats were left out before counting
+  const item = typeof issue.path[0] === "number" && Array.isArray(v) ? v[issue.path[0]] : undefined;
+  return { problem: item === undefined ? issue.message : `${JSON.stringify(item)} ${issue.message}` };
 }
