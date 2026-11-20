@@ -172,14 +172,21 @@ export class Client {
       }
     };
     try {
-      let res: Response;
-      try {
-        res = await fetch(`${this.baseUrl.replace(/\/+$/, "")}${path}`, { headers: await this.headers({ accept: "text/event-stream" }), signal: local.signal });
-      } catch (e) {
-        if (signal?.aborted) return;
-        throw new ClientError(0, "unreachable", `Can't reach ${this.baseUrl}: ${(e as Error).message}`, "Check the URL and that the server is running.");
+      const open = async () => {
+        try {
+          return await fetch(`${this.baseUrl.replace(/\/+$/, "")}${path}`, { headers: await this.headers({ accept: "text/event-stream" }), signal: local.signal });
+        } catch (e) {
+          if (signal?.aborted) return null;
+          throw new ClientError(0, "unreachable", `Can't reach ${this.baseUrl}: ${(e as Error).message}`, "Check the URL and that the server is running.");
+        }
+      };
+      let res = await open();
+      // A refused credential: renew it (or pick up a new sign-in) and try once more, as every other call does.
+      if (res?.status === 401 && this.auth.recover) {
+        await this.auth.recover();
+        res = await open();
       }
-      if (res.status === 401 && this.auth.recover) await this.auth.recover(); // the next attempt carries the new one
+      if (!res) return;
       if (!res.ok || !res.body) {
         const err = await res
           .json()

@@ -613,3 +613,13 @@ export interface WorkspacesEvent {
 
 /** What GET /events sends after ready */
 export type LiveEvent = CommitEvent | PresenceEvent | WorkspacesEvent;
+
+/**
+ * The last event of a stream the server closes on purpose: this person opened more streams than they may keep, and
+ * this one is the oldest. Connecting again at once would close another one: wait, or close the others.
+ */
+export interface ClosedEvent {
+  type: "closed";
+  reason: "too_many_streams";
+  message: string;
+}

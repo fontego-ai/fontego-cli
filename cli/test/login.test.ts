@@ -148,6 +148,23 @@ describe("signing in through the browser", () => {
     expect((await fontego(["whoami"])).code).toBe(0);
   }, 30_000);
 
+  test("an event stream refused with its access token renews it and connects, as any call does", async () => {
+    // The server refuses the token although it hasn't expired here (a clock off, a secret the server dropped)
+    writeFileSync(credentialsFile(), JSON.stringify({ ...credentials(), [s.url]: { ...credentials()[s.url], accessToken: "fontego_at_refused" } }));
+    const proc = Bun.spawn(["bun", MAIN, "events", "--json"], { env: env(), stdout: "pipe", stderr: "pipe" });
+    const reader = proc.stdout.getReader();
+    let buf = "";
+    while (!buf.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += new TextDecoder().decode(value);
+    }
+    expect(JSON.parse(buf.split("\n")[0]!).type).toBe("ready");
+    proc.kill("SIGINT");
+    expect(await proc.exited).toBe(0);
+    expect(credentials()[s.url].accessToken).not.toBe("fontego_at_refused");
+  }, 30_000);
+
   test("your own sessions, from the CLI; and an address a server admin changed shows after the next renewal", async () => {
     const mine = JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions as any[];
     expect(mine.filter((x) => x.current)).toEqual([expect.objectContaining({ kind: "cli" })]);

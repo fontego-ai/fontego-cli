@@ -659,6 +659,41 @@ describe("live: who is around, and what happens as it happens", () => {
     expect(j.every((l) => JSON.parse(l).type)).toBe(true);
   }, 30_000);
 
+  test("events closed for having too many streams: it stops and says why, instead of pushing another out", async () => {
+    const proc = Bun.spawn(["bun", MAIN, "events", "--json"], {
+      env: { ...process.env, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", FONTEGO_INSTANCE: "", ...asAna() },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const reader = proc.stdout.getReader();
+    const dec = new TextDecoder();
+    let text = "";
+    // Connected first; then 8 more streams of Ana's: this one, the oldest, makes room
+    while (!text.includes('"type":"ready"')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += dec.decode(value, { stream: true });
+    }
+    const others: AbortController[] = [];
+    for (let i = 0; i < 8; i++) {
+      const ac = new AbortController();
+      others.push(ac);
+      await fetch(`${s.url}/v1/events`, { headers: { authorization: `Bearer ${ana.token}` }, signal: ac.signal });
+    }
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += dec.decode(value, { stream: true });
+    }
+    expect(await proc.exited).toBe(1);
+    // One event per line, then the error, as every --json error comes
+    const at = text.lastIndexOf('{\n  "error"');
+    const events = text.slice(0, at).trim().split("\n").map((l) => JSON.parse(l));
+    expect(events[events.length - 1]).toMatchObject({ type: "closed", reason: "too_many_streams" });
+    expect(JSON.parse(text.slice(at)).error).toMatchObject({ code: "too_many_streams", hint: expect.stringContaining("Close") });
+    for (const ac of others) ac.abort();
+  }, 30_000);
+
   test("events, signed out: it ends with exit 2 and what to do", async () => {
     const r = await fontego(["events", "--json"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: "fontego_wrong" });
     expect(r.code).toBe(2);

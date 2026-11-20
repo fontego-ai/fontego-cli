@@ -2,7 +2,7 @@
 // /v1/events): commits, who is in each workspace when that changes, and changes in the workspaces you see. It
 // connects again by itself when the line drops; a script or an agent can wait on it for the next change.
 
-import type { CommitEvent, PresenceEntry, PresenceEvent, ReadyEvent, WorkspacesEvent } from "@fontego/core";
+import type { ClosedEvent, CommitEvent, PresenceEntry, PresenceEvent, ReadyEvent, WorkspacesEvent } from "@fontego/core";
 import { ClientError } from "../client.ts";
 import type { Builtin } from "./command.ts";
 
@@ -19,8 +19,9 @@ const here = (list: PresenceEntry[]) => list.map((e) => `${who(e)}, ${e.doing}`)
 export function describeEvent(type: string, data: unknown): string | null {
   if (type === "ready") {
     const r = data as Omit<ReadyEvent, "type">;
+    // Everyone, you too: what you write, or say with fontego here, shows you around
     const people = new Set(r.presence.map((e) => `${e.user.id} ${e.agent ?? ""}`)).size;
-    return `connected; ${people === 0 ? "nobody else is around" : `${people} around in your workspaces`}`;
+    return `connected; ${people === 0 ? "nobody is around" : `${people} around in your workspaces (fontego who lists them)`}`;
   }
   if (type === "commit") {
     const c = data as CommitEvent;
@@ -36,6 +37,7 @@ export function describeEvent(type: string, data: unknown): string | null {
     const w = data as WorkspacesEvent;
     return `your workspaces changed${w.workspace ? ` (${w.workspace})` : ""}: fontego workspaces`;
   }
+  if (type === "closed") return (data as Omit<ClosedEvent, "type">).message;
   return null;
 }
 
@@ -61,14 +63,21 @@ export const liveCommands: Builtin[] = [
       if (!rc.json) say(`listening on ${conn.label}; Ctrl+C to stop`);
       let backoff = 1000;
       for (;;) {
+        const opened = Date.now();
+        let closed: ClosedEvent | null = null;
         try {
           await client.personEvents((type, data) => {
-            backoff = 1000;
+            if (type === "closed") closed = { type, ...(data as Omit<ClosedEvent, "type">) };
             if (rc.json) return console.log(JSON.stringify({ type, ...(data as object) }));
             const line = describeEvent(type, data);
             if (line) say(line);
           }, abort.signal);
           if (stopped) return;
+          // Too many streams of this person: coming back would close another one, so it ends here and says why.
+          if (closed) {
+            const c = closed as ClosedEvent;
+            throw new ClientError(429, c.reason, c.message, "Close the tabs or fontego events you don't use, then run it again.");
+          }
           say("the server closed the stream");
         } catch (e) {
           if (stopped) return;
@@ -76,6 +85,8 @@ export const liveCommands: Builtin[] = [
           if (e instanceof ClientError && e.status >= 400 && e.status < 500) throw e;
           say((e as Error).message);
         }
+        // The wait starts over only after a stream that lasted: one cut again and again waits longer each time.
+        if (Date.now() - opened > 60_000) backoff = 1000;
         const wait = Math.round(backoff * (0.75 + Math.random() / 2));
         say(`connecting again in ${Math.max(1, Math.round(wait / 1000))} s`);
         await new Promise((r) => setTimeout(r, wait));

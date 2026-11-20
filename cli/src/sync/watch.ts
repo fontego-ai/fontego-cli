@@ -212,13 +212,18 @@ export class Watcher {
   private async listen() {
     let backoff = 1000;
     while (!this.stopped) {
+      const opened = Date.now();
+      let tooMany = false;
       try {
         await this.client.events(
           this.engine.state.workspace,
-          (type) => {
-            backoff = 1000;
+          (type, data) => {
             if (type === "ready") this.opts.onEvent?.("connected to live events");
             if (type === "commit") this.schedule(200);
+            if (type === "closed") {
+              tooMany = true;
+              this.opts.onEvent?.(`live events closed: ${(data as { message?: string }).message ?? "too many streams"}`);
+            }
           },
           this.abort.signal,
         );
@@ -227,7 +232,14 @@ export class Watcher {
         this.opts.onEvent?.(`live events lost (${(e as Error).message}); retrying in ${Math.round(backoff / 1000)} s`);
       }
       if (this.stopped) return;
-      await new Promise((r) => setTimeout(r, backoff));
+      // The wait starts over only after a stream that lasted. Closed for having too many, coming straight back would
+      // close another one: it waits five minutes, syncing every 30 s meanwhile as always.
+      if (Date.now() - opened > 60_000) backoff = 1000;
+      const wait = tooMany ? 5 * 60_000 : backoff;
+      await new Promise<void>((r) => {
+        const t = setTimeout(r, wait);
+        this.abort.signal.addEventListener("abort", () => (clearTimeout(t), r()), { once: true });
+      });
       backoff = Math.min(backoff * 2, 30_000);
       this.schedule(0); // catch up on whatever happened while disconnected
     }
