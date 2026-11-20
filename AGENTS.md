@@ -9,6 +9,8 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 ## Principles
 
 - **Everything goes through the API** (`/v1`). Every command accepts `--json`, and errors say what to do (`hint`).
+  With `--json` nothing is ever asked, help and errors are JSON too, and the exit codes mean the same everywhere
+  (`cli/src/output.ts`, written also in the agents' guide, `AGENT_INTRO` in `help.ts`: change both together).
 - **Anything the web app can do, the CLI can do too.** The only exception is proving who you are (a password, an
   invitation, authorizing a machine), which happens in the browser.
 - **The CLI only talks HTTP to the server.** It imports `@fontego/core`, never server code. Its tests start a real
@@ -73,6 +75,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 |---|---|
 | `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), what a declared command looks like (`commands.ts`) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Reads the command line and runs a built-in or a declared command |
+| `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`: 6 the server can't be reached, 7 a sync that did only part) |
 | `cli/src/args.ts` | Command words, arguments and flags, and usage lines |
 | `cli/src/builtins.ts` | Collects the built-in commands for dispatch, help and the reference docs. Instance and sign-in commands live in `cli/src/commands/instances.ts` and synced-folder commands in `cli/src/commands/folders.ts` |
 | `cli/src/declared.ts` | Commands the server declares: cache, checks, building the request, printing the answer |
@@ -85,7 +88,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock |
 | `cli/src/auth.ts` | Signing in (browser or device flow), a stored session that renews itself, signing out on the server |
 | `cli/src/connect.ts` | Which instance a command goes to, and a client signed in there; `FONTEGO_URL` with `FONTEGO_TOKEN` override it all |
-| `cli/src/sync/` | Sync: `engine.ts` (one round: pull, push, conflicts; a file the server refuses, such as a protected path, is set aside and the rest sent), `local.ts` (scan, atomic writes), `ignore.ts` (the ignore rules, read from the folder), `state.ts` (`.fontego/state.json`), `watch.ts` (continuous mode and its lock) |
+| `cli/src/sync/` | Sync: `engine.ts` (one round: pull, push in batches of at most `MAX_OPS` operations and `BATCH_BYTES`, saving the state after each, conflicts; a file the server refuses, such as a protected path, is set aside, the rest sent, and the same content tried again later with a growing wait; a copy that can only read asks for its role again while changes wait), `local.ts` (scan, which tells a folder it can't read from a deleted one; `replaceIf`, the only way sync changes a local file: the file is moved aside in one step, checked, and the new one linked in, so an edit saved meanwhile is never lost), `ignore.ts` (the ignore rules, read from the folder), `state.ts` (`.fontego/state.json`, checked when opened: `StateError`), `watch.ts` (continuous mode, and the folder's lock, taken by watch, sync and the first round of clone and link before they read the state) |
 | `cli/test/` | Tests against a real server; `server.ts` starts it from `fontego-app` |
 
 ## How to work
