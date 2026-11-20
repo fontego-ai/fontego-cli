@@ -252,6 +252,11 @@ export interface WorkspaceInfo {
   archivedAt?: string;
 }
 
+/** The workspaces someone can see, with their role in each (GET /workspaces). */
+export interface WorkspacesResponse {
+  workspaces: WorkspaceInfo[];
+}
+
 /** A file an import left out, and why: the same refusals as any write, or the ignore rules the source carries. */
 export interface SkippedFile {
   /** A file, or a folder (ending in /) whose files the ignore rules kept out */

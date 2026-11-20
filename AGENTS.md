@@ -60,7 +60,8 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `cli/package.json` (`version.ts`).
 - **`core` is the contract.** The API types, the path rules (`normalizePath`) and the Git blob hash (`blobHash`) must
   give the same result on the server and in every client. A change here is a change to the API: update `fontego-app`
-  in the same go.
+  in the same go. The server's operations declare their answer with these types (`answers` in its `operation.ts`),
+  so a field renamed here breaks the server's type check, as it does the client's.
 - **No company or brand in the code.** Fontego is the project's name.
 - **Licenses: this repo is Apache 2.0, `fontego-app` is AGPL v3.** Never copy code from `fontego-app` into this repo:
   it would bring the AGPL with it. Code can go the other way, from here into the app.
