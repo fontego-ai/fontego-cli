@@ -124,7 +124,7 @@ describe("a flag that sends a file, or null", () => {
     request: { method: "PATCH", path: "/v1/me" },
     flags: [
       { name: "name", type: "string", to: "body.name", description: "" },
-      { name: "photo", type: "string", to: "body.photo", file: { maxBytes: 8 }, unset: "none", description: "" },
+      { name: "photo", type: "string", to: "body.photo", value: "FILE", file: { maxBytes: 8 }, unset: "none", description: "" },
     ],
     output: { kind: "message", text: "ok" },
   };
@@ -138,6 +138,7 @@ describe("a flag that sends a file, or null", () => {
     const none = { args: {}, flags: { photo: "none", name: "Ana" } };
     expect(await readFileFlags(spec, none)).toEqual({});
     expect(buildRequest(spec, none).body).toEqual({ photo: null, name: "Ana" });
+    expect(buildRequest(spec, { args: {}, flags: { photo: "NONE" } }).body).toEqual({ photo: null });
     expect(buildRequest(spec, { args: {}, flags: { name: "Ana" } }).body).toEqual({ name: "Ana" });
     // A file called like the word is ./none
     writeFileSync(join(dir, "none"), "x");
@@ -155,19 +156,24 @@ describe("a flag that sends a file, or null", () => {
     const bad: CommandSpec = {
       ...spec,
       flags: [
-        { name: "a", type: "boolean", to: "body.a", file: { maxBytes: 1 }, description: "" },
+        { name: "a", type: "boolean", to: "body.a", value: "FILE", file: { maxBytes: 1 }, description: "" },
         { name: "b", type: "string", to: "query.b", unset: "none", description: "" },
-        { name: "c", type: "string", to: "body.c", file: { maxBytes: 0 }, description: "" },
-        { name: "d", type: "string", to: "body.d", unset: "\u001b[2J", value: "\u001b[2J", description: "" },
-        { name: "e", type: "string", to: "body.e", file: { maxBytes: 10 }, default: "/home/someone/.ssh/id_ed25519", description: "" },
+        { name: "c", type: "string", to: "body.c", value: "FILE", file: { maxBytes: 0 }, description: "" },
+        { name: "d", type: "string", to: "body.d", unset: "\u001b[2J", description: "" },
+        { name: "e", type: "string", to: "body.e", value: "FILE", file: { maxBytes: 10 }, default: "/home/someone/.ssh/id_ed25519", description: "" },
+        // An innocent-looking flag can't become one that sends a file, nor ask for any size
+        { name: "path", type: "string", to: "body.path", value: "PATH", file: { maxBytes: 10 }, description: "" },
+        { name: "big", type: "string", to: "body.big", value: "FILE", file: { maxBytes: 1e9 }, description: "" },
       ],
     };
     expect(checkCommand(bad, [])).toEqual([
-      "fontego account set: --a names a file, so it must be a string that goes into the body, with a size above 0",
+      "fontego account set: --a names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
       "fontego account set: --b can send null only as a string flag into the body, with a plain lowercase word for it",
-      "fontego account set: --c names a file, so it must be a string that goes into the body, with a size above 0",
+      "fontego account set: --c names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
       "fontego account set: --d can send null only as a string flag into the body, with a plain lowercase word for it",
       "fontego account set: --e names a file, so it can't have a default",
+      "fontego account set: --path names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
+      "fontego account set: --big names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
     ]);
     expect(checkCommand(spec, [])).toEqual([]);
   });

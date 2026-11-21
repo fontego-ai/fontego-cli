@@ -26,8 +26,10 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   terminal (`prompt.ts`), and never printed. One marked `stdin` (a file's content, for `fontego write`) is read whole
   from stdin when left out; nothing on stdin is an error, so a forgotten `< file` never writes an empty file. A flag
   marked `file` names a file of this machine: the CLI checks its size against the declaration before reading it and
-  sends its bytes in base64 (`fontego account set --photo me.jpg`); one with `unset` sends null for that word
-  (`--photo none`), and a file of that name is `./none`.
+  sends its bytes in base64 (`fontego account set --photo me.jpg`). So that no server can turn an innocent flag into
+  one that uploads a file, a file flag must show FILE in its usage, can't have a default, and can't ask for more than
+  64 MB (`checkCommand`). One with `unset` sends null for that word, in any capitals (`--photo none`), and a file of
+  that name is `./none`.
 - **A person who leaves an argument out is asked for it; nobody else ever is.** At a terminal, a required argument
   left out is picked from its list (`choices` in a declaration, from `core`: fixed values or a GET to the same
   server; `pick` in a built-in) or typed, and then the whole command goes to stderr (`Same as: fontego ...`), so it

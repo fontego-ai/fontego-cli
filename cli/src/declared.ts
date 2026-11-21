@@ -14,6 +14,7 @@ import {
   type CommandArg,
   type CommandColumn,
   type CommandDetails,
+  type CommandFlag,
   type CommandOutput,
   type CommandSpec,
   type CommandsManifest,
@@ -119,8 +120,13 @@ const REQUEST_PATH = /^\/v1(\/(?!\.{1,2}(\/|$))([A-Za-z0-9._~-]+|\{\+?[A-Za-z0-9
 /** An argument is shown in usage lines and asked for by name (a secret), so it is a plain uppercase word */
 const ARG_NAME = /^[A-Z][A-Z0-9_]*$/;
 const FLAG_NAME = /^[a-z][a-z0-9-]*$/;
-/** The word that sends null: --photo none */
+/** The word that sends null: --photo none (NONE too) */
 const UNSET_WORD = /^[a-z][a-z0-9-]{0,19}$/;
+/** The most a declared command may send of one file, whatever the server says */
+const MAX_FILE_FLAG = 64 * 1024 * 1024;
+/** Whether a flag's value is its word for null, in any capitals: --photo none, --photo NONE */
+const isUnset = (f: CommandFlag, v: unknown) =>
+  f.unset !== undefined && typeof v === "string" && v.toLowerCase() === f.unset;
 const COMMAND_NAME = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$/;
 /** What a command says about itself is shown in help: one line each, so it can't pose as more lines of it */
 const ONE_LINE = /^[^\u0000-\u001f\u007f-\u009f]*$/;
@@ -147,8 +153,7 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   }
   for (const a of args) if (!ARG_NAME.test(a.name)) out.push(`${at}: "${a.name}" isn't a plain argument name`);
   for (const f of flags) if (!FLAG_NAME.test(f.name)) out.push(`${at}: "--${f.name}" isn't a plain option name`);
-  // A flag whose word sends null may show that word as its value (--photo none)
-  for (const f of flags) if (f.value !== undefined && f.value !== f.unset && !ARG_NAME.test(f.value)) out.push(`${at}: --${f.name} ${f.value} isn't a plain value name`);
+  for (const f of flags) if (f.value !== undefined && !ARG_NAME.test(f.value)) out.push(`${at}: --${f.name} ${f.value} isn't a plain value name`);
   const said = [spec.summary, spec.group, ...args.map((a) => a.description), ...flags.map((f) => f.description)];
   if (said.some((t) => t !== undefined && (typeof t !== "string" || !ONE_LINE.test(t)))) out.push(`${at}: its summary, group and descriptions must be one line each`);
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
@@ -159,8 +164,9 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   for (const f of flags) {
     if (!["string", "number", "boolean"].includes(f.type)) out.push(`${at}: --${f.name} has an unknown type`);
     if (f.short && !/^[A-Za-z]$/.test(f.short)) out.push(`${at}: -${f.short} must be one letter`);
-    if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || !(f.file.maxBytes > 0))) {
-      out.push(`${at}: --${f.name} names a file, so it must be a string that goes into the body, with a size above 0`);
+    // A file of this machine goes to the server only when the person can see that it does: the usage says FILE
+    if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || f.value !== "FILE" || !(f.file.maxBytes > 0) || f.file.maxBytes > MAX_FILE_FLAG)) {
+      out.push(`${at}: --${f.name} names a file, so it must be a string into the body shown as FILE, of at most ${MAX_FILE_FLAG / 1024 / 1024} MB`);
     }
     // Which file of this machine is read is the person's to say, never the server's
     if (f.file !== undefined && f.default !== undefined) out.push(`${at}: --${f.name} names a file, so it can't have a default`);
@@ -221,7 +227,7 @@ export function buildRequest(
     if (f.to.startsWith("body.")) hasBody = true;
     const v = parsed.flags[f.name] ?? f.default;
     if (v === undefined) continue;
-    if (f.unset !== undefined && v === f.unset) body[splitTarget(f.to).key] = null;
+    if (isUnset(f, v)) body[splitTarget(f.to).key] = null;
     else if (f.file) {
       const content = files[f.name];
       if (content === undefined) throw new Error(`--${f.name}: the file wasn't read`);
@@ -335,13 +341,13 @@ export function renderOutput(output: CommandOutput, data: unknown, vars: Templat
 
 /**
  * Reads the files that file flags name (`--photo me.jpg`), as base64, each checked against its size before it is read.
- * The word that sends null (`--photo none`) reads nothing; a file called that way is `./none`.
+ * The word that sends null (`--photo none`, in any capitals) reads nothing; a file called that way is `./none`.
  */
 export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const f of spec.flags ?? []) {
     const v = parsed.flags[f.name];
-    if (!f.file || typeof v !== "string" || v === f.unset) continue;
+    if (!f.file || typeof v !== "string" || isUnset(f, v)) continue;
     const file = Bun.file(v);
     let size: number;
     try {

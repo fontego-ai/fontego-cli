@@ -110,7 +110,7 @@ export function describe(u: Usage | CommandSpec): string {
   const w = Math.max(8, ...names.map((n) => n.length)) + 2;
   // A file flag reads a file of this machine; what its `unset` word does, its description says
   const extra = (f: (typeof flags)[number]) =>
-    [f.default !== undefined ? `default ${f.default}` : "", "file" in f && f.file ? "a file on this machine" : ""].filter(Boolean);
+    [f.default !== undefined ? `default ${f.default}` : "", "file" in f && f.file ? "a file on this machine, sent to this Fontego" : ""].filter(Boolean);
   flags.forEach((f, i) => {
     const notes = extra(f);
     out.push(`  ${names[i]!.padEnd(w)}${f.description}${notes.length ? ` (${notes.join("; ")})` : ""}`);

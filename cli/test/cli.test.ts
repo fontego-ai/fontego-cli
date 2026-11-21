@@ -349,7 +349,7 @@ describe("commands the server declares", () => {
     const got = JSON.parse((await fontego(["people", "photo", "gil@example.org", "--json"])).out);
     expect([got.type, got.text, got.version]).toEqual(["image/webp", false, expect.stringMatching(/^[0-9a-f]{16}$/)]);
     expect(await new Bun.Image(Buffer.from(got.contentBase64, "base64")).metadata()).toEqual({ width: 256, height: 256, format: "webp" });
-    expect((await fontego(["help", "account", "set"])).out).toMatch(/--photo FILE +A PNG, JPEG or WebP .* none removes yours \(a file on this machine\)/);
+    expect((await fontego(["help", "account", "set"])).out).toMatch(/--photo FILE +A PNG, JPEG or WebP .* none removes yours \(a file on this machine, sent to this Fontego\)/);
 
     // Said before calling the server: no such file, or one too big
     const missing = await fontego(["account", "set", "--photo", join(dir, "nope.jpg"), "--json"], as);
@@ -369,7 +369,9 @@ describe("commands the server declares", () => {
     // A server admin removes it, never puts one
     const put = await fontego(["admin", "users", "edit", "gil@example.org", "--photo", file, "--json"], asAdmin());
     expect(JSON.parse(put.out).error.message).toContain("a server admin can only remove a photo");
-    const removed = await fontego(["admin", "users", "edit", "gil@example.org", "--photo", "none"], asAdmin());
+    // As its usage shows it, in capitals, or as the word it is
+    expect((await fontego(["help", "admin", "users", "edit"], asAdmin())).out).toContain("[--photo NONE]");
+    const removed = await fontego(["admin", "users", "edit", "gil@example.org", "--photo", "NONE"], asAdmin());
     expect(removed.out).toBe("Saved: gil@example.org · Gil\nTheir photo is removed; only they can put one again.\n");
     expect((await fontego(["account"], as)).out).toContain("photo: -");
     // And none removes your own
