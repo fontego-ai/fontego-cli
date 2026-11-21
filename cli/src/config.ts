@@ -7,6 +7,7 @@
 //
 // FONTEGO_URL with FONTEGO_TOKEN uses that server and token without touching any of this (scripts, CI).
 
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -48,12 +49,25 @@ export const configDir = (env = process.env) => join(env.XDG_CONFIG_HOME || join
 export const configPath = (env = process.env) => join(configDir(env), "config.json");
 const credentialsPath = (env = process.env) => join(configDir(env), "credentials.json");
 
+/** Our folder, private: made 0700, and closed again if it is ours but others can look in (made by hand, or umask). */
+function privateDir(dir: string) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") return;
+  const st = statSync(dir);
+  if (st.uid === process.getuid?.() && (st.mode & 0o077) !== 0) chmodSync(dir, 0o700);
+}
+
 function writePrivate(path: string, data: unknown) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
+  privateDir(dirname(path));
+  // A name nobody can guess, and only a new file (wx): a file or link someone left there first is never written through.
+  const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 // --- the registry ---
