@@ -18,8 +18,28 @@ const MAX_SEGMENT = 255;
  * state on every member's machine.
  */
 const RESERVED = [".git", ".fontego"];
-// Control characters, including NUL, tab and newline.
-const CONTROL = /[\u0000-\u001f\u007f]/;
+/** Their short names on Windows (GIT~1, FONTEG~1), which open the same folder. */
+const SHORT_NAME = /^(git|fonteg)~\d+$/;
+// Control characters: C0 (NUL, tab and newline among them), DEL and C1.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+/** Code points HFS+ leaves out when it compares names, the list Git's protectHFS uses: `.g‌it` is .git there. */
+const HFS_IGNORED = /[‌-‏‪-‮⁪-⁯﻿]/gu;
+
+/**
+ * The name a file system really opens for this one. HFS+ skips some invisible code points; Windows drops trailing dots
+ * and spaces and reads what follows a colon as a stream of the same file: `.git.`, `.git ` and
+ * `.git::$INDEX_ALLOCATION` are all the folder .git there.
+ */
+const aliasOf = (name: string) => name.replace(HFS_IGNORED, "").split(":")[0]!.replace(/[. ]+$/, "");
+
+/**
+ * Whether a name is .git or .fontego on some file system, whatever the case (as Git's verify_path checks .git with
+ * protectNTFS and protectHFS). Both case mappings, because Windows upcases `ı` to `I`.
+ */
+export function isReservedName(name: string): boolean {
+  const alias = aliasOf(name);
+  return [alias.toLowerCase(), alias.toUpperCase().toLowerCase()].some((n) => RESERVED.includes(n) || SHORT_NAME.test(n));
+}
 
 /** Normalizes a workspace-relative path and rejects anything that could escape the workspace. */
 export function normalizePath(input: unknown): string {
@@ -47,11 +67,69 @@ export function normalizePath(input: unknown): string {
     if (segment.length > MAX_SEGMENT) {
       throw new PathError("invalid_path", `A path segment is longer than ${MAX_SEGMENT} characters.`);
     }
-    if (RESERVED.includes(segment.toLowerCase())) {
-      throw new PathError("reserved_path", `Paths inside ${segment} are reserved.`);
+    if (isReservedName(segment)) {
+      throw new PathError(
+        "reserved_path",
+        RESERVED.includes(segment.toLowerCase())
+          ? `Paths inside ${segment} are reserved.`
+          : `"${segment}" is reserved: on Windows or macOS it is the same folder as .git or .fontego.`,
+      );
     }
   }
   return segments.join("/");
+}
+
+/**
+ * The target of the symlink at `path`, from its bytes, if it can't lead outside the workspace however links combine.
+ * `a -> .`, `b -> a/..` and `c -> b/secret` each land inside on paper, yet b is the folder above the copy on disk, and
+ * c a file outside it. So a target is only some `..` (no more than the folders above the link), then names, each one a
+ * name a workspace may hold (`.` may stand anywhere, and a trailing `/`: neither climbs). A link's folders are always
+ * real folders, since nothing can sit inside a symlink, so each `..` climbs a real folder inside the workspace and each
+ * name goes down from one: every step, through any number of links, stays inside. No backslash or colon either, which
+ * Windows reads as a separator or a drive. Throws a PathError (`path_escapes` or `invalid_symlink`) that says why not.
+ */
+export function symlinkTarget(path: string, bytes: Uint8Array): string {
+  const target = exactText(bytes);
+  const refuse = (code: string, why: string): never => {
+    throw new PathError(code, `${path} is a symlink ${why}.`, "A symlink in a workspace points to a path relative to its folder, inside the workspace.");
+  };
+  if (!target) return refuse("invalid_symlink", target === null ? "whose target isn't UTF-8" : "with no target");
+  if (CONTROL.test(target) || target.includes("\\") || target.includes(":")) {
+    return refuse("invalid_symlink", "whose target has a backslash, a colon or a control character");
+  }
+  if (target.startsWith("/")) return refuse("invalid_symlink", "to an absolute path");
+  const names = target.replace(/(.)\/$/, "$1").split("/");
+  let up = 0;
+  while (names[up] === "..") up++;
+  if (up > path.split("/").length - 1) return refuse("path_escapes", "that points outside the workspace");
+  const down = names.slice(up).filter((n) => n !== ".");
+  if (down.includes("..")) return refuse("path_escapes", "that goes back up (..) after a name");
+  if (down.length) {
+    try {
+      normalizePath(down.join("/"));
+    } catch (e) {
+      if (e instanceof PathError) return refuse(e.code === "reserved_path" ? "reserved_path" : "invalid_symlink", `to a path a workspace can't hold (${e.message})`);
+      throw e;
+    }
+  }
+  return target;
+}
+
+/**
+ * Why a path can't be a file on Windows, or null. A workspace may hold these, since they are valid on Linux and macOS;
+ * a copy on Windows leaves them out: the names Windows keeps for devices (CON, aux.md, COM1...), the characters it
+ * doesn't take in a name (`< > : " | ? *`; a colon would write a stream of another file), and a name ending in a dot
+ * or a space, which it drops (`notes.` would land on `notes`).
+ */
+export function windowsNameProblem(path: string): string | null {
+  for (const name of path.split("/")) {
+    if (/[<>:"|?*]/.test(name)) return `"${name}" has a character Windows doesn't take in names (< > : " | ? *)`;
+    if (/[. ]$/.test(name)) return `"${name}" ends in a dot or a space, which Windows drops`;
+    if (/^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)$/i.test(name.split(".")[0]!.replace(/ +$/, ""))) {
+      return `"${name}" is a name Windows keeps for a device`;
+    }
+  }
+  return null;
 }
 
 /** Normalizes an optional directory prefix; "" means the root. */

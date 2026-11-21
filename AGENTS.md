@@ -84,7 +84,8 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `@fontego/cli-<os>-<arch>` per system as its optional dependencies, which npm picks by `os` and `cpu`. `install.sh`
   (Linux and macOS, no sudo) checks the download against `SHA256SUMS`. The version is written once, in
   `cli/package.json` (`version.ts`).
-- **`core` is the contract.** The API types, the path rules (`normalizePath`) and the Git blob hash (`blobHash`) must
+- **`core` is the contract.** The API types, the path rules (`normalizePath`, with the names Windows and macOS take for
+  `.git` and `.fontego`; `symlinkTarget`, where a link may point) and the Git blob hash (`blobHash`) must
   give the same result on the server and in every client. A change here is a change to the API: update `fontego-app`
   in the same go. The server's operations declare their answer with these types (`answers` in its `operation.ts`),
   so a field renamed here breaks the server's type check, as it does the client's.

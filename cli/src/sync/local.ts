@@ -1,6 +1,6 @@
 // The local side of sync: scanning the folder, reading and writing files safely.
 
-import { blobHash, normalizePath, PathError } from "@fontego/core";
+import { blobHash, normalizePath, PathError, symlinkTarget } from "@fontego/core";
 import { link, lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
@@ -221,10 +221,13 @@ export class UnsafePathError extends Error {
 async function prepare(root: string, path: string, bytes: Uint8Array, mode: string): Promise<string> {
   const tmp = join(await tmpDir(root), randomBytes(8).toString("hex"));
   if (mode === "120000") {
-    const target = new TextDecoder().decode(bytes);
-    const lands = posix.normalize(posix.join(posix.dirname(path), target));
-    if (!target || /[\u0000\n]/.test(target) || target.startsWith("/") || lands === ".." || lands.startsWith("../")) {
-      throw new UnsafePathError(path, "it is a symlink that points outside this folder");
+    // The server checks this rule too, but a workspace may hold links from before it, or the server may be wrong.
+    let target: string;
+    try {
+      target = symlinkTarget(path, bytes);
+    } catch (e) {
+      if (e instanceof PathError) throw new UnsafePathError(path, `it is a symlink that could point outside this folder (${e.message})`);
+      throw e;
     }
     await symlink(target, tmp);
   } else {

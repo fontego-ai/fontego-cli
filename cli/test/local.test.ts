@@ -2,7 +2,7 @@
 // no write through a symlinked folder, no symlink that points out.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readEntry, removeLocal, replaceIf, UnsafePathError, writeLocal } from "../src/sync/local.ts";
@@ -45,10 +45,21 @@ describe("writing and deleting stay inside the folder", () => {
   test("a symlink may point inside the folder, never out of it", async () => {
     await writeLocal(root, "docs/latest", text("2026/plan.md"), "120000");
     expect(lstatSync(join(root, "docs/latest")).isSymbolicLink()).toBe(true);
-    for (const target of ["../..", "../../etc/passwd", "/etc/passwd", "../../../x"]) {
-      await expect(writeLocal(root, "docs/out", text(target), "120000")).rejects.toThrow("points outside");
+    for (const target of ["../..", "../../etc/passwd", "/etc/passwd", "../../../x", "..\\..\\x", "C:/Users", ".git/hooks/pre-commit"]) {
+      await expect(writeLocal(root, "docs/out", text(target), "120000")).rejects.toThrow("could point outside");
     }
     expect(existsSync(join(root, "docs/out"))).toBe(false);
+  });
+
+  test("links that each land inside on paper can't chain out: the one that climbs after a name is never made", async () => {
+    // What an editor could commit before the rule: a -> ., b -> a/.., notes.md -> b/secret.txt. b would be the folder
+    // above the copy, and notes.md a file outside it.
+    writeFileSync(join(outer, "secret.txt"), "outside\n");
+    await writeLocal(root, "a", text("."), "120000");
+    await expect(writeLocal(root, "b", text("a/.."), "120000")).rejects.toBeInstanceOf(UnsafePathError);
+    await writeLocal(root, "notes.md", text("b/secret.txt"), "120000");
+    expect(existsSync(join(root, "b"))).toBe(false);
+    expect(() => realpathSync(join(root, "notes.md"))).toThrow(); // dangling, inside the folder
   });
 });
 
