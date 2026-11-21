@@ -128,7 +128,9 @@ per-workspace access.
   without a browser, \`--device\` prints a code for the person to type on another device. You never handle a password.
 - One machine can be signed in to several Fontegos. \`fontego sessions\` lists them; commands go to the default one,
   to the one of the synced folder they run in, or to \`--instance ALIAS\`. \`FONTEGO_URL\` with \`FONTEGO_TOKEN\` (scripts,
-  CI) uses that server and token instead.
+  CI) uses that server and token instead. The address is \`https://\`, or plain \`http://\` only on this machine:
+  \`FONTEGO_ALLOW_HTTP=1\` accepts plain http to another one, which sends the token unencrypted, so set it only when
+  the person says so.
 - Errors are printed as \`error: <message>\` plus a \`hint:\` line with the next step, usually a \`fontego\` command.
   With \`--json\` they come as \`{"error": {"code", "message", "hint"}}\` on stdout and the exit code is not 0.
 - Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict, 5 not allowed, 6 the server
