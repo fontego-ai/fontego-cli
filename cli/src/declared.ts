@@ -17,12 +17,13 @@ import {
   type CommandsManifest,
   type TemplateVars,
 } from "@fontego/core";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { UsageError, usageLine, type Parsed } from "./args.ts";
 import type { Client } from "./client.ts";
 import { readSecret, readStdin } from "./prompt.ts";
+import { forPerson, unsafeForTerminal } from "./terminal.ts";
 
 // --- The cache: one file per server ---
 
@@ -31,6 +32,20 @@ export interface CachedCommands extends CommandsManifest {
   fetchedAt: string;
   /** Who we are there, so help can leave out admin commands for everyone else */
   me: { email: string; isAdmin: boolean } | null;
+  /** Commands the server declares that this CLI won't run (checkCommand), and why: a newer server, or a bad one */
+  refused?: { name: string; problems: string[] }[];
+}
+
+/** Keeps only the commands this CLI can run safely; the others are listed apart, so `fontego X` can say why. */
+function usable(cache: CachedCommands): CachedCommands {
+  const commands: CommandSpec[] = [];
+  const refused: { name: string; problems: string[] }[] = [];
+  for (const c of cache.commands) {
+    const problems = checkCommand(c, []);
+    if (problems.length) refused.push({ name: typeof c?.name === "string" ? c.name : "?", problems });
+    else commands.push(c);
+  }
+  return { ...cache, commands, refused };
 }
 
 export function commandsCachePath(url: string, env = process.env): string {
@@ -44,7 +59,7 @@ export function readCommands(url: string): CachedCommands | null {
   if (!existsSync(path)) return null;
   try {
     const c = JSON.parse(readFileSync(path, "utf8")) as CachedCommands;
-    return c.url === url && Array.isArray(c.commands) ? c : null;
+    return c.url === url && Array.isArray(c.commands) ? usable(c) : null;
   } catch {
     return null; // a damaged cache is just a missing one
   }
@@ -65,10 +80,14 @@ export async function refreshCommands(client: Client, timeoutMs?: number): Promi
     // not signed in there, or the token was revoked: commands still help
   }
   const cached: CachedCommands = { ...manifest, url: client.baseUrl, fetchedAt: new Date().toISOString(), me };
+  // Private to this person: it says who they are on that server, and what it lists is what fontego runs.
   const path = commandsCachePath(client.baseUrl);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(cached, null, 2) + "\n");
-  return cached;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(path), 0o700);
+  const tmp = `${path}.${crypto.randomUUID()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(cached, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+  renameSync(tmp, path);
+  return usable(cached);
 }
 
 export function findCommand(cache: CachedCommands, words: string[]): CommandSpec | null {
@@ -92,17 +111,25 @@ export function nameLength(spec: CommandSpec, words: string[]): number {
 // --- Checking a declaration ---
 
 const FIELD = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/;
+/** A request path: /v1, then plain words or {PARAM} / {+PARAM}, never "." or ".." (they would leave the route) */
+const REQUEST_PATH = /^\/v1(\/(?!\.{1,2}(\/|$))([A-Za-z0-9._~-]+|\{\+?[A-Za-z0-9_]+\}))+$/;
+/** An argument is shown in usage lines and asked for by name (a secret), so it is a plain uppercase word */
+const ARG_NAME = /^[A-Z][A-Z0-9_]*$/;
+const FLAG_NAME = /^[a-z][a-z0-9-]*$/;
+const COMMAND_NAME = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$/;
 
 /** What would keep this CLI from running a declared command; an empty list means it can. */
 export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): string[] {
   const out: string[] = [];
+  if (typeof spec?.name !== "string" || !spec.request || !spec.output) return ["not a command declaration"];
   const at = `fontego ${spec.name}`;
   const taken = new Set(builtins);
+  for (const name of [spec.name, ...(spec.aliases ?? [])]) if (!COMMAND_NAME.test(name)) out.push(`${at}: "${name}" isn't a plain command name`);
   for (const name of [spec.name, ...(spec.aliases ?? [])]) {
     if (taken.has(name.split(" ")[0]!)) out.push(`${at}: "${name}" clashes with a built-in command`);
   }
   if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(spec.request.method)) out.push(`${at}: unknown method ${spec.request.method}`);
-  if (!spec.request.path.startsWith("/v1/")) out.push(`${at}: the request must go to /v1`);
+  if (!REQUEST_PATH.test(spec.request.path)) out.push(`${at}: the request must go to a plain path under /v1`);
   const args = spec.args ?? [];
   const flags = spec.flags ?? [];
   for (const t of [...args.map((a) => a.to), ...flags.map((f) => f.to)]) {
@@ -111,6 +138,8 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   for (const p of pathParams(spec.request.path)) {
     if (!args.some((a) => a.to === `path.${p}` && !a.optional)) out.push(`${at}: nothing fills {${p}} in ${spec.request.path}`);
   }
+  for (const a of args) if (!ARG_NAME.test(a.name)) out.push(`${at}: "${a.name}" isn't a plain argument name`);
+  for (const f of flags) if (!FLAG_NAME.test(f.name)) out.push(`${at}: "--${f.name}" isn't a plain option name`);
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
   for (const a of args) if (a.stdin && !a.optional) out.push(`${at}: ${a.name} comes from stdin when left out, so it must be optional`);
   for (const f of flags) {
@@ -133,8 +162,14 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
 
 // --- Running one ---
 
-function encodeParam(value: string, spans: boolean): string {
-  return spans ? value.split("/").map(encodeURIComponent).join("/") : encodeURIComponent(value);
+/** A value for {PARAM}, or {+PARAM} (a path, which keeps its slashes). An empty, "." or ".." part is refused: the URL
+ * would resolve it, and the command would reach another route (`rm WS ../members/ana@…`). */
+function encodeParam(name: string, value: string, spans: boolean): string {
+  const parts = spans ? value.split("/") : [value];
+  if (parts.some((p) => p === "" || p === "." || p === "..")) {
+    throw new UsageError(`${name} can't be empty or have an empty, "." or ".." part: "${value}"`);
+  }
+  return parts.map(encodeURIComponent).join("/");
 }
 
 /** The request a command makes with these arguments and flags. */
@@ -165,7 +200,7 @@ export function buildRequest(spec: CommandSpec, parsed: Parsed): { method: strin
   const path = spec.request.path.replace(/\{(\+?)([A-Za-z0-9_]+)\}/g, (_, plus: string, key: string) => {
     const v = pathValues[key];
     if (v === undefined) throw new UsageError(usageLine(spec));
-    return encodeParam(v, plus === "+");
+    return encodeParam(spec.args?.find((a) => a.to === `path.${key}`)?.name ?? key, v, plus === "+");
   });
   return { method: spec.request.method, path, query, ...(hasBody ? { body } : {}) };
 }
@@ -256,6 +291,13 @@ export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Clie
   if (spec.output.kind === "raw") {
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (!opts.json) {
+      // Piped or redirected, the very same bytes. On a terminal, a file someone else wrote could act on it: text is
+      // shown without control characters, and anything else is only written to a file.
+      if (process.stdout.isTTY) {
+        const text = textContent(bytes);
+        if (text === null) throw new UsageError(`That isn't text, so it isn't shown here. Save it: ${usageLine(spec)} > FILE`);
+        if (unsafeForTerminal(text)) return void process.stdout.write(forPerson(text));
+      }
       process.stdout.write(bytes);
       return;
     }
