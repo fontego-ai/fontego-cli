@@ -117,6 +117,8 @@ const REQUEST_PATH = /^\/v1(\/(?!\.{1,2}(\/|$))([A-Za-z0-9._~-]+|\{\+?[A-Za-z0-9
 const ARG_NAME = /^[A-Z][A-Z0-9_]*$/;
 const FLAG_NAME = /^[a-z][a-z0-9-]*$/;
 const COMMAND_NAME = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$/;
+/** What a command says about itself is shown in help: one line each, so it can't pose as more lines of it */
+const ONE_LINE = /^[^\u0000-\u001f\u007f-\u009f]*$/;
 
 /** What would keep this CLI from running a declared command; an empty list means it can. */
 export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): string[] {
@@ -140,6 +142,9 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   }
   for (const a of args) if (!ARG_NAME.test(a.name)) out.push(`${at}: "${a.name}" isn't a plain argument name`);
   for (const f of flags) if (!FLAG_NAME.test(f.name)) out.push(`${at}: "--${f.name}" isn't a plain option name`);
+  for (const f of flags) if (f.value !== undefined && !ARG_NAME.test(f.value)) out.push(`${at}: --${f.name} ${f.value} isn't a plain value name`);
+  const said = [spec.summary, spec.group, ...args.map((a) => a.description), ...flags.map((f) => f.description)];
+  if (said.some((t) => t !== undefined && (typeof t !== "string" || !ONE_LINE.test(t)))) out.push(`${at}: its summary, group and descriptions must be one line each`);
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
   for (const a of args) if (a.stdin && !a.optional) out.push(`${at}: ${a.name} comes from stdin when left out, so it must be optional`);
   for (const f of flags) {
