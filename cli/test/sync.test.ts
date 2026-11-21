@@ -721,3 +721,29 @@ describe("taking an ignored file out of the workspace", () => {
     expect((await A.sync()).pushed).toEqual([]); // and it doesn't go back up
   });
 });
+
+describe("one file that can't be here never stops sync", () => {
+  test("a file where a folder is here: the rest comes down and local work goes up, round after round", async () => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "clash" });
+    for (const who of ["ana", "bea"]) await s.call(s.adminToken, "PUT", `/v1/workspaces/clash/members/${who}@example.org`, { role: "editor" });
+    const B = await copy(bea.token, "Bea", "clash");
+    mkdirSync(join(B.root, "build"));
+    writeFileSync(join(B.root, "build/out.txt"), "Bea's build, local only\n");
+    writeFileSync(join(B.root, ".fontegoignore"), "build/\n");
+    await s.call(ana.token, "POST", "/v1/workspaces/clash/changes", {
+      baseCommit: null,
+      ops: [
+        { op: "put", path: "build", content: "a file named build\n", baseHash: null },
+        { op: "put", path: "zz.md", content: "later file\n", baseHash: null },
+      ],
+    });
+    write(B, "mine.md", "Bea's new work\n");
+    for (let round = 1; round <= 2; round++) {
+      const r = await B.sync();
+      if (round === 1) expect(r.skipped).toEqual([{ path: "build", reason: 'Left "build" alone: it is a folder here, and a folder never becomes a file.' }]);
+      expect(read(B, "zz.md")).toBe("later file\n");
+      expect(read(B, "build/out.txt")).toBe("Bea's build, local only\n");
+    }
+    expect((await s.call(ana.token, "GET", "/v1/workspaces/clash/files/mine.md")).data).toBe("Bea's new work\n");
+  });
+});

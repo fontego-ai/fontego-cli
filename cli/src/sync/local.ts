@@ -1,6 +1,6 @@
 // The local side of sync: scanning the folder, reading and writing files safely.
 
-import { blobHash, MAX_PATH, MAX_SEGMENT, normalizePath, PathError, symlinkTarget } from "@fontego/core";
+import { blobHash, MAX_PATH, MAX_SEGMENT, normalizePath, PathError, symlinkTarget, windowsNameProblem } from "@fontego/core";
 import { link, lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
@@ -19,7 +19,7 @@ const toPosix = (p: string) => (sep === "/" ? p : p.split(sep).join("/"));
 
 /** Whether an error means the thing isn't there (as opposed to being there and unreadable). */
 export const absent = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
-const reasonOf = (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
+export const reasonOf = (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
 
 /** A folder or file the scan couldn't read: what is there is unknown, so nothing under it counts as added or gone. */
 export interface Unreadable {
@@ -186,7 +186,7 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
  * anything), or one whose folders on the way down include a symlink here, which a write or a delete would follow
  * wherever it points (`a -> .` and `b -> a/..` look harmless one by one, and `b/x` lands next to the folder).
  */
-export async function insideRoot(root: string, path: string): Promise<void> {
+export async function insideRoot(root: string, path: string, platform: NodeJS.Platform = process.platform): Promise<void> {
   let clean: string;
   try {
     clean = normalizePath(path);
@@ -194,6 +194,9 @@ export async function insideRoot(root: string, path: string): Promise<void> {
     throw new UnsafePathError(path, e instanceof PathError ? e.message : String(e));
   }
   if (clean !== path) throw new UnsafePathError(path, "it isn't written the way the server writes paths");
+  // Valid in the workspace, but Windows would open a device, write a stream of another file, or drop a trailing dot.
+  const problem = platform === "win32" ? windowsNameProblem(path) : null;
+  if (problem) throw new UnsafePathError(path, `it isn't a valid name on Windows: ${problem}`);
   const parts = path.split("/");
   for (let i = 1; i < parts.length; i++) {
     const folder = parts.slice(0, i).join("/");
@@ -244,10 +247,29 @@ async function tmpDir(root: string): Promise<string> {
 
 /** Refuses to put a file where a folder is. */
 async function notAFolder(full: string, path: string) {
+  let st;
   try {
-    if ((await lstat(full)).isDirectory()) throw new Error(`${path} is a folder here; it can't become a file.`);
+    st = await lstat(full);
   } catch (e) {
-    if (!absent(e)) throw e;
+    if (absent(e)) return;
+    throw e;
+  }
+  if (st.isDirectory()) throw new UnsafePathError(path, "it is a folder here, and a folder never becomes a file");
+}
+
+/** Makes the folders above `path`, saying which file is in the way when one is. */
+async function makeFolders(root: string, path: string) {
+  try {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+  } catch (e) {
+    if (!["ENOTDIR", "EEXIST"].includes((e as NodeJS.ErrnoException)?.code ?? "")) throw e;
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      const folder = parts.slice(0, i).join("/");
+      const isFolder = await lstat(join(root, folder)).then((st) => st.isDirectory(), () => true);
+      if (!isFolder) throw new UnsafePathError(path, `${folder} is a file here, so nothing can go inside it`);
+    }
+    throw e;
   }
 }
 
@@ -255,7 +277,7 @@ async function notAFolder(full: string, path: string) {
 export async function writeLocal(root: string, path: string, bytes: Uint8Array, mode: string): Promise<LocalEntry> {
   await insideRoot(root, path);
   const full = join(root, path);
-  await mkdir(dirname(full), { recursive: true });
+  await makeFolders(root, path);
   const tmp = await prepare(root, path, bytes, mode);
   try {
     await notAFolder(full, path);
@@ -297,7 +319,7 @@ async function placeNew(src: string, dst: string): Promise<boolean> {
 /** Puts `src` at `path`, or, if that is taken, at the first free "path 2", "path 3"... next to it. Returns where. */
 async function placeAt(root: string, src: string, path: string): Promise<string> {
   await insideRoot(root, path);
-  await mkdir(dirname(join(root, path)), { recursive: true });
+  await makeFolders(root, path);
   const dot = posix.basename(path).lastIndexOf(".");
   const cut = dot > 0 ? path.length - posix.basename(path).length + dot : path.length;
   for (let n = 1; ; n++) {
@@ -361,7 +383,7 @@ export async function replaceIf(
   let tmp: string | null = null;
   let entry: LocalEntry | null = null;
   if (next) {
-    await mkdir(dirname(full), { recursive: true });
+    await makeFolders(root, path);
     tmp = await prepare(root, path, next.bytes, next.mode);
     entry = await readEntry(root, posix.join(STATE_DIR, "tmp", posix.basename(tmp)));
   }

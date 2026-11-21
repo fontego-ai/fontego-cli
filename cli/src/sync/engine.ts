@@ -18,6 +18,7 @@ import {
   readBytes,
   readEntry,
   insideRoot,
+  reasonOf,
   replaceIf,
   UnsafePathError,
   scan,
@@ -48,6 +49,57 @@ export interface SyncReport {
 
 const same = (a: LocalEntry | undefined, b: LocalEntry | undefined) =>
   a === b || (!!a && !!b && a.hash === b.hash && a.mode === b.mode);
+
+/** A download whose bytes aren't the ones the server listed: damaged on the way, or a server that is wrong. */
+class DamagedDownload extends Error {
+  constructor(path: string) {
+    super(`what came down for ${path} isn't what the server lists; it is tried again next round`);
+  }
+}
+
+/**
+ * Errors that say a path can't be written here as things are (a name this file system doesn't take, a folder or a
+ * file in the way, a link that could lead out), not that it failed this once (no space, no permission, a damaged
+ * download).
+ */
+const LASTING = ["ENAMETOOLONG", "EINVAL", "EISDIR", "ENOTDIR", "EEXIST", "ENOTEMPTY", "ELOOP", "EILSEQ"];
+const lasting = (e: unknown) => e instanceof UnsafePathError || LASTING.includes((e as NodeJS.ErrnoException)?.code ?? "");
+
+/** Why one path failed, in words: our own errors say it; a file system's has its code. */
+function whyNot(e: unknown): string {
+  if (e instanceof UnsafePathError || e instanceof DamagedDownload) return e.message;
+  const code = (e as NodeJS.ErrnoException)?.code;
+  if (!code) return reasonOf(e);
+  return lasting(e) ? `it can't be written in this folder (${code})` : `it couldn't be written here this time (${code}); it is tried again next round`;
+}
+
+/**
+ * The server's changes in its order, except that a delete which clears the way for a put goes first: a file that
+ * became a folder (or the other way round), or a name that only changes case, which a system that ignores case sees
+ * as the same file.
+ */
+function clearingFirst<T>(changes: Map<string, T | null>): Array<[string, T | null]> {
+  const names = new Set<string>();
+  const folders = new Set<string>();
+  for (const [path, r] of changes) {
+    if (!r) continue;
+    const parts = path.toLowerCase().split("/");
+    names.add(parts.join("/"));
+    for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join("/"));
+  }
+  const inTheWay = (path: string) => {
+    const parts = path.toLowerCase().split("/");
+    return names.has(parts.join("/")) || folders.has(parts.join("/")) || parts.some((_, i) => i > 0 && names.has(parts.slice(0, i).join("/")));
+  };
+  const all = [...changes];
+  const first = all.filter(([path, r]) => !r && inTheWay(path));
+  return [...first, ...all.filter(([path, r]) => r || !inTheWay(path))];
+}
+
+/** Notes one path left out of this round, once, however many times the round goes past it. */
+function noteSkipped(report: SyncReport, path: string, reason: string) {
+  if (!report.skipped.some((s) => s.path === path && s.reason === reason)) report.skipped.push({ path, reason });
+}
 
 /**
  * At most this much JSON per change set: well under the smallest body a server takes (64 MiB). A file bigger than this
@@ -171,9 +223,11 @@ export class SyncEngine {
     return report;
   }
 
-  private async download(path: string, rev: string): Promise<{ bytes: Uint8Array; mode: string; hash: string }> {
+  /** A file at a commit, checked against the hash the server listed for it. */
+  private async download(path: string, rev: string, hash: string): Promise<{ bytes: Uint8Array; mode: string; hash: string }> {
     const f = await this.client.file(this.state.workspace, path, rev);
-    return { bytes: f.bytes, mode: f.mode, hash: f.hash };
+    if (blobHash(f.bytes) !== hash) throw new DamagedDownload(path);
+    return { bytes: f.bytes, mode: f.mode, hash };
   }
 
   /**
@@ -181,10 +235,10 @@ export class SyncEngine {
    * downloading, and again, without a gap, when the new version goes in (replaceIf), so an edit saved during the
    * download stays and goes up next.
    */
-  private async writeIfUnchanged(path: string, expected: LocalEntry | undefined, rev: string): Promise<boolean> {
+  private async writeIfUnchanged(path: string, expected: LocalEntry | undefined, rev: string, hash: string): Promise<boolean> {
     const now = await readEntry(this.root, path, expected);
     if (!same(now ?? undefined, expected)) return false;
-    const f = await this.download(path, rev);
+    const f = await this.download(path, rev, hash);
     const done = await replaceIf(this.root, path, { bytes: f.bytes, mode: f.mode }, expected, { who: this.state.user });
     if (!done) return false;
     this.state.files[path] = done.entry!;
@@ -211,7 +265,7 @@ export class SyncEngine {
     }
 
     let waiting = false;
-    for (const [path, r] of remote) {
+    for (const [path, r] of clearingFirst(remote)) {
       if (insideUnreadable(scanned.unreadable, path)) {
         // Can't see what is here: leave it, keep its base, and don't step past this change (below).
         waiting = true;
@@ -220,10 +274,13 @@ export class SyncEngine {
       try {
         await this.pullOne(report, path, r, local, rules, res.head);
       } catch (e) {
-        // A path that would land outside this folder is left alone; the rest goes on.
-        if (!(e instanceof UnsafePathError)) throw e;
-        report.skipped.push({ path, reason: e.message });
-        delete this.state.files[path];
+        // One path that can't be written here never stops the rest, nor what goes up. One that can't be as things
+        // are here (a name this system doesn't take, a folder in the way, a link that could lead out) is left out
+        // until it changes on the server; one that failed this once waits, like a folder that can't be read.
+        if (e instanceof ClientError) throw e;
+        noteSkipped(report, path, whyNot(e));
+        if (lasting(e)) delete this.state.files[path];
+        else waiting = true;
       }
     }
     // A change that had to wait keeps the copy at its last full step, so the server sends it again next round. What
@@ -262,7 +319,7 @@ export class SyncEngine {
       return;
     }
     if (!changedHere) {
-      if (await this.writeIfUnchanged(path, l, head)) report.pulled.push({ path, status: "put" });
+      if (await this.writeIfUnchanged(path, l, head, r.hash)) report.pulled.push({ path, status: "put" });
     }
     // else: changed on both sides; push sends ours with its original base and the server merges
   }
@@ -348,6 +405,41 @@ export class SyncEngine {
     return op;
   }
 
+  /** Settles one conflict the server answered, keeping both sides when it can. */
+  private async resolve(report: SyncReport, c: Conflict, ops: ChangeOp[], local: Map<string, LocalEntry>, rev: string | undefined) {
+    const op = ops.find((o) => (o.op === "move" ? o.to === c.path || o.from === c.path : o.path === c.path));
+    const l = local.get(c.path);
+    if (op?.op === "put" && c.reason === "missing") {
+      // Deleted on the server, edited here: keep the edit as a new file.
+      delete this.state.files[c.path];
+      report.conflicts.push({ path: c.path, reason: c.reason, message: `${c.path} was deleted on the server; your edited copy is kept.` });
+      return;
+    }
+    if (op?.op === "put" && l && c.currentHash && rev) {
+      // The server's version first; then, in one go, the file here (as it is at that moment, with any edit saved
+      // meanwhile) moves to the conflict copy and the server's takes its place.
+      const f = await this.download(c.path, rev, c.currentHash);
+      const done = await replaceIf(this.root, c.path, { bytes: f.bytes, mode: f.mode }, undefined, {
+        who: this.state.user,
+        keepAs: conflictName(c.path, this.state.user),
+      });
+      if (done) this.state.files[c.path] = done.entry!;
+      const copy = done?.keptAs;
+      report.conflicts.push({ path: c.path, reason: c.reason, copy, message: copy ? `${c.message} Your version is in "${copy}".` : c.message });
+      return;
+    }
+    if (op?.op === "delete" && c.currentHash && rev) {
+      const f = await this.download(c.path, rev, c.currentHash);
+      const done = await replaceIf(this.root, c.path, { bytes: f.bytes, mode: f.mode }, undefined, { who: this.state.user });
+      if (done) this.state.files[c.path] = done.entry!;
+      report.conflicts.push({ path: c.path, reason: c.reason, message: `${c.path} changed on the server, so it was not deleted; it's back with the new version.` });
+      return;
+    }
+    // Can't be resolved by keeping both (e.g. a file where a folder is): leave it out until it changes.
+    this.skip(c.path, l?.hash ?? "deleted", c.message);
+    report.conflicts.push({ path: c.path, reason: c.reason, message: c.message });
+  }
+
   /** Sends one batch as a change set and takes in the answer. */
   private async send(
     report: SyncReport,
@@ -384,39 +476,16 @@ export class SyncEngine {
       }
       if (e.code === "conflict") {
         const details = e.details as { head: string | null; conflicts: Conflict[] };
-        const rev = details.head ?? undefined;
         for (const c of details.conflicts) {
-          const op = ops.find((o) => (o.op === "move" ? o.to === c.path || o.from === c.path : o.path === c.path));
-          const l = local.get(c.path);
-          if (op?.op === "put" && c.reason === "missing") {
-            // Deleted on the server, edited here: keep the edit as a new file.
-            delete this.state.files[c.path];
-            report.conflicts.push({ path: c.path, reason: c.reason, message: `${c.path} was deleted on the server; your edited copy is kept.` });
-            continue;
+          try {
+            await this.resolve(report, c, ops, local, details.head ?? undefined);
+          } catch (err) {
+            // A conflict that can't be settled here (its copy or the server's version can't be written) waits like a
+            // refused file; the rest goes on.
+            if (err instanceof ClientError) throw err;
+            this.skip(c.path, local.get(c.path)?.hash ?? "deleted", whyNot(err));
+            noteSkipped(report, c.path, whyNot(err));
           }
-          if (op?.op === "put" && l && c.currentHash && rev) {
-            // The server's version first; then, in one go, the file here (as it is at that moment, with any edit saved
-            // meanwhile) moves to the conflict copy and the server's takes its place.
-            const f = await this.download(c.path, rev);
-            const done = await replaceIf(this.root, c.path, { bytes: f.bytes, mode: f.mode }, undefined, {
-              who: this.state.user,
-              keepAs: conflictName(c.path, this.state.user),
-            });
-            if (done) this.state.files[c.path] = done.entry!;
-            const copy = done?.keptAs;
-            report.conflicts.push({ path: c.path, reason: c.reason, copy, message: copy ? `${c.message} Your version is in "${copy}".` : c.message });
-            continue;
-          }
-          if (op?.op === "delete" && c.currentHash && rev) {
-            const f = await this.download(c.path, rev);
-            const done = await replaceIf(this.root, c.path, { bytes: f.bytes, mode: f.mode }, undefined, { who: this.state.user });
-            if (done) this.state.files[c.path] = done.entry!;
-            report.conflicts.push({ path: c.path, reason: c.reason, message: `${c.path} changed on the server, so it was not deleted; it's back with the new version.` });
-            continue;
-          }
-          // Can't be resolved by keeping both (e.g. a file where a folder is): leave it out until it changes.
-          this.skip(c.path, l?.hash ?? "deleted", c.message);
-          report.conflicts.push({ path: c.path, reason: c.reason, message: c.message });
         }
         return "retry";
       }
@@ -432,10 +501,16 @@ export class SyncEngine {
         if (change) report.pushed.push({ path, status: "delete" });
         continue;
       }
-      if (change?.merged && result.commit) {
-        // The server merged our edit with someone else's: bring the merged text here.
-        // If it changed again meanwhile, keep the original base: the next round merges once more.
-        await this.writeIfUnchanged(path, l, result.commit);
+      if (change?.merged && result.commit && change.hash) {
+        // The server merged our edit with someone else's: bring the merged text here (checked against its hash).
+        // If it changed again meanwhile, or can't be written now, keep the original base: the next round merges once
+        // more.
+        try {
+          await this.writeIfUnchanged(path, l, result.commit, change.hash);
+        } catch (e) {
+          if (e instanceof ClientError) throw e;
+          noteSkipped(report, path, whyNot(e));
+        }
         report.pushed.push({ path, status: "put", merged: true });
         continue;
       }
