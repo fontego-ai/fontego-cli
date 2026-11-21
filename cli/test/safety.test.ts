@@ -2,11 +2,12 @@
 // where the client sends a request, and the private files of this machine. The sign-in tests (login.test.ts) check
 // the same rules through the commands.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { deviceLogin, fetchInstance, StoredAuth } from "../src/auth.ts";
 import { Client, ClientError } from "../src/client.ts";
-import { credentialStore, instanceUrl, isLoopback, saveInstance, sameInstance } from "../src/config.ts";
+import { credentialStore, instanceUrl, isLoopback, saveInstance, sameInstance, type Credential } from "../src/config.ts";
 import { tempDir } from "./server.ts";
 
 const dirs: string[] = [];
@@ -15,8 +16,28 @@ const scratch = (prefix: string) => {
   dirs.push(d);
   return d;
 };
+// A renewal takes its lock and saves the account's address in this process's config folder: a throwaway one.
+const realConfig = process.env.XDG_CONFIG_HOME;
+let home: string;
+beforeAll(() => {
+  home = scratch("fontego-safety-home-");
+  process.env.XDG_CONFIG_HOME = home;
+});
 afterAll(() => {
+  if (realConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = realConfig;
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
+
+/** A session whose access token has expired, so the next request renews it */
+const expiredSession = (refreshToken = "fontego_rt_secret"): Credential => ({
+  type: "session",
+  accessToken: "fontego_at_old",
+  accessExpiresAt: new Date(0).toISOString(),
+  refreshToken,
+  sessionId: 1,
+  expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+  email: "ana@example.org",
 });
 
 /** A server that notes every request it gets ("METHOD /path authorization body") and answers with `answer`. */
@@ -108,6 +129,49 @@ describe("where the client sends a request", () => {
     await client.call("GET", "/v1/x");
     expect(server.seen).toEqual(["GET /team/v1/x Bearer fontego_at_secret"]);
     server.stop();
+  });
+});
+
+describe("redirects", () => {
+  /** A server that sends everything to `to` with `status`, as a hostile or misconfigured one could */
+  const redirecting = (to: string, status = 307) => recorder(() => new Response(null, { status, headers: { location: `${to}/stolen` } }));
+
+  test("an API call that is redirected fails, and its body and token go nowhere", async () => {
+    const sink = recorder();
+    const server = redirecting(sink.url);
+    const client = new Client(server.url, "fontego_at_secret");
+    expect(await failsWith(client.call("POST", "/v1/account/password", { body: { password: "correct horse" } }))).toBe("redirected");
+    expect(await failsWith(client.me())).toBe("redirected");
+    expect(await failsWith(client.personEvents(() => {}))).toBe("redirected");
+    expect(sink.seen).toEqual([]);
+    server.stop();
+    sink.stop();
+  });
+
+  test("a renewal that is redirected keeps its refresh token, and the credential", async () => {
+    const sink = recorder();
+    const server = redirecting(sink.url, 308);
+    const env = { XDG_CONFIG_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" };
+    const store = await credentialStore(env);
+    const cred = expiredSession();
+    await store.set(server.url, cred);
+    const auth = new StoredAuth({ ...instance(server.url), email: "ana@example.org" }, store, cred);
+    expect(await failsWith(auth.token())).toBe("redirected");
+    expect(sink.seen).toEqual([]);
+    expect(await store.get(server.url)).toEqual(cred);
+    server.stop();
+    sink.stop();
+  });
+
+  test("signing in follows no redirect either, and says where the server points", async () => {
+    const sink = recorder();
+    const server = redirecting(sink.url);
+    expect(await failsWith(deviceLogin(server.url, { waiting: () => {} }))).toBe("redirected");
+    const moved = await fetchInstance(server.url).catch((e) => e as ClientError);
+    expect(moved).toMatchObject({ code: "redirected", hint: `If that is the right address: fontego login ${sink.url}/stolen` });
+    expect(sink.seen).toEqual([]);
+    server.stop();
+    sink.stop();
   });
 });
 

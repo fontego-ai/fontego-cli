@@ -28,6 +28,22 @@ export class ClientError extends Error {
   }
 }
 
+/**
+ * fontego follows no redirect: a 307 or 308 sends the body again (a refresh token, a password, a file) to wherever it
+ * points, which may be another server or plain http. Every fetch asks for `redirect: "manual"` and passes its answer
+ * here, which turns a redirect into an error saying where it pointed.
+ */
+export function refuseRedirect(res: Response, from: string): Response {
+  if (res.status < 300 || res.status > 399) return res;
+  const to = res.headers.get("location");
+  throw new ClientError(
+    res.status,
+    "redirected",
+    `${from} answered with a redirect${to ? ` to ${to}` : ""}, and fontego doesn't follow redirects: what it sends goes only where you said.`,
+    "Use the address the server answers on, the one you open in the browser: fontego login URL",
+  );
+}
+
 const enc = encodeURIComponent;
 const encPath = (p: string) => p.split("/").map(enc).join("/");
 
@@ -95,11 +111,13 @@ export class Client {
         headers: await this.headers(body !== undefined ? { "content-type": "application/json" } : {}),
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
+        redirect: "manual",
       });
     } catch (e) {
       if (e instanceof ClientError) throw e;
       throw new ClientError(0, "unreachable", `Can't reach ${this.baseUrl}: ${(e as Error).message}`, "Check the URL and that the server is running.");
     }
+    refuseRedirect(res, this.baseUrl);
     this.commandsVersion = res.headers.get(COMMANDS_HEADER) ?? this.commandsVersion;
     // A refused credential: renew it (or pick up a new sign-in) and try once more.
     if (res.status === 401 && !retried && this.auth.recover) {
@@ -204,12 +222,15 @@ export class Client {
     };
     try {
       const open = async () => {
+        let res: Response;
         try {
-          return await fetch(url, { headers: await this.headers({ accept: "text/event-stream" }), signal: local.signal });
+          res = await fetch(url, { headers: await this.headers({ accept: "text/event-stream" }), signal: local.signal, redirect: "manual" });
         } catch (e) {
           if (signal?.aborted) return null;
+          if (e instanceof ClientError) throw e;
           throw new ClientError(0, "unreachable", `Can't reach ${this.baseUrl}: ${(e as Error).message}`, "Check the URL and that the server is running.");
         }
+        return refuseRedirect(res, this.baseUrl);
       };
       let res = await open();
       // A refused credential: renew it (or pick up a new sign-in) and try once more, as every other call does.

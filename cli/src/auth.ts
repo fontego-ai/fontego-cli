@@ -11,7 +11,7 @@
 import type { DeviceAuthorization, InstanceInfo, TokenResponse } from "@fontego/core";
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { ClientError, type AuthProvider } from "./client.ts";
+import { ClientError, refuseRedirect, type AuthProvider } from "./client.ts";
 import { normalizeUrl, setInstanceEmail, withLock, type Credential, type CredentialStore, type Instance } from "./config.ts";
 import { USER_AGENT } from "./version.ts";
 
@@ -79,10 +79,12 @@ export class StoredAuth implements AuthProvider {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": USER_AGENT },
           body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken, client_id: CLIENT_ID }),
+          redirect: "manual",
         });
       } catch (e) {
         throw new ClientError(0, "unreachable", `Can't reach ${url}: ${(e as Error).message}`, "Check the URL and that the server is running.");
       }
+      refuseRedirect(res, url);
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string; error_description?: string };
         if (err.error === "invalid_grant") {
@@ -109,9 +111,15 @@ export class StoredAuth implements AuthProvider {
 export async function fetchInstance(url: string): Promise<InstanceInfo> {
   let res: Response;
   try {
-    res = await fetch(`${normalizeUrl(url)}/v1/instance`, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(10_000) });
+    res = await fetch(`${normalizeUrl(url)}/v1/instance`, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(10_000), redirect: "manual" });
   } catch (e) {
     throw new ClientError(0, "unreachable", `Can't reach ${url}: ${(e as Error).message}`, "Check the URL and that the server is running.");
+  }
+  // Nothing secret goes in this request, but every later one would: say where the server points instead of following.
+  const to = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+  if (to) {
+    const moved = new URL(to, `${normalizeUrl(url)}/v1/instance`).href.replace(/\/v1\/instance$/, "");
+    throw new ClientError(res.status, "redirected", `${url} sends fontego to ${moved}, and fontego doesn't follow redirects.`, `If that is the right address: fontego login ${moved}`);
   }
   const info = res.ok ? ((await res.json().catch(() => null)) as InstanceInfo | null) : null;
   if (!info || info.software !== "fontego") {
@@ -203,7 +211,9 @@ export async function deviceLogin(url: string, opts: { waiting: (d: DeviceAuthor
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": USER_AGENT },
     body: JSON.stringify({ client_id: CLIENT_ID, machine: machineName() }),
+    redirect: "manual",
   });
+  refuseRedirect(res, url);
   if (!res.ok) throw new ClientError(res.status, "device_failed", `The server refused to start the sign-in (HTTP ${res.status}).`);
   const d = (await res.json()) as DeviceAuthorization;
   opts.waiting(d);
@@ -233,7 +243,9 @@ async function tokenRequest(base: string, form: Record<string, string>): Promise
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": USER_AGENT },
     body: new URLSearchParams(form),
+    redirect: "manual",
   });
+  refuseRedirect(res, base);
   const body = (await res.json().catch(() => ({}))) as TokenResponse & { error?: string; error_description?: string };
   if (!res.ok) throw new ClientError(res.status, body.error ?? "http_error", body.error_description ?? `HTTP ${res.status}`);
   return body;
@@ -247,6 +259,8 @@ export async function revokeSession(url: string, refreshToken: string): Promise<
       headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": USER_AGENT },
       body: new URLSearchParams({ token: refreshToken }),
       signal: AbortSignal.timeout(10_000),
+      // A redirect is a failure: the refresh token never goes to where it points
+      redirect: "manual",
     });
     return res.ok;
   } catch {
