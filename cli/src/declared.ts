@@ -162,6 +162,8 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
     if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || !(f.file.maxBytes > 0))) {
       out.push(`${at}: --${f.name} names a file, so it must be a string that goes into the body, with a size above 0`);
     }
+    // Which file of this machine is read is the person's to say, never the server's
+    if (f.file !== undefined && f.default !== undefined) out.push(`${at}: --${f.name} names a file, so it can't have a default`);
     if (f.unset !== undefined && (typeof f.unset !== "string" || !UNSET_WORD.test(f.unset) || f.type !== "string" || !f.to.startsWith("body."))) {
       out.push(`${at}: --${f.name} can send null only as a string flag into the body, with a plain lowercase word for it`);
     }
