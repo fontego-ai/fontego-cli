@@ -16,6 +16,13 @@ fontego help --agent      # how to use it, written for an AI agent
 short skill where Claude Code, Codex, GitHub Copilot CLI, OpenCode, Cursor and Gemini CLI look for skills; it tells
 them to run `fontego help --agent`, which always matches your CLI and your server.
 
+In a container, for CI jobs and machines without Node (Linux, x64 and arm64):
+
+```bash
+docker run --rm -e FONTEGO_URL=https://fontego.example.org -e FONTEGO_TOKEN -v "$PWD:/work" \
+  ghcr.io/fontego-ai/fontego clone handbook
+```
+
 Besides the commands for a synced folder, `fontego` runs the ones your server declares, so a newer server brings its
 new commands to every CLI without an update. `fontego help` lists what yours offers.
 

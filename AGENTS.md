@@ -85,6 +85,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/commands/setup.ts` | `fontego setup`: the skill and writing or removing it |
 | `cli/src/version.ts` | The CLI's version, read from `cli/package.json` |
 | `scripts/build.ts`, `scripts/npm-launcher.cjs`, `scripts/npm-readme.md`, `install.sh` | The release: executables, npm packages and the install script (see above) |
+| `Dockerfile`, `.github/workflows/image.yml` | The command's container image and the workflow that publishes it (see How to work) |
 | `cli/src/client.ts` | HTTP client for `/v1`: a token per request, and one more try after renewing on a 401. Event streams (`events` for watch, `personEvents` for `fontego events`): the server says how often it beats in `ready`, and a line silent for two and a half beats is taken as dead, so the caller connects again |
 | `cli/src/commands/live.ts` | `fontego events`: the person's stream (commits, who is in each workspace, changes in their list), one line per event or one JSON object per line, connecting again by itself. `who` and `here` come from the server |
 | `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock |
@@ -108,6 +109,15 @@ bun run build --only linux-x64 --out /tmp/fontego-dist
   `cli/package.json`, `bun run build`, upload `dist/release/*` to a GitHub release `vX.Y.Z`, then `npm publish` each
   folder of `dist/npm` (the `@fontego/cli-*` ones first, `fontego` last, with `--access public`). macOS executables
   built on Linux aren't signed: build those on a Mac (codesign) before a real release.
+- **The container image** (`Dockerfile`): the same executable as a release (`scripts/build.ts`), on Debian slim with
+  a shell for CI systems, as the user `fontego` (1000) in `/work`, with `FONTEGO_CREDENTIAL_STORE=file`. Bun
+  cross-compiles and the last stage only copies files, so building it for another architecture needs no emulation.
+  A tag `vX.Y.Z` on `fontego-ai/fontego-cli`, the version in `cli/package.json`, runs `.github/workflows/image.yml`:
+  it tries the image (`version`, `help`, also as another user) and publishes the same digest as
+  `ghcr.io/fontego-ai/fontego` (the one the docs give) and `docker.io/fontego/fontego`, tagged `X.Y.Z`, and for a
+  version without a pre-release part `X.Y` and `latest`, for linux/amd64 and linux/arm64, with provenance and an
+  SBOM. The repository needs the variable `DOCKERHUB_USERNAME` and the secret `DOCKERHUB_TOKEN`; forks skip it.
+  `fontego-app`'s `scripts/check-image.sh` uses it against a server image, end to end.
 
 - `cli/test/build.test.ts` builds this system's executable and uses it as a person would: on its own, through the
   npm launcher, and installed by `install.sh` from a local server laid out like GitHub releases.
