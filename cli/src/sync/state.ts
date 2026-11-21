@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { STATE_DIR, type LocalEntry } from "./local.ts";
+import { isWorkspacePath, STATE_DIR, type LocalEntry } from "./local.ts";
 
 export interface SyncState {
   version: 1;
@@ -37,7 +37,18 @@ export interface Skipped {
 export const statePath = (root: string) => join(root, STATE_DIR, "state.json");
 
 export function newState(url: string, workspace: string, user: string): SyncState {
-  return { version: 1, url, workspace, user, head: null, files: {}, skipped: {} };
+  return { version: 1, url, workspace, user, head: null, files: pathRecord(), skipped: pathRecord() };
+}
+
+/**
+ * A record by path with no prototype, so that a file named `constructor`, `toString` or `__proto__` is just a key.
+ * Only the paths the server would write are kept from `from`: a key with "..", or one a newer rule refuses (a state
+ * edited by hand, planted, or written before the rule), is forgotten, so sync never reads or writes there.
+ */
+function pathRecord<T>(from: Record<string, T> = {}): Record<string, T> {
+  const record = Object.create(null) as Record<string, T>;
+  for (const [path, value] of Object.entries(from)) if (isWorkspacePath(path)) record[path] = value;
+  return record;
 }
 
 /** A synced folder's state that can't be used: damaged, or written by a newer fontego. The hint says what to do. */
@@ -94,7 +105,8 @@ export async function loadState(root: string): Promise<SyncState> {
   }
   const problem = version === 1 ? stateProblem(raw) : "it has no version 1";
   if (problem) throw new StateError(`${path} is damaged: ${problem}.`, relink((raw as { workspace?: string } | null)?.workspace));
-  return raw as SyncState;
+  const state = raw as SyncState;
+  return { ...state, files: pathRecord(state.files), skipped: pathRecord(state.skipped) };
 }
 
 export async function saveState(root: string, state: SyncState) {

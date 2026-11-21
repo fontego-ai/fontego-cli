@@ -111,6 +111,26 @@ describe("ignore rules", () => {
     expect(rules.problems).toEqual([{ source: ".fontegoignore", reason: "it is over 1 MiB, so only its first MiB counts" }]);
   });
 
+  test("a tracked file inside an ignored folder is never read through a symlink, nor by a path with ..", async () => {
+    const outside = folder({ "mylib/.env": "API_KEY=outside\n", ".ssh/id_ed25519": "PRIVATE KEY\n" });
+    const root = folder({ ".fontegoignore": "node_modules/\n", "node_modules/real/kept.js": "k" });
+    symlinkSync(join(outside, "mylib"), join(root, "node_modules/mylib")); // npm link, where a synced folder was
+    const e = { hash: "0".repeat(40), mode: "100644", size: 1, mtimeMs: 1 };
+    const tracked = { "node_modules/mylib/.env": e, "node_modules/../../.ssh/id_ed25519": e, "node_modules/real/kept.js": e };
+    const r = await scan(root, await loadIgnoreRules(root), tracked);
+    // What is below the link isn't here, as anywhere else a folder became a link; the path with .. isn't one.
+    expect([...r.files.keys()].sort()).toEqual([".fontegoignore", "node_modules/real/kept.js"]);
+    expect(r.unreadable).toEqual([]);
+  });
+
+  test("files named like what every JavaScript object has are files like any other", async () => {
+    const root = folder({ ".fontegoignore": "*.tmp\n", "constructor.tmp": "c", "toString.tmp": "t" });
+    const r = await scan(root, await loadIgnoreRules(root), {});
+    expect(r.ignored).toEqual(["constructor.tmp", "toString.tmp"]);
+    const named = folder({ ".fontegoignore": "constructor\ntoString\n", constructor: "c", toString: "t" });
+    expect((await scan(named, await loadIgnoreRules(named), {})).ignored).toEqual(["constructor", "toString"]);
+  });
+
   test("scanning sends files the workspace has even when ignored, also inside an ignored folder, and lists the rest", async () => {
     const root = folder({ ".fontegoignore": "node_modules/\n*.log\n", "node_modules/pkg/index.js": "x", "node_modules/kept.js": "k", "a.log": "a", "b.log": "b", "c.md": "c" });
     const tracked = { "node_modules/kept.js": { hash: "", mode: "100644", size: -1, mtimeMs: 0 }, "a.log": { hash: "", mode: "100644", size: -1, mtimeMs: 0 } };

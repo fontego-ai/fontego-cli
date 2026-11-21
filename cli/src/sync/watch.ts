@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { ClientError, type Client } from "../client.ts";
 import type { SyncEngine, SyncReport } from "./engine.ts";
 import { IGNORE_FILE, loadIgnoreRules, MACHINE_IGNORE, STATE_DIR } from "./ignore.ts";
+import { own } from "./local.ts";
 
 export interface WatchOptions {
   /** Quiet time after a local edit before syncing */
@@ -202,7 +203,7 @@ export class Watcher {
       const path = String(filename).split("\\").join("/");
       if (path === MACHINE_IGNORE || path === IGNORE_FILE || path.endsWith(`/${IGNORE_FILE}`)) void reload();
       if (path === STATE_DIR || path.startsWith(`${STATE_DIR}/`)) return;
-      if (rules.match(path, false).ignored && !this.engine.state.files[path.normalize("NFC")]) return;
+      if (rules.match(path, false).ignored && !own(this.engine.state.files, path.normalize("NFC"))) return;
       this.schedule(debounce);
     });
     this.safety = setInterval(() => this.schedule(0), this.opts.safetyMs ?? 30_000);

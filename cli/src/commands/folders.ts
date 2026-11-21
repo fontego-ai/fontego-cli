@@ -6,7 +6,7 @@ import { ClientError } from "../client.ts";
 import type { Connection } from "../connect.ts";
 import { localStatus, SyncEngine, type SyncReport } from "../sync/engine.ts";
 import { loadIgnoreRules, type IgnoreMatch } from "../sync/ignore.ts";
-import { isConflictCopy, scan } from "../sync/local.ts";
+import { isConflictCopy, own, scan } from "../sync/local.ts";
 import { findRoot, loadState, newState, saveState, statePath } from "../sync/state.ts";
 import { acquireLock, Watcher } from "../sync/watch.ts";
 import { EXIT, incomplete } from "../output.ts";
@@ -150,7 +150,7 @@ export const folderCommands: Builtin[] = [
       const { root, state } = await folder(rc.parsed.args.DIR);
       const st = await localStatus(root, state);
       // A file in the workspace that the rules match keeps syncing; say so, and how to take it out.
-      const trackedIgnored = st.trackedIgnored.map((t) => ({ ...t, hash: state.files[t.path]?.hash ?? null }));
+      const trackedIgnored = st.trackedIgnored.map((t) => ({ ...t, hash: own(state.files, t.path)?.hash ?? null }));
       rc.print({ root, workspace: state.workspace, head: state.head, ...st, trackedIgnored }, () => {
         const lines = [
           ...st.added.map((p) => `new       ${p}`),
@@ -197,7 +197,7 @@ export const folderCommands: Builtin[] = [
       const rules = await loadIgnoreRules(root);
       await rules.prepare(rel);
       const m = rules.match(rel, isDir);
-      const tracked = !!state.files[rel.normalize("NFC")];
+      const tracked = !!own(state.files, rel.normalize("NFC"));
       rc.print({ path: rel, folder: isDir, ...m, tracked }, () => {
         if (!m.ignored) return `${rel} is not ignored.`;
         const why = `${m.source}${m.line ? `:${m.line}` : ""}:${m.pattern}\t${rel}${m.folder ? `  (through the folder ${m.folder}/)` : ""}`;

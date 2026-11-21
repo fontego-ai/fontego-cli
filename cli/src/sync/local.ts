@@ -27,6 +27,18 @@ export interface Unreadable {
   reason: string;
 }
 
+/** Whether a path is written the way the server writes paths (normalizePath leaves it as it is). */
+export function isWorkspacePath(path: string): boolean {
+  try {
+    return normalizePath(path) === path;
+  } catch {
+    return false;
+  }
+}
+
+/** A record's own value for a key: a file named `constructor` or `__proto__` is never one of every object's. */
+export const own = <T>(record: Record<string, T>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined);
+
 /** Whether a path is one of `unreadable`, or inside one of them. */
 export const insideUnreadable = (unreadable: Unreadable[], path: string) =>
   unreadable.some((u) => path === u.path || path.startsWith(`${u.path}/`));
@@ -90,7 +102,7 @@ async function holdsUntracked(root: string, dir: string, tracked: Record<string,
     } catch {
       continue;
     }
-    if (st.isDirectory() ? await holdsUntracked(root, path, tracked) : !tracked[path.normalize("NFC")] && !isJunk(name)) return true;
+    if (st.isDirectory() ? await holdsUntracked(root, path, tracked) : !own(tracked, path.normalize("NFC")) && !isJunk(name)) return true;
   }
   return false;
 }
@@ -112,7 +124,7 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
     const key = path.normalize("NFC");
     let entry;
     try {
-      entry = await readEntry(root, path, tracked[key]);
+      entry = await readEntry(root, path, own(tracked, key));
     } catch (e) {
       unreadable.push({ path: key, reason: reasonOf(e) });
       return;
@@ -120,6 +132,21 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
     if (!entry) return;
     files.set(key, entry);
     if (match?.ignored) trackedIgnored.push({ path: key, ...match });
+  };
+
+  /**
+   * Whether a path the workspace has, inside a folder the scan doesn't walk, can be read as a file of this folder: one
+   * written as the server writes paths, below real folders only. Through a symlink (npm link puts one where a folder
+   * was) it would read, and send up, whatever is at the other end; a path with ".." from a state edited by hand, too.
+   * Like a folder replaced by a link anywhere else, what is below it isn't here. Throws if a folder can't be looked at.
+   */
+  const underRealFolders = async (path: string) => {
+    if (!isWorkspacePath(path)) return false;
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      if (!(await lstat(join(root, parts.slice(0, i).join("/")))).isDirectory()) return false;
+    }
+    return true;
   };
 
   async function walk(rel: string) {
@@ -152,9 +179,17 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
           // folder counts as ignored only if it holds something new.
           const prefix = `${path.normalize("NFC")}/`;
           const inside = trackedPaths.filter((p) => p.startsWith(prefix));
-          for (const p of inside) await add(p, rules.match(p, false));
+          for (const p of inside) {
+            try {
+              if (!(await underRealFolders(p))) continue;
+            } catch (e) {
+              if (!absent(e)) unreadable.push({ path: p, reason: reasonOf(e) });
+              continue;
+            }
+            await add(p, rules.match(p, false));
+          }
           if (!inside.length || (await holdsUntracked(root, path, tracked))) ignored.push(`${path}/`);
-        } else if (tracked[path.normalize("NFC")]) await add(path, match);
+        } else if (own(tracked, path.normalize("NFC"))) await add(path, match);
         else ignored.push(path);
         continue;
       }

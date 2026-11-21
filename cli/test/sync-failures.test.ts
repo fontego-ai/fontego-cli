@@ -9,7 +9,7 @@ import { blobHash, type ChangeSetRequest, type ChangeSetResult, type SyncRespons
 import { ClientError, type Client } from "../src/client.ts";
 import { SyncEngine } from "../src/sync/engine.ts";
 import { insideRoot, UnsafePathError } from "../src/sync/local.ts";
-import { newState } from "../src/sync/state.ts";
+import { loadState, newState, saveState } from "../src/sync/state.ts";
 import { tempDir } from "./server.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -214,5 +214,35 @@ describe("names Windows can't hold", () => {
       await insideRoot(root, p, "linux");
     }
     await insideRoot(root, "docs/console.md", "win32");
+  });
+});
+
+describe("the state of a copy", () => {
+  test("files named constructor, toString or __proto__ sync like any other, also after the state is read again", async () => {
+    const server = new FakeServer();
+    for (const p of ["constructor", "toString", "__proto__", "hasOwnProperty", "normal"]) server.put(p, `${p}\n`);
+    const A = copy(server);
+    const r = await A.sync();
+    expect(r.pulled.map((p) => p.path).sort()).toEqual(["__proto__", "constructor", "hasOwnProperty", "normal", "toString"]);
+    for (const p of ["constructor", "toString", "__proto__"]) expect(readFileSync(join(A.root, p), "utf8")).toBe(`${p}\n`);
+    const again = new SyncEngine(A.root, server.client(), await loadState(A.root));
+    expect(Object.keys(again.state.files).sort()).toEqual(["__proto__", "constructor", "hasOwnProperty", "normal", "toString"]);
+    writeFileSync(join(A.root, "__proto__"), "edited\n");
+    const up = await again.sync();
+    expect(up.pushed).toEqual([{ path: "__proto__", status: "put" }]);
+    expect(server.sent.at(-1)!.ops).toHaveLength(1);
+  });
+
+  test("a state whose paths aren't the server's (.. in them, a name a newer rule refuses) forgets them when read", async () => {
+    const server = new FakeServer();
+    const A = copy(server);
+    const e = { hash: "0".repeat(40), mode: "100644", size: 1, mtimeMs: 1 };
+    const state = newState("http://localhost", "ws", "Ana");
+    Object.assign(state.files, { "notes.md": e, "node_modules/../../.ssh/id_ed25519": e, "/etc/passwd": e, ".git./config": e, "nel\u0085.md": e });
+    Object.assign(state.skipped, { "../x": { hash: "1", reason: "r" }, "ok.md": { hash: "1", reason: "r" } });
+    await saveState(A.root, state);
+    const loaded = await loadState(A.root);
+    expect(Object.keys(loaded.files)).toEqual(["notes.md"]);
+    expect(Object.keys(loaded.skipped)).toEqual(["ok.md"]);
   });
 });

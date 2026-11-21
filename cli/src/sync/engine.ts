@@ -18,6 +18,7 @@ import {
   readBytes,
   readEntry,
   insideRoot,
+  own,
   reasonOf,
   replaceIf,
   UnsafePathError,
@@ -154,7 +155,7 @@ export class SyncEngine {
 
   /** Sets a file aside after a refusal of this content, with when to try it again. */
   private skip(path: string, hash: string, reason: string) {
-    const before = this.state.skipped[path];
+    const before = own(this.state.skipped, path);
     const tries = before && before.hash === hash ? (before.tries ?? 0) + 1 : 1;
     const entry: Skipped = { hash, reason, retryAt: new Date(this.now() + retryDelay(tries)).toISOString(), tries };
     this.state.skipped[path] = entry;
@@ -298,7 +299,7 @@ export class SyncEngine {
     head: string,
   ) {
     await insideRoot(this.root, path);
-    const s = this.state.files[path];
+    const s = own(this.state.files, path);
     const l = local.get(path);
     const changedHere = !same(l, s);
     if (!r) {
@@ -340,10 +341,10 @@ export class SyncEngine {
     for (const path of [...paths].sort()) {
       if (insideUnreadable(scanned.unreadable, path)) continue; // unknown here: neither sent nor deleted
       const l = local.get(path);
-      const s = this.state.files[path];
+      const s = own(this.state.files, path);
       if (same(l, s)) continue;
       // Refused before with this same content: it waits until its retryAt (the rules may have changed by then).
-      const skip = this.state.skipped[path];
+      const skip = own(this.state.skipped, path);
       if (skip && skip.hash === (l?.hash ?? "deleted") && skip.retryAt && Date.parse(skip.retryAt) > this.now()) continue;
       if (l || s) todo.push({ path, local: l, base: s });
     }
@@ -530,7 +531,7 @@ export async function localStatus(root: string, state: SyncState) {
   const modified: string[] = [];
   const deleted: string[] = [];
   for (const [path, l] of scanned.files) {
-    const s = state.files[path];
+    const s = own(state.files, path);
     if (!s) added.push(path);
     else if (!same(l, s)) modified.push(path);
   }
