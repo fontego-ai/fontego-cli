@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readEntry, removeLocal, replaceIf, UnsafePathError, writeLocal } from "../src/sync/local.ts";
+import { conflictName, isConflictCopy, readEntry, removeLocal, replaceIf, UnsafePathError, writeLocal } from "../src/sync/local.ts";
+import { normalizePath } from "@fontego/core";
 
 let outer: string;
 let root: string;
@@ -112,5 +113,81 @@ describe("a change here only replaces what was expected", () => {
     const again = await replaceIf(root, "plan.md", { bytes: text("theirs 2\n"), mode: "100644" }, undefined, { who: "Ana", keepAs: "plan (conflict).md" });
     expect(again?.keptAs).toBe("plan (conflict) 2.md");
     expect(readFileSync(join(root, "plan (conflict).md"), "utf8")).toBe("mine, last saved\n");
+  });
+
+  // Every file in this folder but .fontego, with its content: what the person would find.
+  const everything = () => {
+    const out: Record<string, string> = {};
+    const walk = (dir: string) => {
+      for (const name of readdirSync(join(root, dir))) {
+        const p = dir ? `${dir}/${name}` : name;
+        if (p === ".fontego") continue;
+        if (lstatSync(join(root, p)).isDirectory()) walk(p);
+        else out[p] = readFileSync(join(root, p), "utf8");
+      }
+    };
+    walk("");
+    return out;
+  };
+
+  test("a conflict copy is made whatever the name or who: a long name, one of many bytes, a name in NFD or with DEL", async () => {
+    for (const [name, who] of [
+      [`${"x".repeat(225)}.md`, "Ana"],
+      [`${"é".repeat(115)}.md`, "Ana"], // 230 bytes of UTF-8 in 117 characters
+      [`${"中".repeat(80)}.txt`, "Ana"],
+      ["plan.md", "Jose\u0301"],
+      ["plan.md", "Ana\u007f"],
+      [`${"y".repeat(240)}.${"e".repeat(14)}`, "A very long display name that goes on and on"],
+    ] as const) {
+      rmSync(root, { recursive: true, force: true });
+      mkdirSync(root);
+      put(name, "my unsent edit\n");
+      const done = await replaceIf(root, name, { bytes: text("theirs\n"), mode: "100644" }, undefined, { who, keepAs: conflictName(name, who) });
+      expect(isConflictCopy(done!.keptAs!)).toBe(true);
+      expect(Buffer.byteLength(done!.keptAs!)).toBeLessThanOrEqual(255);
+      expect(everything()).toEqual({ [name]: "theirs\n", [done!.keptAs!]: "my unsent edit\n" });
+    }
+  });
+
+  test("a copy that can't be made under any name never costs the edit: it goes back to its place", async () => {
+    // A folder so deep that no conflict copy fits in the 1,024 characters of a path, short name included.
+    const deep = Array.from({ length: 5 }, (_, i) => `${i}`.repeat(200)).join("/");
+    const path = `${deep}/a.md`;
+    put(path, "my unsent edit\n");
+    for (const keepAs of [conflictName(path, "Ana"), "bad\u0000name.md"]) {
+      await expect(replaceIf(root, path, { bytes: text("theirs\n"), mode: "100644" }, undefined, { who: "Ana", keepAs })).rejects.toThrow();
+      expect(everything()).toEqual({ [path]: "my unsent edit\n" });
+    }
+    expect(readdirSync(join(root, ".fontego/tmp"))).toEqual([]);
+  });
+
+  test("a conflict copy's name that can't be made falls back to a short one next to the file", async () => {
+    put("notes/plan.md", "mine\n");
+    const done = await replaceIf(root, "notes/plan.md", { bytes: text("theirs\n"), mode: "100644" }, undefined, { who: "Ana", keepAs: "notes/bad\u0000.md" });
+    expect(done!.keptAs).toMatch(/^notes\/\(conflict \d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}\)\.md$/);
+    expect(isConflictCopy(done!.keptAs!)).toBe(true);
+    expect(everything()).toEqual({ "notes/plan.md": "theirs\n", [done!.keptAs!]: "mine\n" });
+  });
+});
+
+describe("conflict copy names", () => {
+  const at = new Date(2026, 10, 16, 10, 42, 7);
+  test("the usual one", () => {
+    expect(conflictName("notes/plan.md", "Ana", at)).toBe("notes/plan (conflict Ana 2026-11-16 10.42.07).md");
+    expect(conflictName(".env.local", "Ana", at)).toBe(".env (conflict Ana 2026-11-16 10.42.07).local");
+  });
+
+  test("who keeps only letters, digits, spaces and . - _, in NFC", () => {
+    expect(conflictName("a.md", "Jose\u0301 / Ana\u007f\u0085 <x>", at)).toBe("a (conflict José Ana x 2026-11-16 10.42.07).md");
+    expect(conflictName("a.md", "\u0000/\\", at)).toBe("a (conflict someone 2026-11-16 10.42.07).md");
+  });
+
+  test("always a name a workspace and every file system take", () => {
+    for (const path of [`${"x".repeat(250)}`, `${"é".repeat(127)}.md`, `d/${"😀".repeat(100)}.md`, `a.${"e".repeat(240)}`, `${"d/".repeat(400)}plan.md`]) {
+      const name = conflictName(path, "A name of forty characters, exactly here", at);
+      expect(normalizePath(name)).toBe(name);
+      expect(Buffer.byteLength(name.slice(name.lastIndexOf("/") + 1))).toBeLessThanOrEqual(250);
+      expect(isConflictCopy(name)).toBe(true);
+    }
   });
 });

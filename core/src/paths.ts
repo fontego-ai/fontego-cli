@@ -10,8 +10,10 @@ export class PathError extends Error {
   }
 }
 
-const MAX_PATH = 1024;
-const MAX_SEGMENT = 255;
+/** The longest path a workspace holds, in UTF-16 code units (JavaScript's length) */
+export const MAX_PATH = 1024;
+/** The longest name in a path, the same way */
+export const MAX_SEGMENT = 255;
 /**
  * Folders no workspace may hold, at any depth: Git's, and `.fontego`, where each synced copy keeps its own state (the
  * server it syncs with, what it last saw, its own ignore rules). A file there from the workspace would rewrite that

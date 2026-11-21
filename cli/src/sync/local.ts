@@ -1,6 +1,6 @@
 // The local side of sync: scanning the folder, reading and writing files safely.
 
-import { blobHash, normalizePath, PathError, symlinkTarget } from "@fontego/core";
+import { blobHash, MAX_PATH, MAX_SEGMENT, normalizePath, PathError, symlinkTarget } from "@fontego/core";
 import { link, lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
@@ -306,6 +306,34 @@ async function placeAt(root: string, src: string, path: string): Promise<string>
   }
 }
 
+/**
+ * Puts the person's own version at its conflict copy's name, or, if that name can't be made here, at a short one next
+ * to it. Throws only if neither can be made, with `src` still where it was.
+ */
+async function keepCopy(root: string, src: string, name: string, path: string): Promise<string> {
+  try {
+    return await placeAt(root, src, name);
+  } catch (e) {
+    const short = shortConflictName(path);
+    if (short === name) throw e;
+    return placeAt(root, src, short);
+  }
+}
+
+/**
+ * The person's file, moved aside, that couldn't go where it was meant to: back to its place, or, if a new file took
+ * that place meanwhile, next to it as a conflict copy. Never deleted: if neither works, it stays in .fontego/tmp and
+ * the error says where.
+ */
+async function putBack(root: string, aside: string, path: string, who: string) {
+  try {
+    if (await placeNew(aside, join(root, path))) return;
+    await keepCopy(root, aside, conflictName(path, who), path);
+  } catch (e) {
+    throw new Error(`Your version of ${path} couldn't be put back, so it is kept in ${aside} (${reasonOf(e)}).`);
+  }
+}
+
 const sameFile = (a: LocalEntry | null | undefined, b: LocalEntry | undefined) => (!a && !b) || (!!a && !!b && a.hash === b.hash && a.mode === b.mode);
 
 /**
@@ -316,7 +344,9 @@ const sameFile = (a: LocalEntry | null | undefined, b: LocalEntry | undefined) =
  *   conflict copy, and nothing changes;
  * - a new file took the place after it was moved aside: that one stays and nothing changes;
  * - with `keepAs` (a conflict: keep both), whatever is there goes to that path, checked or not, and the new one in.
- * Returns the new entry (null for a delete) and where the old file went, or null when it left things as they were.
+ * What was moved aside is deleted only once it is known to be the expected file, which the server has; anything else
+ * is placed somewhere, or put back if that fails (putBack). Returns the new entry (null for a delete) and where the
+ * old file went, or null when it left things as they were.
  */
 export async function replaceIf(
   root: string,
@@ -337,25 +367,31 @@ export async function replaceIf(
   }
   const name = randomBytes(8).toString("hex");
   const aside = join(dir, name);
+  /** Whether `aside` holds the person's file, not yet placed anywhere nor known to be the expected one */
+  let held = false;
   try {
     await notAFolder(full, path);
-    let moved = true;
     try {
       await rename(full, aside);
+      held = true;
     } catch (e) {
       if (!absent(e)) throw e;
-      moved = false;
     }
     let keptAs: string | undefined;
     if (opts.keepAs) {
-      if (moved) keptAs = await placeAt(root, aside, opts.keepAs);
+      if (held) {
+        keptAs = await keepCopy(root, aside, opts.keepAs, path);
+        held = false;
+      }
     } else {
-      const there = moved ? await readEntry(root, posix.join(STATE_DIR, "tmp", name)) : null;
+      const there = held ? await readEntry(root, posix.join(STATE_DIR, "tmp", name)) : null;
       if (!sameFile(there, expected)) {
         // Edited (or made, or deleted) here since the scan: leave it be.
-        if (moved && !(await placeNew(aside, full))) await placeAt(root, aside, conflictName(path, opts.who));
+        if (held && !(await placeNew(aside, full))) await keepCopy(root, aside, conflictName(path, opts.who), path);
+        held = false;
         return null;
       }
+      held = false; // the expected file: the server has it
     }
     if (tmp && !(await placeNew(tmp, full))) return null; // a file saved here just now: it stays
     if (!next) await removeEmptyFolders(root, path);
@@ -364,7 +400,8 @@ export async function replaceIf(
     return { entry, ...(keptAs ? { keptAs } : {}) };
   } finally {
     if (tmp) await rm(tmp, { force: true });
-    await rm(aside, { force: true });
+    if (held) await putBack(root, aside, path, opts.who);
+    else await rm(aside, { force: true });
   }
 }
 
@@ -388,17 +425,53 @@ async function removeEmptyFolders(root: string, path: string) {
   }
 }
 
-/** "notes/plan.md" → "notes/plan (conflict Ana 2026-11-16 10.42.07).md" */
+/**
+ * The longest name a conflict copy gets: a name fits 255 bytes of UTF-8 on Linux and macOS and 255 UTF-16 units on
+ * Windows and in a workspace, less room for the " 2" placeAt may add.
+ */
+const COPY_NAME_MAX = MAX_SEGMENT - 5;
+const fitsName = (name: string) => name.length <= COPY_NAME_MAX && Buffer.byteLength(name, "utf8") <= COPY_NAME_MAX;
+
+const stampOf = (date: Date) => {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}.${pad(date.getMinutes())}.${pad(date.getSeconds())}`;
+};
+
+/** Who, as a name can hold it on any system: letters, digits, spaces and . - _, in NFC, at most 40 characters. */
+const whoInName = (who: string) =>
+  [...who.normalize("NFC").replace(/[^\p{L}\p{M}\p{N} ._-]/gu, "").replace(/ {2,}/g, " ").trim()].slice(0, 40).join("").trim().normalize("NFC") ||
+  "someone";
+
+/**
+ * "notes/plan.md" → "notes/plan (conflict Ana 2026-11-16 10.42.07).md". The name is cut short where it has to be (a
+ * long name, or one of many bytes in UTF-8) so that the copy can always be made: the end of its stem goes, then the
+ * extension too if it alone wouldn't fit.
+ */
 export function conflictName(path: string, who: string, date = new Date()): string {
   const dir = posix.dirname(path);
   const base = posix.basename(path);
   const dot = base.lastIndexOf(".");
-  const stem = dot > 0 ? base.slice(0, dot) : base;
-  const ext = dot > 0 ? base.slice(dot) : "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}.${pad(date.getMinutes())}.${pad(date.getSeconds())}`;
-  const safeWho = who.replace(/[/\\\u0000-\u001f]/g, "").slice(0, 40) || "someone";
-  const name = `${stem} (conflict ${safeWho} ${stamp})${ext}`;
+  let stem = dot > 0 ? base.slice(0, dot) : base;
+  let ext = dot > 0 ? base.slice(dot) : "";
+  const mark = ` (conflict ${whoInName(who)} ${stampOf(date)})`;
+  if (!fitsName(`x${mark}${ext}`)) [stem, ext] = [base, ""];
+  const room = MAX_PATH - (dir === "." ? 0 : dir.length + 1);
+  const chars = [...stem];
+  let name = `${stem}${mark}${ext}`;
+  while ((!fitsName(name) || name.length > room) && chars.length) {
+    chars.pop();
+    name = `${chars.join("").trimEnd()}${mark}${ext}`;
+  }
+  return dir === "." ? name : `${dir}/${name}`;
+}
+
+/** A conflict copy's name when the usual one can't be made: "(conflict 2026-11-16 10.42.07).md", next to the file. */
+export function shortConflictName(path: string, date = new Date()): string {
+  const dir = posix.dirname(path);
+  const base = posix.basename(path);
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 && /^\.[A-Za-z0-9]{1,10}$/.test(base.slice(dot)) ? base.slice(dot) : "";
+  const name = `(conflict ${stampOf(date)})${ext}`;
   return dir === "." ? name : `${dir}/${name}`;
 }
 
