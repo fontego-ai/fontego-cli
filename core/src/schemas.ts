@@ -136,16 +136,50 @@ const PersonName = z
   .max(200, "use at most 200 characters")
   .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters");
 
-/** Your own account: what you may change yourself. The email is changed by a server admin (UpdateUserBody). */
+/**
+ * What a person's photo may be when it comes in, the same for the server, the web and the CLI: a PNG, JPEG or WebP
+ * (known by its bytes, never by a name or a header; never an SVG, which can carry code), of at most `maxBytes` and
+ * `maxPixels`. The server keeps the square in the middle, `side` pixels a side, as WebP, with nothing else the file
+ * carried (where it was taken, the camera...).
+ */
+export const PHOTO_LIMITS = { maxBytes: 20 * 1024 * 1024, maxPixels: 50_000_000, side: 256 } as const;
+
+/**
+ * A file's bytes in JSON: base64 with its padding. Checked as characters plus the length, never with groups, which a
+ * regular expression engine can give up on over megabytes.
+ */
+export const isBase64 = (s: string) => s.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(s);
+
+/** A photo as it comes in: the image file's bytes, in base64. Its size and kind are checked by the server (PHOTO_LIMITS). */
+const PhotoBytes = z.string().min(1, "send the image file's bytes, in base64").refine(isBase64, "send the image file's bytes, in base64");
+
+/** Someone's photo: `v`, the version an answer gave with its address; with the one of now it can be kept for good */
+export const PhotoQuery = z.object({ v: z.string().regex(/^[0-9a-f]{1,64}$/, "is a photo's version, as photoUrl gives it").optional() });
+
+/**
+ * Your own account: what you may change yourself. A photo is its bytes, or null to remove it. The email is changed by
+ * a server admin (UpdateUserBody).
+ */
 export const UpdateMeBody = z
-  .object({ name: PersonName.optional() })
-  .refine((b) => b.name !== undefined, { message: "say what to change: a name (--name)" });
+  .object({ name: PersonName.optional(), photo: PhotoBytes.nullable().optional() })
+  .refine((b) => b.name !== undefined || b.photo !== undefined, {
+    message: "say what to change: a name (--name), a photo (--photo FILE, or --photo none to remove it) or both",
+  });
 export type UpdateMeRequest = z.input<typeof UpdateMeBody>;
 
-/** A server admin changes someone's name or email. The email is what they sign in with. */
+/**
+ * A server admin changes someone's name or email, or removes their photo (null). The email is what they sign in
+ * with. A photo is only ever set by its owner.
+ */
 export const UpdateUserBody = z
-  .object({ name: PersonName.optional(), email: Email.optional() })
-  .refine((b) => b.name !== undefined || b.email !== undefined, { message: "say what to change: a name (--name), an email (--email) or both" });
+  .object({
+    name: PersonName.optional(),
+    email: Email.optional(),
+    photo: z.null({ error: "a server admin can only remove a photo (--photo none); each person sets their own (fontego account set --photo FILE)" }).optional(),
+  })
+  .refine((b) => b.name !== undefined || b.email !== undefined || b.photo !== undefined, {
+    message: "say what to change: a name (--name), an email (--email), the photo (--photo none) or several",
+  });
 export type UpdateUserRequest = z.input<typeof UpdateUserBody>;
 
 /** Invites someone: creates their account, without a password, and sends them a one-time link to set one. */

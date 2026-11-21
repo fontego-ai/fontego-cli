@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { CommandOutput, CommandSpec } from "@fontego/core";
 import { UsageError } from "../src/args.ts";
-import { buildRequest, checkCommand, commandsCachePath, readCommands, renderOutput } from "../src/declared.ts";
+import { buildRequest, checkCommand, commandsCachePath, readCommands, readFileFlags, renderOutput } from "../src/declared.ts";
 import { agentHelp } from "../src/help.ts";
 import { tempDir } from "./server.ts";
 
@@ -112,5 +113,58 @@ describe("what a server can make fontego do", () => {
     } finally {
       delete process.env.XDG_CACHE_HOME;
     }
+  });
+});
+
+describe("a flag that sends a file, or null", () => {
+  const spec: CommandSpec = {
+    name: "account set",
+    summary: "",
+    group: "Account",
+    request: { method: "PATCH", path: "/v1/me" },
+    flags: [
+      { name: "name", type: "string", to: "body.name", description: "" },
+      { name: "photo", type: "string", to: "body.photo", file: { maxBytes: 8 }, unset: "none", description: "" },
+    ],
+    output: { kind: "message", text: "ok" },
+  };
+
+  test("the file's bytes go as base64, the word for none as null, and nothing when the flag is left out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fontego-file-flag-"));
+    const file = join(dir, "a.bin");
+    writeFileSync(file, new Uint8Array([0, 1, 2, 250]));
+    const parsed = { args: {}, flags: { photo: file } };
+    expect(buildRequest(spec, parsed, await readFileFlags(spec, parsed)).body).toEqual({ photo: "AAEC+g==" });
+    const none = { args: {}, flags: { photo: "none", name: "Ana" } };
+    expect(await readFileFlags(spec, none)).toEqual({});
+    expect(buildRequest(spec, none).body).toEqual({ photo: null, name: "Ana" });
+    expect(buildRequest(spec, { args: {}, flags: { name: "Ana" } }).body).toEqual({ name: "Ana" });
+    // A file called like the word is ./none
+    writeFileSync(join(dir, "none"), "x");
+    const named = { args: {}, flags: { photo: join(dir, "none") } };
+    expect(buildRequest(spec, named, await readFileFlags(spec, named)).body).toEqual({ photo: "eA==" });
+    // Too big, missing, or a folder: said before anything is read or sent
+    writeFileSync(file, new Uint8Array(9));
+    await expect(readFileFlags(spec, parsed)).rejects.toThrow("is 1 KB; this Fontego takes at most 1 KB. Make it smaller first.");
+    await expect(readFileFlags(spec, { args: {}, flags: { photo: join(dir, "nope") } })).rejects.toThrow("there is no file");
+    await expect(readFileFlags(spec, { args: {}, flags: { photo: dir } })).rejects.toThrow("isn't a file");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("only a string flag into the body may send a file or null", () => {
+    const bad: CommandSpec = {
+      ...spec,
+      flags: [
+        { name: "a", type: "boolean", to: "body.a", file: { maxBytes: 1 }, description: "" },
+        { name: "b", type: "string", to: "query.b", unset: "none", description: "" },
+        { name: "c", type: "string", to: "body.c", file: { maxBytes: 0 }, description: "" },
+      ],
+    };
+    expect(checkCommand(bad, [])).toEqual([
+      "fontego account set: --a names a file, so it must be a string that goes into the body, with a size above 0",
+      "fontego account set: --b can send null only as a string flag into the body, with a word for it",
+      "fontego account set: --c names a file, so it must be a string that goes into the body, with a size above 0",
+    ]);
+    expect(checkCommand(spec, [])).toEqual([]);
   });
 });

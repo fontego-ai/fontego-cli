@@ -26,8 +26,14 @@ export interface Credential {
   expiresAt: string | null;
 }
 
+/**
+ * Where someone's photo is, on this server: a path to GET with the same credential (`/v1/people/3/photo?v=…`, which
+ * changes when the photo does, so it can be kept for good), or null when they have none or the caller may not see it.
+ */
+export type PhotoUrl = string | null;
+
 export interface Me {
-  user: { id: number; email: string; name: string; isAdmin: boolean };
+  user: { id: number; email: string; name: string; isAdmin: boolean; photoUrl: PhotoUrl };
   credential: Credential;
 }
 
@@ -112,6 +118,7 @@ export interface UserSummary {
   status: AccountStatus;
   /** When they last used the API, to the minute; null if never. Only server admins get a UserSummary */
   lastActiveAt: string | null;
+  photoUrl: PhotoUrl;
 }
 
 /** A workspace someone is in, as another person may see it. */
@@ -134,6 +141,7 @@ export interface Person {
   name: string;
   /** A server admin of this Fontego */
   isAdmin: boolean;
+  photoUrl: PhotoUrl;
   /**
    * The workspaces they are in that the caller sees: the ones both are in, not archived; for a server admin, all of
    * theirs, archived ones too
@@ -486,6 +494,8 @@ export interface Member {
   status: AccountStatus;
   /** When they last used the API, to the minute; null if never */
   lastActiveAt: string | null;
+  /** Null for a disabled account, whoever asks: what a workspace shows of its members is the same for all its readers */
+  photoUrl: PhotoUrl;
 }
 
 /** Who is in a workspace (GET /workspaces/{ws}/members, and what changing a member answers). */
@@ -583,8 +593,11 @@ export interface CommitFile {
  * imported history) is the account that has its author's email today.
  */
 export interface ChangeBy {
-  /** The account, with its name and email of today; null when none matches (the author is all there is) */
-  user: { id: number; name: string; email: string } | null;
+  /**
+   * The account, with its name, email and photo of today (no photo for a disabled account); null when none matches
+   * (the author is all there is). A change by an agent still names its person: clients show the agent, not the photo.
+   */
+  user: { id: number; name: string; email: string; photoUrl: PhotoUrl } | null;
   /** The agent the client said it ran under (claude-code, codex...); only for changes written through the gate */
   agent: string | null;
   /** The client that sent it: fontego (the CLI), web, api... */
@@ -672,8 +685,8 @@ export type PresenceActivity = "reading" | "editing" | "working";
 /** Someone in a workspace now: a person, or one of their agents (each shows once, with what it does most). */
 export interface PresenceEntry {
   workspace: string;
-  /** The account, as it is today (its name may have changed since it last wrote) */
-  user: { id: number; name: string; email: string };
+  /** The account, as it is today (its name may have changed since it last wrote). An agent's entry names its person too */
+  user: { id: number; name: string; email: string; photoUrl: PhotoUrl };
   /** The agent ("claude-code"), or null for the person themself */
   agent: string | null;
   activity: PresenceActivity;

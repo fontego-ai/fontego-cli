@@ -108,7 +108,13 @@ export function describe(u: Usage | CommandSpec): string {
   out.push("", "Options:");
   const names = flags.map((f) => `${f.short ? `-${f.short}, ` : ""}--${f.name}${f.type === "boolean" ? "" : ` ${f.value ?? f.name.toUpperCase()}`}`);
   const w = Math.max(8, ...names.map((n) => n.length)) + 2;
-  flags.forEach((f, i) => out.push(`  ${names[i]!.padEnd(w)}${f.description}${f.default !== undefined ? ` (default ${f.default})` : ""}`));
+  // A file flag reads a file of this machine; what its `unset` word does, its description says
+  const extra = (f: (typeof flags)[number]) =>
+    [f.default !== undefined ? `default ${f.default}` : "", "file" in f && f.file ? "a file on this machine" : ""].filter(Boolean);
+  flags.forEach((f, i) => {
+    const notes = extra(f);
+    out.push(`  ${names[i]!.padEnd(w)}${f.description}${notes.length ? ` (${notes.join("; ")})` : ""}`);
+  });
   out.push(`  ${"--json".padEnd(w)}Machine-readable output${"request" in u ? ": exactly what the API answers" : ""}`);
   if ("request" in u) out.push("", `Calls ${u.request.method} ${u.request.path} on your Fontego.`);
   if (u.admin) out.push("Only server admins can run it.");

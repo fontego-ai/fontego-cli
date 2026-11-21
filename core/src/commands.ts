@@ -85,6 +85,13 @@ export interface CommandFlag {
   set?: string | number | boolean;
   /** Sent when the flag is not given */
   default?: string | number | boolean;
+  /**
+   * The value names a file on this machine: the CLI reads it and sends its bytes, in base64, where `to` says (a
+   * string flag, into the body). It refuses a file over `maxBytes` before reading it, so nothing too big is sent.
+   */
+  file?: { maxBytes: number };
+  /** This word instead of a value sends null where `to` says (into the body): `--photo none` removes the photo */
+  unset?: string;
   description: string;
 }
 

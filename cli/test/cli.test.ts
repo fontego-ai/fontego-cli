@@ -12,6 +12,9 @@ let s: TestServer;
 let ana: { token: string; id: number };
 let home: string;
 
+/** A PNG of one pixel, to make photos from */
+const ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
 /** The variables that tell fontego an agent runs it (agents.ts), all off */
 const NO_AGENT = { FONTEGO_AGENT: "", CLAUDECODE: "", CODEX_THREAD_ID: "", COPILOT_CLI: "", OPENCODE: "", CURSOR_AGENT: "", GEMINI_CLI: "" };
 
@@ -322,7 +325,7 @@ describe("commands the server declares", () => {
     const eli = await s.person("eli@example.org", "Eli");
     const as = { FONTEGO_URL: s.url, FONTEGO_TOKEN: eli.token };
     expect((await fontego(["account"], as)).out).toContain("name: Eli");
-    expect((await fontego(["account", "set", "--name", "Eli Moss"], as)).out).toBe(`Your name on ${s.url} is Eli Moss now.\n`);
+    expect((await fontego(["account", "set", "--name", "Eli Moss"], as)).out).toBe(`Saved your account on ${s.url}.\nname: Eli Moss\nphoto: -\n`);
     expect(JSON.parse((await fontego(["whoami", "--json"], as)).out).user.name).toBe("Eli Moss");
     const empty = await fontego(["account", "set", "--json"], as);
     expect(empty.code).not.toBe(0);
@@ -330,6 +333,49 @@ describe("commands the server declares", () => {
     // A token is no session: nothing open, and nothing marked as the one in use
     expect((await fontego(["account", "sessions"], as)).out).toBe("(no open sessions)\n");
     expect((await fontego(["account", "sessions", "close", "1"], as)).code).toBe(3);
+  });
+
+  test("your photo: from a file, the same for everyone, none removes it; a server admin only removes another's", async () => {
+    const gil = await s.person("gil@example.org", "Gil");
+    const as = { FONTEGO_URL: s.url, FONTEGO_TOKEN: gil.token };
+    const dir = tempDir("fontego-photo-");
+    const file = join(dir, "me.jpg");
+    writeFileSync(file, await new Bun.Image(Buffer.from(ONE_PIXEL_PNG, "base64")).resize(64, 48, { fit: "fill" }).jpeg().bytes());
+    const set = await fontego(["account", "set", "--photo", file], as);
+    expect([set.code, set.out]).toEqual([0, `Saved your account on ${s.url}.\nname: Gil\nphoto: yes\n`]);
+    expect((await fontego(["account"], as)).out).toContain("photo: yes");
+    expect((await fontego(["people", "show", "gil@example.org"])).out).toContain("Gil · has a photo");
+    // What anyone gets: the square the server made, in WebP
+    const got = JSON.parse((await fontego(["people", "photo", "gil@example.org", "--json"])).out);
+    expect([got.type, got.text, got.version]).toEqual(["image/webp", false, expect.stringMatching(/^[0-9a-f]{16}$/)]);
+    expect(await new Bun.Image(Buffer.from(got.contentBase64, "base64")).metadata()).toEqual({ width: 256, height: 256, format: "webp" });
+    expect((await fontego(["help", "account", "set"])).out).toMatch(/--photo FILE +A PNG, JPEG or WebP .* none removes yours \(a file on this machine\)/);
+
+    // Said before calling the server: no such file, or one too big
+    const missing = await fontego(["account", "set", "--photo", join(dir, "nope.jpg"), "--json"], as);
+    expect(JSON.parse(missing.out).error).toMatchObject({ code: "usage", message: expect.stringContaining("there is no file") });
+    expect(JSON.parse(missing.out).error.message).toContain("--photo none");
+    const big = join(dir, "big.jpg");
+    writeFileSync(big, Buffer.alloc(20 * 1024 * 1024 + 1));
+    expect(JSON.parse((await fontego(["account", "set", "--photo", big, "--json"], as)).out).error.message).toContain("this Fontego takes at most 20 MB");
+    // Said by the server: an SVG, with what to do
+    const svg = join(dir, "me.svg");
+    writeFileSync(svg, "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
+    const refused = await fontego(["account", "set", "--photo", svg], as);
+    expect(refused.code).not.toBe(0);
+    expect(refused.err).toContain("can carry code");
+    expect(refused.err).toContain("hint: Save it as a JPEG or a PNG first");
+
+    // A server admin removes it, never puts one
+    const put = await fontego(["admin", "users", "edit", "gil@example.org", "--photo", file, "--json"], asAdmin());
+    expect(JSON.parse(put.out).error.message).toContain("a server admin can only remove a photo");
+    const removed = await fontego(["admin", "users", "edit", "gil@example.org", "--photo", "none"], asAdmin());
+    expect(removed.out).toBe("Saved: gil@example.org · Gil\nTheir photo is removed; only they can put one again.\n");
+    expect((await fontego(["account"], as)).out).toContain("photo: -");
+    // And none removes your own
+    await fontego(["account", "set", "--photo", file], as);
+    expect((await fontego(["account", "set", "--photo", "none", "--json"], as)).out).toContain('"photoUrl": null');
+    rmSync(dir, { recursive: true, force: true });
   });
 
   test("a server admin changes someone's name and email", async () => {

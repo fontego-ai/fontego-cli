@@ -156,6 +156,12 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   for (const f of flags) {
     if (!["string", "number", "boolean"].includes(f.type)) out.push(`${at}: --${f.name} has an unknown type`);
     if (f.short && !/^[A-Za-z]$/.test(f.short)) out.push(`${at}: -${f.short} must be one letter`);
+    if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || !(f.file.maxBytes > 0))) {
+      out.push(`${at}: --${f.name} names a file, so it must be a string that goes into the body, with a size above 0`);
+    }
+    if (f.unset !== undefined && (typeof f.unset !== "string" || !f.unset || f.type !== "string" || !f.to.startsWith("body."))) {
+      out.push(`${at}: --${f.name} can send null only as a string flag into the body, with a word for it`);
+    }
   }
   if (!["table", "lines", "record", "message", "raw"].includes(spec.output.kind)) out.push(`${at}: unknown output "${spec.output.kind}"`);
   if ((spec.output.kind === "table" || spec.output.kind === "lines") && spec.output.details) {
@@ -183,8 +189,12 @@ function encodeParam(name: string, value: string, spans: boolean): string {
   return parts.map(encodeURIComponent).join("/");
 }
 
-/** The request a command makes with these arguments and flags. */
-export function buildRequest(spec: CommandSpec, parsed: Parsed): { method: string; path: string; query: URLSearchParams; body?: unknown } {
+/** The request a command makes with these arguments and flags; `files` holds what file flags read (readFileFlags). */
+export function buildRequest(
+  spec: CommandSpec,
+  parsed: Parsed,
+  files: Record<string, string> = {},
+): { method: string; path: string; query: URLSearchParams; body?: unknown } {
   const pathValues: Record<string, string> = {};
   const query = new URLSearchParams();
   const body: Record<string, unknown> = {};
@@ -205,7 +215,13 @@ export function buildRequest(spec: CommandSpec, parsed: Parsed): { method: strin
   for (const f of spec.flags ?? []) {
     if (f.to.startsWith("body.")) hasBody = true;
     const v = parsed.flags[f.name] ?? f.default;
-    if (v !== undefined) put(f.to, v, f.set);
+    if (v === undefined) continue;
+    if (f.unset !== undefined && v === f.unset) body[splitTarget(f.to).key] = null;
+    else if (f.file) {
+      const content = files[f.name];
+      if (content === undefined) throw new Error(`--${f.name}: the file wasn't read`);
+      body[splitTarget(f.to).key] = content;
+    } else put(f.to, v, f.set);
   }
 
   const path = spec.request.path.replace(/\{(\+?)([A-Za-z0-9_]+)\}/g, (_, plus: string, key: string) => {
@@ -312,6 +328,35 @@ export function renderOutput(output: CommandOutput, data: unknown, vars: Templat
   }
 }
 
+/**
+ * Reads the files that file flags name (`--photo me.jpg`), as base64, each checked against its size before it is read.
+ * The word that sends null (`--photo none`) reads nothing; a file called that way is `./none`.
+ */
+export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const f of spec.flags ?? []) {
+    const v = parsed.flags[f.name];
+    if (!f.file || typeof v !== "string" || v === f.unset) continue;
+    const file = Bun.file(v);
+    let size: number;
+    try {
+      const st = await file.stat();
+      if (!st.isFile()) throw new UsageError(`--${f.name}: ${v} isn't a file.`);
+      size = st.size;
+    } catch (e) {
+      if (e instanceof UsageError) throw e;
+      throw new UsageError(`--${f.name}: there is no file ${v} (or it can't be read).${f.unset ? ` To send none, write --${f.name} ${f.unset}.` : ""}`);
+    }
+    if (size > f.file.maxBytes) {
+      throw new UsageError(`--${f.name}: ${v} is ${sizeText(size)}; this Fontego takes at most ${sizeText(f.file.maxBytes)}. Make it smaller first.`);
+    }
+    out[f.name] = Buffer.from(await file.arrayBuffer()).toString("base64");
+  }
+  return out;
+}
+
+const sizeText = (n: number) => (n < 1024 * 1024 ? `${Math.ceil(n / 1024)} KB` : `${(n / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`);
+
 export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Client, opts: { json: boolean }): Promise<void> {
   // A secret left out is asked for; it lands in parsed, so trying the command again doesn't ask twice.
   for (const a of spec.args ?? []) {
@@ -319,7 +364,7 @@ export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Clie
     if (a.secret) parsed.args[a.name] = await readSecret(a.name, opts.json);
     else if (a.stdin) parsed.args[a.name] = await readStdin(a.name, usageLine(spec));
   }
-  const req = buildRequest(spec, parsed);
+  const req = buildRequest(spec, parsed, await readFileFlags(spec, parsed));
   const res = await client.call(req.method, req.path, { query: req.query, body: req.body });
   const shown = Object.fromEntries(Object.entries(parsed.args).filter(([name]) => !spec.args?.find((a) => a.name === name)?.secret));
   const vars: TemplateVars = { url: client.baseUrl, ...shown, ...parsed.flags };
