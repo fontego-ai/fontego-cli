@@ -124,7 +124,6 @@ export const CreateUserBody = z.object({
   isAdmin: z.boolean().optional(),
 });
 
-
 /**
  * Workspace ids, as a JSON list or as text with commas (what the CLI sends: --workspaces a,b). Spaces around each
  * are dropped and a repeated one counts once.
