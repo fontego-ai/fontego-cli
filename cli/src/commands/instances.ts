@@ -12,6 +12,7 @@ import {
   openPrivately,
   removeCredential,
   replaceCredential,
+  type StillOpen,
 } from "../auth.ts";
 import { Client } from "../client.ts";
 import {
@@ -37,6 +38,7 @@ import { ensureMigrated } from "../connect.ts";
 import { forgetCommands, refreshCommands } from "../declared.ts";
 import { canAsk } from "../output.ts";
 import { askText, choose, type Choice } from "../picker.ts";
+import { readSecret } from "../prompt.ts";
 import type { Builtin, RunContext } from "./command.ts";
 import { skillInstalled } from "./setup.ts";
 
@@ -96,9 +98,20 @@ function envToken(url: string, env = process.env): string | undefined {
   return env.FONTEGO_TOKEN && env.FONTEGO_URL && sameInstance(env.FONTEGO_URL, url) ? env.FONTEGO_TOKEN : undefined;
 }
 
+/** What stays open on the server, for --json and to tell the person: signing out here doesn't always close it there. */
+function leftOpen(alias: string, open: StillOpen, previous = false) {
+  const what = previous ? "The previous" : "The";
+  const message =
+    open.credential === "token"
+      ? `${what} token still works on the server: revoke it where it was created if nobody should use it any more.`
+      : `${what} session couldn't be closed on the server, which didn't answer. It ends by itself on ${when(open.expiresAt)}, or close it from another device: fontego account sessions close ${open.sessionId}`;
+  return { alias, ...open, message };
+}
+
 async function signOut(instance: Instance, store: CredentialStore) {
-  await removeCredential(instance.url, store);
+  const open = await removeCredential(instance.url, store);
   forgetCommands(instance.url);
+  return open ? leftOpen(instance.alias, open) : null;
 }
 
 const MACHINE = "This machine";
@@ -111,7 +124,12 @@ export const instanceCommands: Builtin[] = [
     args: [{ name: "TARGET", optional: true, description: "An alias you already have, or the address of a Fontego" }],
     flags: [
       { name: "device", type: "boolean", description: "Show a code to type in a browser on another device (no browser here)" },
-      { name: "token", type: "string", value: "TOKEN", description: "Sign in with a token instead, for scripts and CI (FONTEGO_TOKEN counts only when FONTEGO_URL is this Fontego)" },
+      {
+        name: "token",
+        type: "string",
+        value: "TOKEN",
+        description: "Sign in with a token instead, for scripts and CI. - reads it from stdin, out of ps and the shell's history (FONTEGO_TOKEN counts only when FONTEGO_URL is this Fontego)",
+      },
       { name: "alias", type: "string", value: "ALIAS", description: "The short name to use for this Fontego (default: from its name)" },
       { name: "allow-http", type: "boolean", description: "Accept a plain http:// address on another machine, remembered for it: passwords and tokens go unencrypted" },
     ],
@@ -136,7 +154,8 @@ export const instanceCommands: Builtin[] = [
 
       let cred: SavedCredential;
       let email: string;
-      const token = (rc.parsed.flags.token as string | undefined) ?? envToken(url);
+      const given = rc.parsed.flags.token as string | undefined;
+      const token = given === "-" ? await readSecret("TOKEN", rc.json) : (given ?? envToken(url));
       if (token) {
         email = (await new Client(url, token).me()).user.email;
         cred = { type: "token", token };
@@ -164,7 +183,8 @@ export const instanceCommands: Builtin[] = [
       }
 
       // A new sign-in replaces this machine's previous session there, which closes on the server.
-      await replaceCredential(url, store, cred);
+      const previous = await replaceCredential(url, store, cred);
+      const stillOpen = previous ? [leftOpen(alias, previous, true)] : [];
       rememberStore(store.kind);
       saveInstance({ alias, url, name: info.name, email, addedAt: known?.addedAt ?? new Date().toISOString(), allowHttp: plainHttp(url) });
       const access = cred.type === "token" ? cred.token : cred.accessToken;
@@ -181,6 +201,7 @@ export const instanceCommands: Builtin[] = [
         config: configPath(),
         store: store.kind,
         agentSkill: skillInstalled(),
+        stillOpen,
       };
       if (rc.json) return console.log(JSON.stringify(result));
       console.log(
@@ -188,6 +209,7 @@ export const instanceCommands: Builtin[] = [
           ? `Signed in to ${info.name} (${alias}) as ${email}. The session ends on ${when(cred.expiresAt)} unless you use it before.`
           : `Signed in to ${info.name} (${alias}) as ${email}, with a token.`,
       );
+      for (const o of stillOpen) console.log(o.message);
       // The first time, say how the agents here learn to use fontego.
       if (!result.agentSkill && AGENTS.some((a) => installed(a))) console.log("To teach the AI agents on this machine to use fontego: fontego setup");
     },
@@ -204,9 +226,13 @@ export const instanceCommands: Builtin[] = [
       const targets = parsed.flags.all === true ? listInstances() : alias ? [instanceByAlias(alias)].filter((i): i is Instance => !!i) : [];
       if (!targets.length) throw new UsageError(alias ? `No instance "${alias}".` : "fontego logout ALIAS (or --all)");
       const store = await credentialStore();
-      for (const i of targets) await signOut(i, store);
+      const stillOpen: ReturnType<typeof leftOpen>[] = [];
+      for (const i of targets) {
+        const open = await signOut(i, store);
+        if (open) stillOpen.push(open);
+      }
       const names = targets.map((i) => i.alias);
-      print({ ok: true, signedOut: names }, () => `Signed out of ${names.join(", ")}.`);
+      print({ ok: true, signedOut: names, stillOpen }, () => [`Signed out of ${names.join(", ")}.`, ...stillOpen.map((o) => (targets.length > 1 ? `${o.alias}: ${o.message}` : o.message))].join("\n"));
     },
   },
   {
@@ -252,9 +278,9 @@ export const instanceCommands: Builtin[] = [
       const i = instanceByAlias(parsed.args.ALIAS!);
       if (!i) throw new UsageError(`No instance "${parsed.args.ALIAS}".`);
       const store = await credentialStore();
-      await signOut(i, store);
+      const open = await signOut(i, store);
       forgetInstance(i.alias);
-      print({ ok: true, forgot: i.alias }, () => `Forgot ${i.alias} (${i.url}).`);
+      print({ ok: true, forgot: i.alias, stillOpen: open ? [open] : [] }, () => [`Forgot ${i.alias} (${i.url}).`, ...(open ? [open.message] : [])].join("\n"));
     },
   },
   {

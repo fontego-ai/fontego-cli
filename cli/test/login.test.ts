@@ -32,8 +32,9 @@ function env(extra: Record<string, string> = {}) {
   };
 }
 
-async function fontego(args: string[], opts: { env?: Record<string, string>; cwd?: string } = {}) {
-  const proc = Bun.spawn(["bun", MAIN, ...args], { env: env(opts.env), cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
+async function fontego(args: string[], opts: { env?: Record<string, string>; cwd?: string; stdin?: string } = {}) {
+  const stdin = opts.stdin === undefined ? undefined : new TextEncoder().encode(opts.stdin);
+  const proc = Bun.spawn(["bun", MAIN, ...args], { env: env(opts.env), cwd: opts.cwd, stdin, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   return { out, err, code };
 }
@@ -403,6 +404,54 @@ describe("opening the browser", () => {
     expect(await new Response(proc.stdout).text()).toContain("Opening the web app in your browser");
     // Gone once the browser has had time to read it
     expect(existsSync(dirname(page))).toBe(false);
+    rmSync(own, { recursive: true, force: true });
+  }, 30_000);
+});
+
+describe("tokens, and what signing out leaves open", () => {
+  test("--token - reads it from stdin, out of ps and the shell's history; signing out says the token still works", async () => {
+    const own = tempDir("fontego-cli-stdin-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    const { token } = await s.person("hal@example.org");
+    const r = await fontego(["login", s.url, "--token", "-", "--json"], { env: here, stdin: `${token}\n` });
+    expect(JSON.parse(r.out)).toMatchObject({ ok: true, credential: "token", user: { email: "hal@example.org" }, stillOpen: [] });
+    const none = JSON.parse((await fontego(["login", s.url, "--token", "-", "--json"], { env: here, stdin: "" })).out).error;
+    expect(none.message).toContain("Nothing came on stdin");
+
+    const out = await fontego(["logout"], { env: here });
+    expect(out.out).toContain("Signed out of fontego.\nThe token still works on the server");
+    // It does: fontego can't revoke a token, so it says so instead of keeping quiet
+    expect((await fetch(`${s.url}/v1/me`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+    expect((await fontego(["login", s.url, "--token", "-"], { env: here, stdin: token })).code).toBe(0);
+    expect(JSON.parse((await fontego(["logout", "--json"], { env: here })).out).stillOpen).toEqual([
+      { alias: "fontego", credential: "token", message: expect.stringContaining("revoke it where it was created") },
+    ]);
+    rmSync(own, { recursive: true, force: true });
+  });
+
+  test("signing out while the server can't be reached says the session is still open, and how to close it", async () => {
+    const own = tempDir("fontego-cli-offline-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    await signInThroughBrowser(here);
+    const { sessionId } = JSON.parse(readFileSync(join(own, "fontego", "credentials.json"), "utf8"))[s.url];
+    await s.pause();
+    let out: any;
+    try {
+      out = JSON.parse((await fontego(["logout", "--json"], { env: here })).out);
+    } finally {
+      await s.resume();
+    }
+    expect(out).toMatchObject({ ok: true, signedOut: ["fontego"] });
+    expect(out.stillOpen).toEqual([
+      {
+        alias: "fontego",
+        credential: "session",
+        sessionId,
+        expiresAt: expect.any(String),
+        message: expect.stringContaining(`couldn't be closed on the server, which didn't answer. It ends by itself on`),
+      },
+    ]);
+    expect(out.stillOpen[0].message).toEndWith(`fontego account sessions close ${sessionId}`);
     rmSync(own, { recursive: true, force: true });
   }, 30_000);
 });

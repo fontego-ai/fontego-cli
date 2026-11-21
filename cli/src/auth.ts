@@ -119,24 +119,38 @@ export class StoredAuth implements AuthProvider {
 
 
 /**
+ * What still works on the server after this machine let go of a credential: a token (fontego can't revoke one), or a
+ * session the server didn't close because it couldn't be reached (it ends by itself at expiresAt).
+ */
+export type StillOpen = { credential: "token" } | { credential: "session"; sessionId: number; expiresAt: string };
+
+/** Closes on the server what a credential opened, where fontego can; says what stays open. */
+async function closeOnServer(url: string, c: Credential | null): Promise<StillOpen | null> {
+  if (!c) return null;
+  if (c.type === "token") return { credential: "token" };
+  return (await revokeSession(url, c.refreshToken)) ? null : { credential: "session", sessionId: c.sessionId, expiresAt: c.expiresAt };
+}
+
+/**
  * Saves the credential of a new sign-in in place of the one there, under the renewal lock: a renewal running meanwhile
  * would save its session over this one, or delete it when the server refuses the old refresh token. The previous
- * session is closed on the server.
+ * session is closed on the server; what of the previous credential stays open there is returned.
  */
-export function replaceCredential(url: string, store: CredentialStore, cred: Credential): Promise<void> {
+export function replaceCredential(url: string, store: CredentialStore, cred: Credential): Promise<StillOpen | null> {
   return withLock(lockName(url), async () => {
     const previous = await store.get(url);
-    if (previous?.type === "session") await revokeSession(url, previous.refreshToken);
+    const open = previous && !(previous.type === "token" && cred.type === "token" && previous.token === cred.token) ? await closeOnServer(url, previous) : null;
     await store.set(url, cred);
+    return open;
   });
 }
 
-/** Signs this machine out of an instance: its session closes on the server, and the credential goes. */
-export function removeCredential(url: string, store: CredentialStore): Promise<void> {
+/** Signs this machine out of an instance: its session closes on the server, the credential goes, and what stays open is returned. */
+export function removeCredential(url: string, store: CredentialStore): Promise<StillOpen | null> {
   return withLock(lockName(url), async () => {
-    const credential = await store.get(url);
-    if (credential?.type === "session") await revokeSession(url, credential.refreshToken);
+    const open = await closeOnServer(url, await store.get(url));
     await store.delete(url);
+    return open;
   });
 }
 
