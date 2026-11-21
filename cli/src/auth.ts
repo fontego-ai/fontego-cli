@@ -195,7 +195,10 @@ export const machineName = () => hostname().split(".")[0] || "a computer";
  */
 export function hasBrowser(env = process.env): boolean {
   if (env.FONTEGO_BROWSER) return true;
-  if (process.platform === "darwin" || process.platform === "win32") return !env.SSH_CONNECTION;
+  // Over SSH the browser to approve with is the person's own, where they are already signed in, on another machine:
+  // a code to type there, also on Linux with a forwarded DISPLAY (or one a tmux kept from the desktop).
+  if (env.SSH_CONNECTION || env.SSH_TTY) return false;
+  if (process.platform === "darwin" || process.platform === "win32") return true;
   return !!(env.DISPLAY || env.WAYLAND_DISPLAY);
 }
 

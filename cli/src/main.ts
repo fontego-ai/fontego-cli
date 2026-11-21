@@ -18,6 +18,8 @@ import { findRoot, loadState } from "./sync/state.ts";
 import { guardConsole } from "./terminal.ts";
 
 const DAY = 86_400_000;
+/** A token says it ends this many days before (a session: three, as it renews while it is used) */
+const TOKEN_WARN_DAYS = 7;
 
 /** Inside a synced folder, the URL of the instance it belongs to. */
 async function folderUrl(): Promise<string | undefined> {
@@ -111,6 +113,12 @@ async function main(): Promise<void> {
       if (left > 0 && left < 3 * DAY) {
         const days = Math.max(1, Math.round(left / DAY));
         console.error(`Your session on ${used.label} ends in ${days} day(s) unless you use it; renew it with: fontego login ${used.label}`);
+      }
+      // The last week of a token, say so too: a script or a CI job runs where nobody looks, but its log says it.
+      const tokenLeft = used.client.tokenExpiresAt ? Date.parse(used.client.tokenExpiresAt) - Date.now() : Infinity;
+      if (tokenLeft > 0 && tokenLeft < TOKEN_WARN_DAYS * DAY) {
+        const days = Math.max(1, Math.round(tokenLeft / DAY));
+        console.error(`The token in use on ${used.label} ends in ${days} day(s). Make another in Your account, or with fontego account tokens create from a signed-in computer.`);
       }
     }
   } catch (e) {

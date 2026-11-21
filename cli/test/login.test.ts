@@ -4,8 +4,10 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "../src/client.ts";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
@@ -175,6 +177,45 @@ describe("signing in through the browser", () => {
     expect((await fontego(["whoami"])).code).toBe(0);
   }, 30_000);
 
+  test("over SSH it is the code, display or not, and the session bears the machine's name", async () => {
+    // A forwarded X display (or a tmux that kept the desktop's) would open a browser on this machine, without the
+    // person's sign-in; the code is approved in their own browser instead.
+    const ssh = { FONTEGO_BROWSER: "", SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22", DISPLAY: ":0" };
+    const { first, finish } = await startWaiting(["login", "fontego", "--json"], ssh);
+    const code: string = first.user_code;
+    expect(first.status).toBe("waiting");
+    expect(code).toMatch(/^[B-Z]{4}-[B-Z]{4}$/);
+    const machine = hostname().split(".")[0];
+    const asked = await fetch(`${s.url}/v1/oauth/device/${code}`, { headers: browser(cookie) });
+    expect(((await asked.json()) as any).machine).toBe(machine);
+    expect((await fetch(`${s.url}/v1/oauth/device/${code}`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ approve: true }) })).status).toBe(200);
+    expect((await finish()).last).toMatchObject({ ok: true, credential: "session" });
+    const sessions = JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions as any[];
+    expect(sessions.find((x) => x.current)).toMatchObject({ kind: "cli", label: machine });
+  }, 30_000);
+
+  test("a browser that can't be opened here: the code, without anyone having to ask for it", async () => {
+    const { first, finish } = await startWaiting(["login", "fontego", "--json"], { FONTEGO_BROWSER: "/nonexistent/fontego-test-browser" });
+    const code: string = first.user_code;
+    expect(code).toMatch(/^[B-Z]{4}-[B-Z]{4}$/);
+    expect(first).not.toHaveProperty("url");
+    await fetch(`${s.url}/v1/oauth/device/${code}`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ approve: true }) });
+    expect((await finish()).last).toMatchObject({ ok: true, credential: "session" });
+  }, 30_000);
+
+  test("a token that ended isn't renewed: what the server says comes through, with how to make another", async () => {
+    const ended = { error: { code: "token_expired", message: "This token ended on 2026-01-02.", hint: "Make another in Your account." } };
+    const fake = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json(ended, { status: 401 }) });
+    try {
+      let renewals = 0;
+      const client = new Client(`http://127.0.0.1:${fake.port}`, { token: async () => "fontego_pat_x", recover: async () => void renewals++ });
+      await expect(client.me()).rejects.toMatchObject({ status: 401, code: "token_expired", hint: "Make another in Your account." });
+      expect(renewals).toBe(0);
+    } finally {
+      fake.stop(true);
+    }
+  });
+
   test("an event stream refused with its access token renews it and connects, as any call does", async () => {
     // The server refuses the token although it hasn't expired here (a clock off, a secret the server dropped)
     writeFileSync(credentialsFile(), JSON.stringify({ ...credentials(), [s.url]: { ...credentials()[s.url], accessToken: "fontego_at_refused" } }));
@@ -257,7 +298,7 @@ describe("several Fontegos on one machine", () => {
     expect((await fontego(["sync"], { cwd: dir, env: { FONTEGO_AGENT: "test-agent" } })).out).toContain("hello.md");
     // The commit says who and how: the session or token, and the agent the CLI ran under.
     const log = JSON.parse((await fontego(["log", "notes", "--json"], { cwd: dir })).out);
-    expect(log.commits[0].trailers).toMatchObject({ Agent: "test-agent", Token: expect.stringContaining("person") });
+    expect(log.commits[0].trailers).toMatchObject({ Agent: "test-agent", Session: "cli test-machine" });
     expect((await fontego(["sync", "--instance", "work"], { cwd: dir })).err).toContain("belongs to");
 
     expect((await fontego(["sessions", "rename", "work", "office"])).code).toBe(0);

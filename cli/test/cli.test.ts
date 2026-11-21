@@ -388,6 +388,41 @@ describe("commands the server declares", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("your tokens: what each reaches and how long it lasts; one that only reads can't write; revoked at once", async () => {
+    const made = await fontego(["account", "tokens", "create", "CI of notes", "--workspaces", "notes", "--days", "30", "--json"]);
+    expect(made.code).toBe(0);
+    const t = JSON.parse(made.out);
+    expect(t).toMatchObject({ name: "CI of notes", scope: { workspaces: ["notes"], access: "read" } });
+    const list = (await fontego(["account", "tokens"])).out;
+    expect(list.split("\n")[0]).toMatch(/^ID\s+NAME\s+TOKEN\s+WORKSPACES\s+ACCESS\s+ENDS\s+LAST USED$/);
+    expect(list).toMatch(new RegExp(`${t.id}\\s+CI of notes\\s+${t.hint}…\\s+notes\\s+read\\s+\\d{4}-\\d\\d-\\d\\d \\(in 30 days\\)\\s+-`));
+    expect(list).not.toContain(t.token);
+    const which = await fontego(["account", "tokens", "create", "x", "--json"]);
+    expect(which.code).toBe(1);
+    expect(JSON.parse(which.out).error.message).toContain("--workspaces A,B) or all of yours (--all)");
+
+    const ci = { FONTEGO_URL: s.url, FONTEGO_TOKEN: t.token };
+    expect((await fontego(["cat", "notes", "README.md"], ci)).out).toBe("My notes\n");
+    const w = await fontego(["write", "notes", "ci.md", "--json"], ci, "built\n");
+    expect(w.code).toBe(5);
+    expect(JSON.parse(w.out).error).toMatchObject({ code: "token_scope", hint: expect.stringContaining("--write") });
+    // A token makes no tokens
+    expect((await fontego(["account", "tokens", "create", "more", "--all"], ci)).code).toBe(5);
+
+    expect((await fontego(["account", "tokens", "revoke", String(t.id)])).out).toBe(`Token ${t.id} revoked: it no longer works.\n`);
+    expect((await fontego(["workspaces"], ci)).code).toBe(2);
+  });
+
+  test("a token's last week, every command says so where its log shows", async () => {
+    const short = { FONTEGO_URL: s.url, FONTEGO_TOKEN: s.token("ana@example.org", { days: 3, read: true }) };
+    const r = await fontego(["workspaces"], short);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain(`The token in use on ${s.url} ends in 3 day(s).`);
+    expect(r.err).toContain("fontego account tokens create");
+    const calm = await fontego(["workspaces"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: s.token("ana@example.org", { read: true }) });
+    expect(calm.err).not.toContain("ends in");
+  });
+
   test("a server admin changes someone's name and email", async () => {
     const fin = await s.person("fin@example.org", "Fin");
     const edited = await fontego(["admin", "users", "edit", "fin@example.org", "--name", "Fin Lee", "--email", "fin@new.example.org"], asAdmin());

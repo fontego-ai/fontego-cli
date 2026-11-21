@@ -4,6 +4,7 @@
 
 import {
   COMMANDS_HEADER,
+  TOKEN_EXPIRES_HEADER,
   type ChangeSetRequest,
   type ChangeSetResult,
   type CommandsManifest,
@@ -54,6 +55,15 @@ export interface AuthProvider {
   recover?(): Promise<void>;
 }
 
+/** Whether a 401 says the token in use ended (token_expired); the answer stays readable. */
+async function tokenEnded(res: Response): Promise<boolean> {
+  const body = (await res
+    .clone()
+    .json()
+    .catch(() => null)) as ErrorBody | null;
+  return body?.error?.code === "token_expired";
+}
+
 export class Client {
   private readonly auth: AuthProvider;
   /** Which agent runs this CLI (agents.ts): the server's log then says "Ana, from claude-code". A label, not a guarantee. */
@@ -92,6 +102,8 @@ export class Client {
 
   /** Version of the server's commands, from the last answer that carried it */
   commandsVersion: string | null = null;
+  /** When the token in use stops working, as the last answer to it said (a session's end is the stored one) */
+  tokenExpiresAt: string | null = null;
 
   private async headers(extra: Record<string, string> = {}): Promise<Record<string, string>> {
     return {
@@ -119,8 +131,10 @@ export class Client {
     }
     refuseRedirect(res, this.baseUrl);
     this.commandsVersion = res.headers.get(COMMANDS_HEADER) ?? this.commandsVersion;
-    // A refused credential: renew it (or pick up a new sign-in) and try once more.
-    if (res.status === 401 && !retried && this.auth.recover) {
+    this.tokenExpiresAt = res.headers.get(TOKEN_EXPIRES_HEADER) ?? this.tokenExpiresAt;
+    // A refused credential: renew it (or pick up a new sign-in) and try once more. Not a token that ended: nothing
+    // renews it, and the server's answer says how to make another.
+    if (res.status === 401 && !retried && this.auth.recover && !(await tokenEnded(res))) {
       await this.auth.recover();
       return this.request(method, path, body, signal, true);
     }
@@ -234,7 +248,7 @@ export class Client {
       };
       let res = await open();
       // A refused credential: renew it (or pick up a new sign-in) and try once more, as every other call does.
-      if (res?.status === 401 && this.auth.recover) {
+      if (res?.status === 401 && this.auth.recover && !(await tokenEnded(res))) {
         await this.auth.recover();
         res = await open();
       }

@@ -1,3 +1,4 @@
+import type { Me, TokenResponse, TokenScope } from "@fontego/core";
 import type { Credential as SavedCredential } from "../config.ts";
 import { AGENTS, installed } from "../agents.ts";
 import { UsageError, type UsageArg } from "../args.ts";
@@ -44,6 +45,13 @@ import { skillInstalled } from "./setup.ts";
 
 const DAY = 86_400_000;
 const when = (iso: string) => new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+
+/** The browser can't be opened here: sign in with a code instead. */
+class NoBrowserHere extends Error {}
+
+/** What a token may do, in words: "only reads in notes", "reads and writes in all your workspaces". */
+const reach = (scope: TokenScope) =>
+  `${scope.access === "write" ? "reads and writes" : "only reads"} in ${scope.workspaces === "all" ? "all your workspaces" : scope.workspaces.join(", ")}`;
 
 type Status = "active" | "ends soon" | "ended" | "signed out" | "token";
 
@@ -154,30 +162,44 @@ export const instanceCommands: Builtin[] = [
 
       let cred: SavedCredential;
       let email: string;
+      let tokenCredential: Extract<Me["credential"], { type: "token" }> | null = null;
       const given = rc.parsed.flags.token as string | undefined;
       const token = given === "-" ? await readSecret("TOKEN", rc.json) : (given ?? envToken(url));
       if (token) {
-        email = (await new Client(url, token).me()).user.email;
+        const me = await new Client(url, token).me();
+        email = me.user.email;
+        if (me.credential.type === "token") tokenCredential = me.credential;
         cred = { type: "token", token };
       } else {
-        const t =
-          rc.parsed.flags.device === true || !hasBrowser()
-            ? await deviceLogin(url, {
-                waiting: (d) =>
-                  say(
-                    { status: "waiting", verification_uri: d.verification_uri, user_code: d.user_code, verification_uri_complete: d.verification_uri_complete },
-                    `To sign in to ${info.name}, open ${d.verification_uri} on any device and type the code ${d.user_code}\n(or open ${d.verification_uri_complete})\nWaiting…`,
-                  ),
-              })
-            : await browserLogin(url, {
-                waiting: (link) => {
-                  const opened = openInBrowser(link);
-                  say(
-                    { status: "waiting", url: link, hint: `Open this link in a browser where you can sign in to ${info.name}.` },
-                    `${opened ? "Opening the browser" : "Open this link in your browser"} to sign in to ${info.name}${opened ? "; if it doesn't open, go to" : ""}:\n  ${link}\nWaiting…`,
-                  );
-                },
-              });
+        const viaCode = () =>
+          deviceLogin(url, {
+            waiting: (d) =>
+              say(
+                { status: "waiting", verification_uri: d.verification_uri, user_code: d.user_code, verification_uri_complete: d.verification_uri_complete },
+                `To sign in to ${info.name}, open ${d.verification_uri} on any device and type the code ${d.user_code}\n(or open ${d.verification_uri_complete})\nWaiting…`,
+              ),
+          });
+        let t: TokenResponse;
+        if (rc.parsed.flags.device === true || !hasBrowser()) t = await viaCode();
+        else {
+          try {
+            t = await browserLogin(url, {
+              waiting: (link) => {
+                const opened = openInBrowser(link);
+                // Nothing here opens it (no browser program): its link would only work on this machine, so a code
+                // typed in a browser anywhere, without anyone having to know about it. "none" only shows links.
+                if (!opened && process.env.FONTEGO_BROWSER !== "none") throw new NoBrowserHere();
+                say(
+                  { status: "waiting", url: link, hint: `Open this link in a browser where you can sign in to ${info.name}.` },
+                  `${opened ? "Opening the browser" : "Open this link in your browser"} to sign in to ${info.name}${opened ? "; if it doesn't open, go to" : ""}:\n  ${link}\nWaiting…`,
+                );
+              },
+            });
+          } catch (e) {
+            if (!(e instanceof NoBrowserHere)) throw e;
+            t = await viaCode();
+          }
+        }
         cred = fromTokenResponse(t);
         email = t.session.email;
       }
@@ -200,7 +222,7 @@ export const instanceCommands: Builtin[] = [
         name: info.name,
         user: { email },
         credential: cred.type,
-        ...(cred.type === "session" ? { expiresAt: cred.expiresAt } : {}),
+        ...(cred.type === "session" ? { expiresAt: cred.expiresAt } : tokenCredential ? { expiresAt: tokenCredential.expiresAt, scope: tokenCredential.scope } : {}),
         default: defaultAlias() === alias,
         config: configPath(),
         store: store.kind,
@@ -212,7 +234,7 @@ export const instanceCommands: Builtin[] = [
       console.log(
         cred.type === "session"
           ? `Signed in to ${info.name} (${alias}) as ${email}. The session ends on ${when(cred.expiresAt)} unless you use it before.`
-          : `Signed in to ${info.name} (${alias}) as ${email}, with a token.`,
+          : `Signed in to ${info.name} (${alias}) as ${email}, with a token${tokenCredential ? `: it ${reach(tokenCredential.scope)} until ${when(tokenCredential.expiresAt)}` : ""}.`,
       );
       if (accountChanged) {
         console.log(`Until now this machine was signed in there as ${accountChanged.from}, not ${accountChanged.to}. If you didn't mean to change accounts, sign in again: fontego login ${alias}`);

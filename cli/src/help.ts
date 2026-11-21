@@ -131,7 +131,12 @@ per-workspace access.
   prints exactly what the API answers.
 - Sign in with \`fontego login URL\`: it opens the browser for the person, and waits. With \`--json\` it first prints
   \`{"status": "waiting", "url": ...}\`: if the browser can't open, ask the person to open that link. On a machine
-  without a browser, \`--device\` prints a code for the person to type on another device. You never handle a password.
+  without a browser (a server, a container, over SSH) it prints a code instead, for the person to type in a browser
+  anywhere (\`--device\` asks for it). Every machine signs in like this, as its person, and you never handle a password.
+- Tokens are for CI and scripts, not for a machine you work on. The person makes one, signed in:
+  \`fontego account tokens create NAME --workspaces A,B\` (or \`--all\`; \`--write\` to also write, \`--days N\`), or in
+  Your account in the web app. It reaches only its workspaces, writes only if it says so, always ends (90 days unless
+  it says, a year at most), and never manages a workspace, an account or the server; a token can't make tokens.
 - One machine can be signed in to several Fontegos. \`fontego sessions\` lists them; commands go to the default one,
   to the one of the synced folder they run in, or to \`--instance ALIAS\`. \`FONTEGO_URL\` with \`FONTEGO_TOKEN\` (scripts,
   CI) uses that server and token instead. The address is \`https://\`, or plain \`http://\` only on this machine:
