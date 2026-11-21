@@ -424,6 +424,11 @@ export interface TemplateInfo {
   problem?: string;
 }
 
+/** The templates a new workspace can start from (GET /templates). */
+export interface TemplatesResponse {
+  templates: TemplateInfo[];
+}
+
 /** The icons a workspace can have here (GET /workspace-icons), in the order they are offered. */
 export interface WorkspaceIconsResponse {
   icons: Array<{

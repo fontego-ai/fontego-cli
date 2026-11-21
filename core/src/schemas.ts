@@ -2,6 +2,7 @@
 // the request types clients use come from them, so a client and the server can't disagree on what a request is.
 
 import { z } from "zod";
+import { normalizeTags } from "./tags.ts";
 
 export const ROLES = ["reader", "editor", "admin"] as const;
 export const RoleSchema = z.enum(ROLES);
@@ -39,51 +40,17 @@ export const MAX_CATEGORY = 100;
 /** A template's name: what `fontego workspace templates` lists. */
 export const TEMPLATE_NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 
-/** How many tags a workspace can have, and how long each can be (in characters). */
-export const MAX_TAGS = 10;
-export const MAX_TAG_LENGTH = 32;
-
-/** A tag as it is kept: words of letters (any language), marks and digits, joined by single dashes. */
-const TAG = /^[\p{L}\p{M}\p{Nd}]+(?:-[\p{L}\p{M}\p{Nd}]+)*$/u;
-
-/**
- * A tag the way it is kept, whoever wrote it: lowercase words joined by dashes, so "Clients", "clients" and "CLIENTS "
- * are one tag and "Q4 planning" is q4-planning. Spaces, underscores and runs of dashes become one dash; accents stay
- * (they change words). Whatever else is left (a comma, a slash, a #) makes it no tag, and `problem` says why.
- */
-export function normalizeTag(text: string): { tag: string } | { problem: string } {
-  const tag = text
-    .normalize("NFC")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/gu, "-")
-    .replace(/^-+|-+$/g, "");
-  if (!tag) return { problem: "a tag needs a letter or a digit" };
-  if (!TAG.test(tag)) return { problem: `${JSON.stringify(text.trim())} can't be a tag: use letters, digits and dashes` };
-  if ([...tag].length > MAX_TAG_LENGTH) return { problem: `${JSON.stringify(text.trim())} is too long for a tag: use at most ${MAX_TAG_LENGTH} characters` };
-  return { tag };
-}
-
 /**
  * A workspace's tags: a JSON list, or text with the tags split by commas or new lines (what the CLI sends; empty text
  * is no tags). Each is written the way it is kept (normalizeTag), repeats go, the order stays.
  */
 export const TagList = z.union([z.array(z.string().max(200)).max(100), z.string().max(4000)]).transform((value, ctx) => {
-  const items = typeof value === "string" ? value.split(/[,\n]/).filter((t) => t.trim() !== "") : value;
-  const tags: string[] = [];
-  for (const item of items) {
-    const n = normalizeTag(item);
-    if ("problem" in n) {
-      ctx.addIssue({ code: "custom", message: n.problem });
-      return z.NEVER;
-    }
-    if (!tags.includes(n.tag)) tags.push(n.tag);
-  }
-  if (tags.length > MAX_TAGS) {
-    ctx.addIssue({ code: "custom", message: `a workspace takes at most ${MAX_TAGS} tags, and these are ${tags.length}` });
+  const r = normalizeTags(value);
+  if ("problem" in r) {
+    ctx.addIssue({ code: "custom", message: r.problem });
     return z.NEVER;
   }
-  return tags;
+  return r.tags;
 });
 
 /**

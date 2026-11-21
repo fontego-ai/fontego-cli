@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { iconsFor, isNoIcon, isWorkspaceIcon, WORKSPACE_ICON_NAMES, WORKSPACE_ICONS } from "../src/icons.ts";
-import { MAX_TAG_LENGTH, MAX_TAGS, normalizeTag, TagList, UpdateWorkspaceBody, WorkspacesQuery } from "../src/schemas.ts";
+import { MAX_TAG_LENGTH, MAX_TAGS, normalizeTag, normalizeTags } from "../src/tags.ts";
 
 const tag = (t: string) => {
   const n = normalizeTag(t);
@@ -43,35 +43,29 @@ describe("normalizeTag", () => {
   });
 });
 
-describe("TagList", () => {
-  const parse = (v: unknown) => TagList.safeParse(v);
+// No Zod here: core's tests also run in fontego-app, whose web bundle in the same process loses Zod's path through the
+// core link. TagList, the schema around normalizeTags, is checked through the API in the server's tests.
+describe("normalizeTags", () => {
+  const tags = (v: string | string[]) => {
+    const r = normalizeTags(v);
+    return "tags" in r ? r.tags : `problem: ${r.problem}`;
+  };
 
-  test("a JSON list or text split by commas or lines; repeats go, the order stays", () => {
-    expect(parse(["Sales", "legal", "sales"]).data).toEqual(["sales", "legal"]);
-    expect(parse("Sales, legal,\nQ4 planning, , SALES").data).toEqual(["sales", "legal", "q4-planning"]);
-    expect(parse("").data).toEqual([]);
-    expect(parse([]).data).toEqual([]);
+  test("a list or text split by commas or lines; repeats go, the order stays", () => {
+    expect(tags(["Sales", "legal", "sales"])).toEqual(["sales", "legal"]);
+    expect(tags("Sales, legal,\nQ4 planning, , SALES")).toEqual(["sales", "legal", "q4-planning"]);
+    expect(tags("")).toEqual([]);
+    expect(tags([])).toEqual([]);
   });
 
   test("one bad tag fails the whole list, saying which", () => {
-    const r = parse("legal, a/b");
-    expect(r.success).toBe(false);
-    expect(r.error!.issues[0]!.message).toBe(`"a/b" can't be a tag: use letters, digits and dashes`);
+    expect(tags("legal, a/b")).toBe(`problem: "a/b" can't be a tag: use letters, digits and dashes`);
   });
 
   test(`at most ${MAX_TAGS}, counted after repeats go`, () => {
     const many = Array.from({ length: MAX_TAGS }, (_, i) => `t${i}`);
-    expect(parse([...many, "T0"]).data).toHaveLength(MAX_TAGS);
-    const r = parse([...many, "one-more"]);
-    expect(r.success).toBe(false);
-    expect(r.error!.issues[0]!.message).toContain(`at most ${MAX_TAGS} tags`);
-  });
-
-  test("in the bodies and the query that take tags", () => {
-    expect(UpdateWorkspaceBody.parse({ tags: "A, b" }).tags).toEqual(["a", "b"]);
-    expect(UpdateWorkspaceBody.parse({ icon: null }).icon).toBeNull();
-    expect(WorkspacesQuery.parse({ tag: "Legal,Q4 planning" }).tag).toEqual(["legal", "q4-planning"]);
-    expect(WorkspacesQuery.parse({}).tag).toBeUndefined();
+    expect(tags([...many, "T0"])).toHaveLength(MAX_TAGS);
+    expect(tags([...many, "one-more"])).toBe(`problem: a workspace takes at most ${MAX_TAGS} tags, and these are ${MAX_TAGS + 1}`);
   });
 });
 
