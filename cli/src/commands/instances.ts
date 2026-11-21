@@ -1,7 +1,18 @@
 import type { Credential as SavedCredential } from "../config.ts";
 import { AGENTS, installed } from "../agents.ts";
 import { UsageError, type UsageArg } from "../args.ts";
-import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, instanceLink, openInBrowser, openPrivately, revokeSession } from "../auth.ts";
+import {
+  browserLogin,
+  deviceLogin,
+  fetchInstance,
+  fromTokenResponse,
+  hasBrowser,
+  instanceLink,
+  openInBrowser,
+  openPrivately,
+  removeCredential,
+  replaceCredential,
+} from "../auth.ts";
 import { Client } from "../client.ts";
 import {
   aliasFor,
@@ -86,9 +97,7 @@ function envToken(url: string, env = process.env): string | undefined {
 }
 
 async function signOut(instance: Instance, store: CredentialStore) {
-  const credential = await store.get(instance.url);
-  if (credential?.type === "session") await revokeSession(instance.url, credential.refreshToken);
-  await store.delete(instance.url);
+  await removeCredential(instance.url, store);
   forgetCommands(instance.url);
 }
 
@@ -154,10 +163,8 @@ export const instanceCommands: Builtin[] = [
         email = t.session.email;
       }
 
-      // A new sign-in replaces this machine's previous session there: close it on the server.
-      const previous = await store.get(url);
-      if (previous?.type === "session") await revokeSession(url, previous.refreshToken);
-      await store.set(url, cred);
+      // A new sign-in replaces this machine's previous session there, which closes on the server.
+      await replaceCredential(url, store, cred);
       rememberStore(store.kind);
       saveInstance({ alias, url, name: info.name, email, addedAt: known?.addedAt ?? new Date().toISOString(), allowHttp: plainHttp(url) });
       const access = cred.type === "token" ? cred.token : cred.accessToken;

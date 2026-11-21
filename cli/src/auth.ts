@@ -36,7 +36,13 @@ export function fromTokenResponse(t: TokenResponse): Extract<Credential, { type:
   };
 }
 
-const lockName = (url: string) => `session-${createHash("sha256").update(normalizeUrl(url)).digest("hex").slice(0, 16)}`;
+/** The lock under which an instance's credential is renewed or replaced */
+export const lockName = (url: string) => `session-${createHash("sha256").update(normalizeUrl(url)).digest("hex").slice(0, 16)}`;
+
+/** How long a renewal waits for the server: well under how long another process waits for the lock (config.ts) */
+const REFRESH_TIMEOUT_MS = 15_000;
+
+const same = (a: Credential | null, b: Credential | null) => JSON.stringify(a) === JSON.stringify(b);
 
 /** The credential stored for an instance: a session that renews itself, or a token. */
 export class StoredAuth implements AuthProvider {
@@ -44,6 +50,7 @@ export class StoredAuth implements AuthProvider {
     readonly instance: Instance,
     private readonly store: CredentialStore,
     private cred: Credential,
+    private readonly opts: { refreshTimeoutMs?: number } = {},
   ) {}
 
   /** When the session ends if nothing else happens; null for a token */
@@ -67,7 +74,7 @@ export class StoredAuth implements AuthProvider {
     return withLock(lockName(url), async () => {
       const latest = await this.store.get(url);
       if (!latest) throw sessionEnded(this.instance.alias);
-      if (JSON.stringify(latest) !== JSON.stringify(this.cred)) {
+      if (!same(latest, this.cred)) {
         // Signed in again, or renewed by another fontego: use that.
         this.cred = latest;
         if (latest.type === "token" || Date.parse(latest.accessExpiresAt) > Date.now()) return;
@@ -83,6 +90,8 @@ export class StoredAuth implements AuthProvider {
           headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": USER_AGENT },
           body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken, client_id: CLIENT_ID }),
           redirect: "manual",
+          // A renewal that hung would keep the lock, and the others waiting
+          signal: AbortSignal.timeout(this.opts.refreshTimeoutMs ?? REFRESH_TIMEOUT_MS),
         });
       } catch (e) {
         throw new ClientError(0, "unreachable", `Can't reach ${url}: ${(e as Error).message}`, "Check the URL and that the server is running.");
@@ -91,7 +100,8 @@ export class StoredAuth implements AuthProvider {
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string; error_description?: string };
         if (err.error === "invalid_grant") {
-          await this.store.delete(url);
+          // Only the credential this renewal spent: one saved meanwhile is someone's new sign-in.
+          if (same(await this.store.get(url), current)) await this.store.delete(url);
           throw sessionEnded(this.instance.alias);
         }
         throw new ClientError(res.status, err.error ?? "http_error", err.error_description ?? `HTTP ${res.status}`);
@@ -107,6 +117,28 @@ export class StoredAuth implements AuthProvider {
   }
 }
 
+
+/**
+ * Saves the credential of a new sign-in in place of the one there, under the renewal lock: a renewal running meanwhile
+ * would save its session over this one, or delete it when the server refuses the old refresh token. The previous
+ * session is closed on the server.
+ */
+export function replaceCredential(url: string, store: CredentialStore, cred: Credential): Promise<void> {
+  return withLock(lockName(url), async () => {
+    const previous = await store.get(url);
+    if (previous?.type === "session") await revokeSession(url, previous.refreshToken);
+    await store.set(url, cred);
+  });
+}
+
+/** Signs this machine out of an instance: its session closes on the server, and the credential goes. */
+export function removeCredential(url: string, store: CredentialStore): Promise<void> {
+  return withLock(lockName(url), async () => {
+    const credential = await store.get(url);
+    if (credential?.type === "session") await revokeSession(url, credential.refreshToken);
+    await store.delete(url);
+  });
+}
 
 // --- signing in ---
 

@@ -13,7 +13,7 @@
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { ClientError } from "./client.ts";
 
@@ -316,26 +316,75 @@ export async function migrateLegacy(name: string, env = process.env): Promise<In
 
 // --- a lock, so two processes don't swap the same refresh token ---
 
+/** How long one waits for the lock: longer than anyone holds it, since a renewal gives up on the server sooner */
+const LOCK_WAIT_MS = 30_000;
+/** A lock this old outlived anything done under it, even if its process number now belongs to another program */
+const LOCK_STALE_MS = 5 * 60_000;
+
+const readOrNull = (path: string) => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Whether a lock was left behind: the process that took it is gone (only knowable on this machine: a config folder
+ * may be shared), or it is older than anything done under it. A lock still being written, or of unknown owner, is held.
+ */
+function abandoned(path: string, raw: string): boolean {
+  let age: number;
+  try {
+    age = Date.now() - statSync(path).mtimeMs;
+  } catch {
+    return false; // gone already: just try again
+  }
+  if (age > LOCK_STALE_MS) return true;
+  let owner: { pid?: unknown; host?: unknown };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    owner = typeof parsed === "number" ? { pid: parsed } : (parsed as typeof owner); // the first versions wrote the pid alone
+  } catch {
+    return false;
+  }
+  if (typeof owner.pid !== "number" || (owner.host !== undefined && owner.host !== hostname())) return false;
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+/** Runs fn holding the named lock of this machine's config folder: one process at a time, across processes. */
 export async function withLock<T>(name: string, fn: () => Promise<T>, env = process.env): Promise<T> {
   const path = join(configDir(env), "locks", `${name.replace(/[^A-Za-z0-9._-]+/g, "_")}.lock`);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  for (let waited = 0; ; waited += 100) {
+  const mine = JSON.stringify({ pid: process.pid, host: hostname(), id: randomBytes(8).toString("hex") });
+  for (const start = Date.now(); ; ) {
     try {
-      writeFileSync(path, String(process.pid), { flag: "wx", mode: 0o600 });
+      writeFileSync(path, mine, { flag: "wx", mode: 0o600 });
       break;
-    } catch {
-      try {
-        if (Date.now() - statSync(path).mtimeMs > 30_000) rmSync(path, { force: true }); // left by a process that died
-      } catch {
-        // gone already
-      }
-      if (waited > 15_000) throw new Error(`Another fontego is still renewing the session (${path}).`);
-      await Bun.sleep(100);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "EPERM") throw e;
     }
+    const raw = readOrNull(path);
+    // Taken away only if it is still the same abandoned lock: another waiter may have just put its own there.
+    if (raw !== null && abandoned(path, raw) && readOrNull(path) === raw) {
+      rmSync(path, { force: true });
+      continue;
+    }
+    if (Date.now() - start > LOCK_WAIT_MS) {
+      throw new ClientError(423, "locked", "Another fontego is still renewing the session.", `Run it again in a moment. If this keeps happening and no other fontego runs, remove ${path}`);
+    }
+    await Bun.sleep(100);
   }
   try {
     return await fn();
   } finally {
-    rmSync(path, { force: true });
+    // Only our own: if it was ever taken from us, the lock there now is someone else's.
+    if (readOrNull(path) === mine) rmSync(path, { force: true });
   }
 }

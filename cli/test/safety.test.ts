@@ -1,13 +1,15 @@
 // What keeps a credential where it belongs, tested piece by piece inside this process: the addresses fontego accepts,
-// where the client sends a request, what it opens in the browser, and the private files of this machine. The sign-in tests (login.test.ts) check
+// where the client sends a request, what it opens in the browser, the renewal lock, and the private files of this
+// machine. The sign-in tests (login.test.ts) check
 // the same rules through the commands.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
-import { deviceLogin, fetchInstance, instanceLink, openerCommand, openInBrowser, StoredAuth } from "../src/auth.ts";
+import { deviceLogin, fetchInstance, instanceLink, lockName, openerCommand, openInBrowser, replaceCredential, StoredAuth } from "../src/auth.ts";
 import { Client, ClientError } from "../src/client.ts";
-import { credentialStore, instanceUrl, isLoopback, saveInstance, sameInstance, type Credential } from "../src/config.ts";
+import { credentialStore, instanceUrl, isLoopback, saveInstance, sameInstance, withLock, type Credential } from "../src/config.ts";
 import { tempDir } from "./server.ts";
 
 const dirs: string[] = [];
@@ -214,6 +216,101 @@ describe("what fontego opens in the browser", () => {
     for (const foreign of ["https://evil.example/#/login?code=a", "http://fontego.example.org/#/login", "https://fontego.example.org:8443/", "file:///etc/passwd"]) {
       expect(() => instanceLink(foreign, "https://fontego.example.org")).toThrow(/won't open it/);
     }
+  });
+});
+
+describe("the renewal lock", () => {
+  const lockFile = (name: string) => join(home, "fontego", "locks", `${name}.lock`);
+  /** Leaves a lock as another process would, `age` ms old */
+  const plant = (name: string, owner: unknown, age = 0) => {
+    mkdirSync(join(home, "fontego", "locks"), { recursive: true });
+    writeFileSync(lockFile(name), JSON.stringify(owner));
+    const t = (Date.now() - age) / 1000;
+    utimesSync(lockFile(name), t, t);
+  };
+  /** Takes the lock and says when it got in */
+  const enter = (name: string) => {
+    let inside = false;
+    const done = withLock(name, async () => {
+      inside = true;
+    });
+    return { done, inside: () => inside };
+  };
+
+  test("a lock whose process still runs is never taken from it, however long it has held it", async () => {
+    // A renewal slower than half a minute (a slow server) used to lose its lock to the next one
+    plant("busy", { pid: process.pid, host: hostname(), id: "other" }, 60_000);
+    const waiting = enter("busy");
+    await Bun.sleep(600);
+    expect(waiting.inside()).toBe(false);
+    rmSync(lockFile("busy")); // its holder lets go
+    await waiting.done;
+    expect(waiting.inside()).toBe(true);
+  });
+
+  test("a lock left by a process that is gone is taken at once", async () => {
+    const gone = Bun.spawn(["true"]);
+    await gone.exited;
+    plant("left", { pid: gone.pid, host: hostname(), id: "dead" });
+    const started = Date.now();
+    await enter("left").done;
+    expect(Date.now() - started).toBeLessThan(1000);
+    // The first versions wrote the pid alone
+    plant("left", gone.pid);
+    await enter("left").done;
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("a lock is removed only by whoever holds it", async () => {
+    await withLock("mine", async () => {
+      // Taken from us meanwhile (by an older fontego, say): that one is someone else's now
+      writeFileSync(lockFile("mine"), JSON.stringify({ pid: process.pid, host: hostname(), id: "theirs" }));
+    });
+    expect(JSON.parse(readFileSync(lockFile("mine"), "utf8")).id).toBe("theirs");
+    rmSync(lockFile("mine"));
+  });
+
+  test("a renewal gives up on a server that doesn't answer, and lets go of the lock", async () => {
+    const silent = recorder(() => new Promise<Response>(() => {}));
+    const store = await credentialStore({ XDG_CONFIG_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" });
+    const cred = expiredSession();
+    await store.set(silent.url, cred);
+    const auth = new StoredAuth(instance(silent.url), store, cred, { refreshTimeoutMs: 300 });
+    expect(await failsWith(auth.token())).toBe("unreachable");
+    expect(readdirSync(join(home, "fontego", "locks")).filter((f) => f.startsWith("session-"))).toEqual([]);
+    silent.stop();
+  });
+
+  test("a session the server ended deletes only the credential it spent, not one saved meanwhile", async () => {
+    const store = await credentialStore({ XDG_CONFIG_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" });
+    const newer = expiredSession("fontego_rt_newer");
+    let url = "";
+    const refusing = recorder(async () => {
+      await store.set(url, newer); // a sign-in that finished while this renewal was on its way
+      return Response.json({ error: "invalid_grant" }, { status: 400 });
+    });
+    url = refusing.url;
+    const cred = expiredSession("fontego_rt_spent");
+    await store.set(url, cred);
+    expect(await failsWith(new StoredAuth(instance(url), store, cred).token())).toBe("session_ended");
+    expect(await store.get(url)).toEqual(newer);
+    refusing.stop();
+  });
+
+  test("a new sign-in waits for a renewal under way before it saves its credential", async () => {
+    const store = await credentialStore({ XDG_CONFIG_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" });
+    const url = "https://lock.example.org";
+    let renewing!: () => void;
+    const renewal = new Promise<void>((r) => (renewing = r));
+    // The lock a renewal of that instance takes, held until we say
+    const held = withLock(lockName(url), () => renewal);
+    await Bun.sleep(100);
+    const saved = replaceCredential(url, store, { type: "token", token: "fontego_pt_new" });
+    await Bun.sleep(400);
+    expect(await store.get(url)).toBeNull();
+    renewing();
+    await Promise.all([held, saved]);
+    expect(await store.get(url)).toEqual({ type: "token", token: "fontego_pt_new" });
   });
 });
 
