@@ -36,10 +36,23 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   machine allows. There is no full-screen interface: that is the web app's job.
 - **One machine, several Fontegos.** `fontego login` signs in through the browser (OAuth with PKCE and a loopback
   redirect), or with a code typed on another device when there is no display (`--device`); `--token` stays for
-  scripts and CI. `config.json` lists the instances under short aliases and holds no secrets; credentials go to the
-  system keychain (`Bun.secrets`), or to `credentials.json` (0600) where there is none. Each command goes to
-  `--instance`, `FONTEGO_INSTANCE`, the synced folder's instance, or the default (`connect.ts`). Sessions renew by
-  themselves under a lock: two processes swapping the same refresh token would make the server close the session.
+  scripts and CI (`--token -` reads it from stdin, out of `ps` and the shell's history; `FONTEGO_TOKEN` counts for
+  login only when `FONTEGO_URL` is that same Fontego). `config.json` lists the instances under short aliases and holds
+  no secrets; credentials go to the system keychain (`Bun.secrets`), or to `credentials.json` (0600, in a 0700
+  folder, written under a random name) where there is none. Each command goes to `--instance`, `FONTEGO_INSTANCE`,
+  the synced folder's instance, or the default (`connect.ts`). Sessions renew by themselves under a lock: two
+  processes swapping the same refresh token would make the server close the session. The lock is never taken from a
+  process that still runs, and login and logout swap the credential under it too. Signing in as another account than
+  before says so (`accountChanged`), and signing out says what stays open on the server (`stillOpen`: a token, or a
+  session the server didn't close).
+- **Credentials go only where the person said.** An instance's address is https, or plain http only to this machine
+  (loopback) unless accepted: `fontego login --allow-http`, remembered for that instance, or `FONTEGO_ALLOW_HTTP=1`
+  for `FONTEGO_URL`; never with a user name, query or fragment (`instanceUrl`, `config.ts`). No redirect is followed
+  (`refuseRedirect`): a 307 or 308 would send a refresh token or a password again elsewhere. The client refuses a
+  request off the instance's origin or outside its `/v1/`, whatever path a declared command gives. Links open
+  without a shell (`openerCommand`: rundll32 on Windows, since cmd.exe reads the `&` of a link), only http(s);
+  `fontego open` opens only a link on the instance's own origin, through a private page (`openPrivately`), so its
+  one-time code is on no command line, where any user of the machine could read it.
 - **Ignore rules never delete** (`core/src/ignore.ts`, read from disk by `cli/src/sync/ignore.ts`; they live in core
   because the server applies them too when it imports a folder, a zip or a Git repository into a new workspace). As
   in Git, a rule only keeps new files from going up: a file already in the workspace keeps syncing both ways, and
@@ -97,10 +110,10 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/version.ts` | The CLI's version, read from `cli/package.json` |
 | `scripts/build.ts`, `scripts/npm-launcher.cjs`, `scripts/npm-readme.md`, `install.sh` | The release: executables, npm packages and the install script (see above) |
 | `Dockerfile`, `.github/workflows/image.yml` | The command's container image and the workflow that publishes it (see How to work) |
-| `cli/src/client.ts` | HTTP client for `/v1`: a token per request, and one more try after renewing on a 401. Event streams (`events` for watch, `personEvents` for `fontego events`): the server says how often it beats in `ready`, and a line silent for two and a half beats is taken as dead, so the caller connects again |
+| `cli/src/client.ts` | HTTP client for `/v1`: a token per request, only to the instance's origin under its `/v1/` and following no redirect, and one more try after renewing on a 401. Event streams (`events` for watch, `personEvents` for `fontego events`): the server says how often it beats in `ready`, and a line silent for two and a half beats is taken as dead, so the caller connects again |
 | `cli/src/commands/live.ts` | `fontego events`: the person's stream (commits, who is in each workspace, changes in their list), one line per event or one JSON object per line, connecting again by itself. `who` and `here` come from the server |
-| `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock |
-| `cli/src/auth.ts` | Signing in (browser or device flow), a stored session that renews itself (and takes the account's address as the server has it then: a server admin may have changed it), signing out on the server |
+| `cli/src/config.ts` | The instances of this machine (`$XDG_CONFIG_HOME/fontego/config.json`, no secrets) and the addresses accepted (`instanceUrl`), the credential store (keychain or `credentials.json`), the first version's login moving over, and the renewal lock (its holder's pid and host in it) |
+| `cli/src/auth.ts` | Signing in (browser or device flow), a stored session that renews itself (and takes the account's address as the server has it then: a server admin may have changed it), replacing or removing a credential under the lock and closing it on the server (saying what stays open), and opening links in the browser |
 | `cli/src/connect.ts` | Which instance a command goes to, and a client signed in there; `FONTEGO_URL` with `FONTEGO_TOKEN` override it all |
 | `cli/src/sync/` | Sync: `engine.ts` (one round: pull, push in batches of at most `MAX_OPS` operations and `BATCH_BYTES`, saving the state after each, conflicts; a file the server refuses, such as a protected path, is set aside, the rest sent, and the same content tried again later with a growing wait; a copy that can only read asks for its role again while changes wait), `local.ts` (scan, which tells a folder it can't read from a deleted one; `replaceIf`, the only way sync changes a local file: the file is moved aside in one step, checked, and the new one linked in, so an edit saved meanwhile is never lost), `ignore.ts` (the ignore rules, read from the folder), `state.ts` (`.fontego/state.json`, checked when opened: `StateError`), `watch.ts` (continuous mode, and the folder's lock, taken by watch, sync and the first round of clone and link before they read the state) |
 | `cli/test/` | Tests against a real server; `server.ts` starts it from `fontego-app` |
@@ -132,6 +145,8 @@ bun run build --only linux-x64 --out /tmp/fontego-dist
 
 - `cli/test/build.test.ts` builds this system's executable and uses it as a person would: on its own, through the
   npm launcher, and installed by `install.sh` from a local server laid out like GitHub releases.
+- `cli/test/safety.test.ts` checks, inside the test process, what keeps credentials where they belong: addresses,
+  where requests go, redirects, what opens in the browser, the renewal lock and the private files.
 - The tests run the server in a temporary folder on a free port; they never touch real data. They run as no agent
   (`NO_AGENT` in `cli.test.ts`), whatever runs them, unless a test names one: its name would land in every commit. They set
   `FONTEGO_CREDENTIAL_STORE=file` and `FONTEGO_BROWSER=none`, so they never write to the keychain or open a browser;
