@@ -25,6 +25,15 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   argument marked `secret` (a password) is asked for without echo when left out, or read from stdin when that isn't a
   terminal (`prompt.ts`), and never printed. One marked `stdin` (a file's content, for `fontego write`) is read whole
   from stdin when left out; nothing on stdin is an error, so a forgotten `< file` never writes an empty file.
+- **A person who leaves an argument out is asked for it; nobody else ever is.** At a terminal, a required argument
+  left out is picked from its list (`choices` in a declaration, from `core`: fixed values or a GET to the same
+  server; `pick` in a built-in) or typed, and then the whole command goes to stderr (`Same as: fontego ...`), so it
+  can be typed next time or handed to an agent (`ask.ts`). The list and the typing are our own code, with no
+  dependencies (`picker.ts`: plain functions for the keys and the drawing, so tests need no terminal, and one that
+  wires them to the terminal). `canAsk` (`output.ts`) is the one rule: never with `--json`, without a terminal on
+  stdin and stderr, in CI, with `FONTEGO_NO_INPUT=1`, or when an agent runs it, since some run commands in a
+  pseudo-terminal and would wait forever. Then the command fails with its usage line and the values a list on this
+  machine allows. There is no full-screen interface: that is the web app's job.
 - **One machine, several Fontegos.** `fontego login` signs in through the browser (OAuth with PKCE and a loopback
   redirect), or with a code typed on another device when there is no display (`--device`); `--token` stays for
   scripts and CI. `config.json` lists the instances under short aliases and holds no secrets; credentials go to the
@@ -74,10 +83,12 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 
 | Path | What |
 |---|---|
-| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; a table or lines may print a list under each row, such as a commit's files, with how many more the API cut (`details`), lines after them all that are left out when empty, such as the next page's cursor (`footer`), and columns left out when nobody filled them (`optional`); `outputTemplates` finds every template in one) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
+| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; a table or lines may print a list under each row, such as a commit's files, with how many more the API cut (`details`), lines after them all that are left out when empty, such as the next page's cursor (`footer`), and columns left out when nobody filled them (`optional`); `outputTemplates` finds every template in one; an argument's `choices`, the list a person picks it from, checked by `checkChoices`) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Reads the command line and runs a built-in or a declared command |
-| `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`: 6 the server can't be reached, 7 a sync that did only part) |
+| `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`, and `whyNotAsked`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`: 6 the server can't be reached, 7 a sync that did only part) |
 | `cli/src/args.ts` | Command words, arguments and flags, and usage lines |
+| `cli/src/ask.ts` | The arguments a command was given without: asked for when a person can be asked, else the usage error with the values known here; and the command written back |
+| `cli/src/picker.ts` | Asking at a terminal: picking from a list (arrows, filter by text or number, Enter, Esc) and typing a line, also a secret without echo; a numbered list where the terminal can't redraw (`TERM=dumb`) |
 | `cli/src/builtins.ts` | Collects the built-in commands for dispatch, help and the reference docs. Instance and sign-in commands live in `cli/src/commands/instances.ts` and synced-folder commands in `cli/src/commands/folders.ts` |
 | `cli/src/declared.ts` | Commands the server declares: cache, checks, building the request, printing the answer |
 | `cli/src/help.ts` | `fontego help`, `fontego help COMMAND` and `fontego help --agent`, built from the commands themselves |

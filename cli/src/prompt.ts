@@ -3,11 +3,12 @@
 
 import { exactText } from "@fontego/core";
 import { UsageError } from "./args.ts";
-import { canAsk } from "./output.ts";
+import { canAsk, whyNotAsked } from "./output.ts";
+import { askText } from "./picker.ts";
 
 /**
  * Reads a secret: the first line of stdin when that is not a terminal, else typed on the terminal without echo, but
- * only when fontego may ask (canAsk: never with --json, where a script or an agent waits for the answer).
+ * only when fontego may ask a person (canAsk: never with --json, in CI or when an agent runs it).
  */
 export async function readSecret(label: string, json = false): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -15,34 +16,8 @@ export async function readSecret(label: string, json = false): Promise<string> {
     if (!line) throw new UsageError(`${label} is a secret: type it when asked, or pipe it in on stdin. Nothing came on stdin.`);
     return line;
   }
-  if (!canAsk(json)) throw new UsageError(`${label} is a secret, and with --json nothing is asked: pipe it in on stdin.`);
-  const stdin = process.stdin;
-  process.stderr.write(`${label} (not shown): `);
-  stdin.setRawMode(true);
-  stdin.setEncoding("utf8");
-  stdin.resume();
-  const value = await new Promise<string>((resolve, reject) => {
-    let typed = "";
-    const finish = (error?: Error) => {
-      stdin.off("data", onData);
-      stdin.setRawMode(false);
-      stdin.pause();
-      process.stderr.write("\n");
-      if (error) reject(error);
-      else resolve(typed);
-    };
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === "\r" || ch === "\n" || ch === "\u0004") return finish();
-        if (ch === "\u0003") return finish(new UsageError("Cancelled: nothing changed."));
-        if (ch === "\u007f" || ch === "\b") typed = typed.slice(0, -1);
-        else if (ch >= " ") typed += ch;
-      }
-    };
-    stdin.on("data", onData);
-  });
-  if (!value) throw new UsageError("Nothing typed: nothing changed.");
-  return value;
+  if (!canAsk(json)) throw new UsageError(`${label} is a secret, and nothing is asked here (${whyNotAsked(json)}): pipe it in on stdin.`);
+  return askText(label, { hidden: true });
 }
 
 /** Reads the whole of stdin as text, for an argument such as a file's content: `fontego write WS PATH < file`. */

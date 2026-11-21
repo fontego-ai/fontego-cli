@@ -1,6 +1,6 @@
 import type { Credential as SavedCredential } from "../config.ts";
 import { AGENTS, installed } from "../agents.ts";
-import { UsageError } from "../args.ts";
+import { UsageError, type UsageArg } from "../args.ts";
 import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, openInBrowser, revokeSession } from "../auth.ts";
 import { Client } from "../client.ts";
 import {
@@ -23,6 +23,7 @@ import {
 import { ensureMigrated } from "../connect.ts";
 import { forgetCommands, refreshCommands } from "../declared.ts";
 import { canAsk } from "../output.ts";
+import { askText, choose, type Choice } from "../picker.ts";
 import type { Builtin, RunContext } from "./command.ts";
 import { skillInstalled } from "./setup.ts";
 
@@ -40,6 +41,18 @@ async function statusOf(i: Instance, store: CredentialStore): Promise<{ status: 
   return { status: left <= 0 ? "ended" : left < 3 * DAY ? "ends soon" : "active", endsAt: c.expiresAt };
 }
 
+/** One of this machine's Fontegos, picked from its list when left out at a terminal */
+const ALIAS: UsageArg = {
+  name: "ALIAS",
+  pick: {
+    local: true,
+    async load() {
+      await ensureMigrated();
+      return listInstances().map((i) => ({ value: i.alias, label: `${i.name} (${i.url})` }));
+    },
+  },
+};
+
 const isUrl = (s: string) => /^https?:\/\//i.test(s);
 const listed = () =>
   listInstances()
@@ -54,22 +67,15 @@ async function loginTarget(rc: RunContext): Promise<string> {
   if (!all.length) throw new UsageError("fontego login URL   (the address you open in the browser)");
   if (!canAsk(rc.json)) throw new UsageError(`fontego login ALIAS or URL. Yours: ${listed()}`);
   const store = await credentialStore();
-  console.log("Sign in to which Fontego?");
-  for (const [n, i] of all.entries()) {
-    const st = await statusOf(i, store);
-    console.log(`  ${n + 1}) ${i.alias.padEnd(16)} ${i.name} · ${st.status}${st.endsAt ? ` until ${when(st.endsAt)}` : ""}`);
-  }
-  console.log(`  ${all.length + 1}) Another Fontego (URL)…`);
-  const answer = (prompt("Number, alias or URL:") ?? "").trim();
-  const n = Number(answer);
-  if (Number.isInteger(n) && n >= 1 && n <= all.length) return all[n - 1]!.alias;
-  if (n === all.length + 1) {
-    const url = (prompt("URL:") ?? "").trim();
-    if (!url) throw new UsageError("fontego login URL");
-    return url;
-  }
-  if (!answer) throw new UsageError("fontego login ALIAS or URL");
-  return answer;
+  const known = await Promise.all(
+    all.map(async (i): Promise<Choice> => {
+      const st = await statusOf(i, store);
+      return { value: i.alias, label: `${i.name} · ${st.status}${st.endsAt ? ` until ${when(st.endsAt)}` : ""}` };
+    }),
+  );
+  const another: Choice = { value: "+", label: "Another Fontego: type its address" };
+  const picked = await choose("Sign in to which Fontego?", [...known, another]);
+  return picked === another ? askText("Its address (URL)") : picked.value;
 }
 
 async function signOut(instance: Instance, store: CredentialStore) {
@@ -204,7 +210,7 @@ export const instanceCommands: Builtin[] = [
     name: "sessions rename",
     summary: "Give a Fontego another alias",
     group: MACHINE,
-    args: [{ name: "ALIAS" }, { name: "NEW" }],
+    args: [ALIAS, { name: "NEW" }],
     async run({ parsed, print }) {
       await ensureMigrated();
       try {
@@ -219,7 +225,7 @@ export const instanceCommands: Builtin[] = [
     name: "sessions forget",
     summary: "Sign out of a Fontego and take it off this machine's list",
     group: MACHINE,
-    args: [{ name: "ALIAS" }],
+    args: [ALIAS],
     async run({ parsed, print }) {
       await ensureMigrated();
       const i = instanceByAlias(parsed.args.ALIAS!);
@@ -234,7 +240,7 @@ export const instanceCommands: Builtin[] = [
     name: "use",
     summary: "Choose the Fontego commands go to by default",
     group: MACHINE,
-    args: [{ name: "ALIAS" }],
+    args: [ALIAS],
     async run({ parsed, print }) {
       await ensureMigrated();
       const alias = parsed.args.ALIAS!;

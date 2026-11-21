@@ -98,7 +98,11 @@ export function describe(u: Usage | CommandSpec): string {
   if (args.length) {
     out.push("", "Arguments:");
     const w = Math.max(...args.map((a) => a.name.length)) + 2;
-    for (const a of args) out.push(`  ${a.name.padEnd(w)}${a.description ?? ""}${"secret" in a && a.secret ? " (left out, it is asked for without showing it)" : "stdin" in a && a.stdin ? " (left out, it is read from stdin)" : a.optional ? " (optional)" : ""}`.trimEnd());
+    for (const a of args) {
+      const values = "choices" in a && a.choices && "values" in a.choices ? a.choices.values : null;
+      const said = [a.description, values ? `one of ${values.join(", ")}` : null].filter(Boolean).join(": ");
+      out.push(`  ${a.name.padEnd(w)}${said}${"secret" in a && a.secret ? " (left out, it is asked for without showing it)" : "stdin" in a && a.stdin ? " (left out, it is read from stdin)" : a.optional ? " (optional)" : ""}`.trimEnd());
+    }
   }
   const flags = u.flags ?? [];
   out.push("", "Options:");
@@ -130,8 +134,9 @@ per-workspace access.
 - Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict, 5 not allowed, 6 the server
   can't be reached, 7 a sync that did only part (something was refused or couldn't be read this time, or changes
   still wait: the output says what, with \`"complete": false\`, and the next sync tries again).
-- With \`--json\` nothing is ever asked: a secret left out has to come on stdin. \`--help\` and \`fontego help\` print
-  \`{"help": ...}\` too.
+- Nothing is ever asked of you, nor of anyone with \`--json\`: an argument left out is a usage error, which lists the
+  values it can take when they are known, and a secret left out has to come on stdin. With \`--json\`, \`--help\`
+  and \`fontego help\` print \`{"help": ...}\` too.
 - \`fontego help COMMAND\` shows the arguments and options of one command.
 
 ## Find your way in a workspace

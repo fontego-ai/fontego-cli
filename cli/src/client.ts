@@ -11,6 +11,7 @@ import {
   type Me,
   type SyncResponse,
   type WorkspaceInfo,
+  type WorkspacesResponse,
 } from "@fontego/core";
 import { agentName } from "./agents.ts";
 import { USER_AGENT } from "./version.ts";
@@ -108,6 +109,11 @@ export class Client {
 
   workspace(ws: string) {
     return this.json<WorkspaceInfo>("GET", `/v1/workspaces/${enc(ws)}`);
+  }
+
+  /** The workspaces this person can see, with their role in each */
+  workspaces() {
+    return this.json<WorkspacesResponse>("GET", "/v1/workspaces");
   }
 
   /** Any API call; the answer as it comes. Commands the server declares run through here. */

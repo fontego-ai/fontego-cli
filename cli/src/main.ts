@@ -6,11 +6,12 @@
 // to several servers (connect.ts says which one a command goes to). Every command accepts --json.
 
 import { agentName } from "./agents.ts";
+import { askMissing } from "./ask.ts";
 import { leadingWords, parseCommand, readGlobals, resolveName, UsageError } from "./args.ts";
 import { BUILTIN_NAMES, BUILTINS, VERSION, type RunContext } from "./builtins.ts";
 import { ClientError } from "./client.ts";
 import { connect, type Connection } from "./connect.ts";
-import { findCommand, nameLength, readCommands, refreshCommands, runCommand, type CachedCommands } from "./declared.ts";
+import { choicesSource, findCommand, nameLength, readCommands, refreshCommands, runCommand, type CachedCommands } from "./declared.ts";
 import { agentPointer, describe } from "./help.ts";
 import { failureOf, printFailure } from "./output.ts";
 import { findRoot, loadState } from "./sync/state.ts";
@@ -56,7 +57,9 @@ async function main(): Promise<void> {
       commandName = b.name;
       if (help && builtinName !== "help") return showHelp(b.name, describe(b));
       const rest = tokens.slice(words.length ? builtinName.split(" ").length : 0);
-      await b.run({ parsed: parseCommand(b, rest), json, instance, print, connect: signIn });
+      const parsed = parseCommand(b, rest, { allowMissing: true });
+      await askMissing(b, parsed, { json, instance, sourceFor: (arg) => (arg.pick ? { local: !!arg.pick.local, load: () => arg.pick!.load(signIn) } : null) });
+      await b.run({ parsed, json, instance, print, connect: signIn });
     } else {
       // A command the server declares: from the saved list, or a fresh one if it isn't there yet.
       const { client, url } = await signIn();
@@ -75,7 +78,8 @@ async function main(): Promise<void> {
       }
       commandName = spec.name;
       if (help) return showHelp(spec.name, describe(spec));
-      const parsed = parseCommand(spec, tokens.slice(nameLength(spec, words)));
+      const parsed = parseCommand(spec, tokens.slice(nameLength(spec, words)), { allowMissing: true });
+      await askMissing(spec, parsed, { json, instance, sourceFor: (arg, args) => choicesSource(arg, args, client) });
       try {
         await runCommand(spec, parsed, client, { json });
       } catch (e) {
@@ -86,8 +90,10 @@ async function main(): Promise<void> {
         cache = await refreshCommands(client);
         const again = findCommand(cache, words);
         if (!again) throw new UsageError(`Unknown command "${words.join(" ")}". Run: fontego help`);
-        const reparsed = parseCommand(again, tokens.slice(nameLength(again, words)));
+        const reparsed = parseCommand(again, tokens.slice(nameLength(again, words)), { allowMissing: true });
         for (const [name, value] of Object.entries(parsed.args)) reparsed.args[name] ??= value;
+        reparsed.missing = reparsed.missing?.filter((name) => reparsed.args[name] === undefined);
+        await askMissing(again, reparsed, { json, instance, sourceFor: (arg, args) => choicesSource(arg, args, client) });
         await runCommand(again, reparsed, client, { json });
       }
     }

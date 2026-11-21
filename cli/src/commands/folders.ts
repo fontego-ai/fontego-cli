@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
-import { UsageError } from "../args.ts";
+import { UsageError, type UsageArg } from "../args.ts";
 import { ClientError } from "../client.ts";
 import type { Connection } from "../connect.ts";
 import { localStatus, SyncEngine, type SyncReport } from "../sync/engine.ts";
@@ -88,12 +88,23 @@ const DIR = { name: "DIR", optional: true } as const;
 const ruleText = (m: IgnoreMatch) => `${m.source}${m.line ? `:${m.line}` : ""} (${m.pattern})${m.folder ? `, through the folder ${m.folder}/` : ""}`;
 const FOLDERS = "Synced folders";
 
+/** A workspace, picked from the ones you can see there when left out at a terminal */
+const WORKSPACE: UsageArg = {
+  name: "WORKSPACE",
+  pick: {
+    async load(connect) {
+      const { workspaces } = await (await connect()).client.workspaces();
+      return workspaces.map((w) => ({ value: w.slug, label: [w.name, w.role].filter(Boolean).join(" · ") }));
+    },
+  },
+};
+
 export const folderCommands: Builtin[] = [
   {
     name: "clone",
     summary: "Make DIR (default ./WORKSPACE) a synced copy of the workspace",
     group: FOLDERS,
-    args: [{ name: "WORKSPACE" }, DIR],
+    args: [WORKSPACE, DIR],
     async run({ parsed, print, connect: signIn }) {
       const conn = await signIn();
       const ws = parsed.args.WORKSPACE!;
@@ -110,7 +121,7 @@ export const folderCommands: Builtin[] = [
     name: "link",
     summary: "Connect a folder that already has files (default: this one) and send them up",
     group: FOLDERS,
-    args: [{ name: "WORKSPACE" }, DIR],
+    args: [WORKSPACE, DIR],
     async run({ parsed, print, connect: signIn }) {
       const conn = await signIn();
       const ws = parsed.args.WORKSPACE!;

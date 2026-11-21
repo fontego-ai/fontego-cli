@@ -3,6 +3,7 @@
 // answer with the description's templates.
 
 import {
+  checkChoices,
   checkTemplate,
   outputTemplates,
   textContent,
@@ -10,6 +11,7 @@ import {
   renderTemplate,
   splitTarget,
   templateVars,
+  type CommandArg,
   type CommandColumn,
   type CommandDetails,
   type CommandOutput,
@@ -21,6 +23,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { UsageError, usageLine, type Parsed } from "./args.ts";
+import type { ChoicesSource } from "./ask.ts";
 import type { Client } from "./client.ts";
 import { readSecret, readStdin } from "./prompt.ts";
 import { forPerson, unsafeForTerminal } from "./terminal.ts";
@@ -147,6 +150,9 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   if (said.some((t) => t !== undefined && (typeof t !== "string" || !ONE_LINE.test(t)))) out.push(`${at}: its summary, group and descriptions must be one line each`);
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
   for (const a of args) if (a.stdin && !a.optional) out.push(`${at}: ${a.name} comes from stdin when left out, so it must be optional`);
+  args.forEach((a, i) => {
+    if (a.choices) out.push(...checkChoices(a.choices, args.slice(0, i)).map((p) => `${at}: ${a.name}: ${p}`));
+  });
   for (const f of flags) {
     if (!["string", "number", "boolean"].includes(f.type)) out.push(`${at}: --${f.name} has an unknown type`);
     if (f.short && !/^[A-Za-z]$/.test(f.short)) out.push(`${at}: -${f.short} must be one letter`);
@@ -208,6 +214,31 @@ export function buildRequest(spec: CommandSpec, parsed: Parsed): { method: strin
     return encodeParam(spec.args?.find((a) => a.to === `path.${key}`)?.name ?? key, v, plus === "+");
   });
   return { method: spec.request.method, path, query, ...(hasBody ? { body } : {}) };
+}
+
+/**
+ * Where a person picks a declared argument from: its fixed values, or the rows of a GET to this same server, with the
+ * arguments already known in the path. Null when it has no list, and is typed.
+ */
+export function choicesSource(arg: CommandArg, args: Record<string, string>, client: Client): ChoicesSource {
+  const c = arg.choices;
+  if (!c) return null;
+  if ("values" in c) return { local: true, load: async () => c.values.map((value) => ({ value })) };
+  return {
+    local: false,
+    load: async () => {
+      const path = `/v1${c.from.replace(/\{([A-Z][A-Z0-9_]*)\}/g, (_, name: string) => encodeURIComponent(args[name] ?? ""))}`;
+      const data: unknown = await (await client.call("GET", path)).json();
+      const seen = new Set<string>();
+      return rowsOf(data, c.rows).flatMap((row) => {
+        const value = renderTemplate(c.value, row);
+        if (!value || seen.has(value)) return [];
+        seen.add(value);
+        const label = c.label ? renderTemplate(c.label, row).trim() : "";
+        return [{ value, ...(label ? { label } : {}) }];
+      });
+    },
+  };
 }
 
 function rowsOf(data: unknown, field: string | undefined): unknown[] {

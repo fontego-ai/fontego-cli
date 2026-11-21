@@ -6,6 +6,8 @@
 // CLI knows when its copy is stale. Commands that work with this machine or a folder (login, sync, watch...) are
 // written in the CLI itself; the server only lists the ones it expects ("builtins").
 
+import { checkTemplate, templateVars } from "./template.ts";
+
 /** Where a value goes in the request: a path parameter, a query parameter or a field of the JSON body. */
 export type CommandTarget = `path.${string}` | `query.${string}` | `body.${string}`;
 
@@ -25,6 +27,49 @@ export interface CommandArg {
    */
   stdin?: boolean;
   description?: string;
+  /** The values it can take: help lists a fixed list, and a person who left it out at a terminal picks one */
+  choices?: CommandChoices;
+}
+
+/**
+ * Where an argument's values come from. `values`: a fixed list. `from`: what this same server answers to a GET on
+ * that path under /v1, which may hold earlier arguments (`/workspaces/{WORKSPACE}/members`); the list is the field
+ * `rows` of the answer (or the whole answer), and each row gives the value with the template `value` and what a
+ * person reads next to it with `label`. It only helps a person pick: the argument is passed the same way, and nothing
+ * is asked of a script or an agent.
+ */
+export type CommandChoices = { values: string[] } | { from: string; rows?: string; value: Template; label?: Template };
+
+/** The arguments a choices path takes: `/workspaces/{WORKSPACE}/members` → WORKSPACE. */
+export const choicesArgs = (from: string): string[] => [...from.matchAll(/\{([A-Z][A-Z0-9_]*)\}/g)].map((m) => m[1]!);
+
+const CHOICES_PATH = /^(\/(?:[A-Za-z0-9_.-]+|\{[A-Z][A-Z0-9_]*\}))+$/;
+const ROW_FIELD = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/;
+
+/** What is wrong with an argument's choices, given the arguments before it; an empty list means nothing. */
+export function checkChoices(c: CommandChoices, before: CommandArg[]): string[] {
+  const out: string[] = [];
+  if ("values" in c) {
+    if (!Array.isArray(c.values) || !c.values.length || c.values.some((v) => typeof v !== "string" || !v.trim())) out.push("choices.values must be a list of words");
+    return out;
+  }
+  if (typeof c.from !== "string" || !CHOICES_PATH.test(c.from) || c.from.split("/").some((seg) => seg === "." || seg === "..")) {
+    out.push(`choices.from "${c.from}" is not a path under /v1 (like /workspaces/{WORKSPACE}/members)`);
+  } else {
+    for (const name of choicesArgs(c.from)) {
+      if (!before.some((b) => b.name === name && !b.optional)) out.push(`{${name}} in ${c.from} is not a required argument that comes before`);
+    }
+  }
+  if (c.rows !== undefined && !ROW_FIELD.test(c.rows)) out.push(`choices.rows "${c.rows}" doesn't name a field`);
+  for (const t of [c.value, ...(c.label !== undefined ? [c.label] : [])]) {
+    if (typeof t !== "string" || !t) {
+      out.push("choices.value and choices.label are templates");
+      continue;
+    }
+    out.push(...checkTemplate(t).map((p) => `choices: ${p}`));
+    if (templateVars(t).length) out.push(`choices: "${t}" reads its row, never a {$variable}`);
+  }
+  return out;
 }
 
 export interface CommandFlag {

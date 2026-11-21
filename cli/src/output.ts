@@ -2,6 +2,7 @@
 // an error comes out (text with a hint, or {"error": {...}} with --json) and the exit codes. The exit codes are
 // written in the guide for agents too (AGENT_INTRO in help.ts): change both together.
 
+import { agentName } from "./agents.ts";
 import { UsageError } from "./args.ts";
 import { ClientError } from "./client.ts";
 import type { SyncReport } from "./sync/engine.ts";
@@ -24,8 +25,32 @@ export const EXIT = {
 
 const BY_STATUS: Record<number, number> = { 0: EXIT.unreachable, 401: EXIT.signedOut, 403: EXIT.forbidden, 404: EXIT.notFound, 409: EXIT.conflict };
 
-/** Whether fontego may ask the person: never with --json (a script or an agent reads it), and only on a terminal. */
-export const canAsk = (json: boolean) => !json && !!process.stdin.isTTY;
+export interface Ttys {
+  stdin: boolean;
+  /** Where questions go, so what a command prints on stdout stays clean */
+  stderr: boolean;
+}
+
+const ttys = (): Ttys => ({ stdin: !!process.stdin.isTTY, stderr: !!process.stderr.isTTY });
+
+const isCI = (env: NodeJS.ProcessEnv) => !["", "0", "false"].includes((env.CI ?? "").trim().toLowerCase());
+
+/**
+ * Why fontego won't ask anything here, or null when it may: only a person at a terminal is asked. Never with --json
+ * (a script or an agent reads the answer), in CI, with FONTEGO_NO_INPUT=1, or when an agent runs it: some agents run
+ * commands in a pseudo-terminal, and would wait for an answer forever.
+ */
+export function whyNotAsked(json: boolean, env: NodeJS.ProcessEnv = process.env, tty: Ttys = ttys()): string | null {
+  if (json) return "--json";
+  if (!tty.stdin || !tty.stderr) return "not a terminal";
+  if (isCI(env)) return "CI";
+  if (env.FONTEGO_NO_INPUT === "1") return "FONTEGO_NO_INPUT=1";
+  const agent = agentName(env);
+  return agent ? `${agent} runs it` : null;
+}
+
+/** Whether fontego may ask the person something (whyNotAsked says why not). */
+export const canAsk = (json: boolean, env: NodeJS.ProcessEnv = process.env, tty: Ttys = ttys()) => whyNotAsked(json, env, tty) === null;
 
 /** Whether a sync round left something undone, which the next one tries again (the report says what). */
 export const incomplete = (r: SyncReport) => r.pending > 0 || r.skipped.length > 0 || r.unreadable.length > 0;

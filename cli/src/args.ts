@@ -2,7 +2,17 @@
 // take a value depends on the command, so the words are resolved first and the rest is read with that command's
 // flags. --json, --help, -h and --instance ALIAS work anywhere.
 
+import type { Connection } from "./connect.ts";
+import type { Choice } from "./picker.ts";
+
 export class UsageError extends Error {}
+
+/** Where a built-in command's argument is picked from when a person leaves it out (ask.ts). */
+export interface ArgPick {
+  /** Read on this machine, with no call to a server: the list can go into an error when nobody can be asked */
+  local?: boolean;
+  load(connect: () => Promise<Connection>): Promise<Choice[]>;
+}
 
 export interface UsageArg {
   name: string;
@@ -10,6 +20,8 @@ export interface UsageArg {
   /** The last argument may take every remaining word */
   rest?: boolean;
   description?: string;
+  /** Left out at a terminal, a person picks it from this list */
+  pick?: ArgPick;
 }
 
 export interface UsageFlag {
@@ -101,10 +113,15 @@ export interface Parsed {
   args: Record<string, string>;
   /** Flag values by flag name; only flags that were given */
   flags: Record<string, string | number | boolean>;
+  /** Required arguments left out, when the caller asks for them instead of an error (allowMissing) */
+  missing?: string[];
 }
 
-/** Reads what follows the command's words, with the command's own flags. */
-export function parseCommand(u: Usage, tokens: string[]): Parsed {
+/**
+ * Reads what follows the command's words, with the command's own flags. A required argument left out is a usage
+ * error, or, with allowMissing, goes into `missing` (so a person can be asked for it).
+ */
+export function parseCommand(u: Usage, tokens: string[], opts: { allowMissing?: boolean } = {}): Parsed {
   const positional: string[] = [];
   const flags: Record<string, string | number | boolean> = {};
   const byName = new Map((u.flags ?? []).map((f) => [f.name, f]));
@@ -143,11 +160,12 @@ export function parseCommand(u: Usage, tokens: string[]): Parsed {
   if (specs.at(-1)?.rest && positional.length > specs.length) positional.splice(specs.length - 1, Infinity, positional.slice(specs.length - 1).join(" "));
   if (positional.length > specs.length) throw new UsageError(`Too many arguments: ${usageLine(u)}`);
   const args: Record<string, string> = {};
+  const missing: string[] = [];
   specs.forEach((a, i) => {
     const v = positional[i];
-    if (v === undefined) {
-      if (!a.optional) throw new UsageError(usageLine(u));
-    } else args[a.name] = v;
+    if (v !== undefined) args[a.name] = v;
+    else if (!a.optional) missing.push(a.name);
   });
-  return { args, flags };
+  if (missing.length && !opts.allowMissing) throw new UsageError(usageLine(u));
+  return { args, flags, ...(missing.length ? { missing } : {}) };
 }
