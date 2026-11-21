@@ -38,8 +38,8 @@ async function fontego(args: string[], opts: { env?: Record<string, string>; cwd
 }
 
 /** Starts fontego, waits for its first line on stdout (the "waiting" one), and hands back the rest for later. */
-async function startWaiting(args: string[]) {
-  const proc = Bun.spawn(["bun", MAIN, ...args], { env: env(), stdout: "pipe", stderr: "pipe" });
+async function startWaiting(args: string[], extra: Record<string, string> = {}) {
+  const proc = Bun.spawn(["bun", MAIN, ...args], { env: env(extra), stdout: "pipe", stderr: "pipe" });
   const reader = proc.stdout.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -59,7 +59,22 @@ async function startWaiting(args: string[]) {
     const lines = buf.trim().split("\n");
     return { code, last: JSON.parse(lines.at(-1)!), err: await new Response(proc.stderr).text() };
   };
-  return { first, finish };
+  return { first, finish, proc };
+}
+
+/** Something that answers like a Fontego and notes the Authorization of every request it gets. */
+function fakeFontego() {
+  const seen: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req) {
+      seen.push(`${new URL(req.url).pathname} ${req.headers.get("authorization") ?? ""}`);
+      if (new URL(req.url).pathname === "/v1/instance") return Response.json({ software: "fontego", name: "Elsewhere", version: "1" });
+      return Response.json({ error: { code: "nope", message: "nope" } }, { status: 404 });
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, seen, stop: () => server.stop(true) };
 }
 
 const credentialsFile = () => join(home, "fontego", "credentials.json");
@@ -300,5 +315,33 @@ describe("the addresses it signs in to", () => {
     const ok = await fontego(["whoami", "--json"], { env: { FONTEGO_URL: remote, FONTEGO_TOKEN: token, FONTEGO_ALLOW_HTTP: "1" } });
     expect(JSON.parse(ok.out).user.email).toBe("fay@example.org");
     expect(JSON.parse((await fontego(["whoami", "--json"], { env: { FONTEGO_URL: `https://x@${s.url.slice(7)}`, FONTEGO_TOKEN: token } })).out).error.code).toBe("bad_url");
+  });
+});
+
+describe("FONTEGO_TOKEN", () => {
+  test("signing in to another Fontego never sends the token exported for FONTEGO_URL", async () => {
+    const elsewhere = fakeFontego();
+    const own = tempDir("fontego-cli-envtoken-");
+    const { first, proc } = await startWaiting(["login", elsewhere.url, "--json"], {
+      XDG_CONFIG_HOME: own,
+      XDG_CACHE_HOME: own,
+      FONTEGO_URL: s.url,
+      FONTEGO_TOKEN: "fontego_pt_work_secret",
+    });
+    // It signs in there as anyone would, through the browser
+    expect(first.status).toBe("waiting");
+    proc.kill();
+    await proc.exited;
+    expect(elsewhere.seen.join("\n")).not.toContain("fontego_pt_work_secret");
+    elsewhere.stop();
+    rmSync(own, { recursive: true, force: true });
+  });
+
+  test("with FONTEGO_URL naming the same Fontego, it is the token login uses", async () => {
+    const own = tempDir("fontego-cli-envtoken-");
+    const { token } = await s.person("gil@example.org");
+    const r = await fontego(["login", `${s.url}/`, "--json"], { env: { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own, FONTEGO_URL: s.url, FONTEGO_TOKEN: token } });
+    expect(JSON.parse(r.out)).toMatchObject({ ok: true, credential: "token", user: { email: "gil@example.org" } });
+    rmSync(own, { recursive: true, force: true });
   });
 });

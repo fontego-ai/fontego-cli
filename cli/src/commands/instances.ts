@@ -15,6 +15,7 @@ import {
   listInstances,
   plainHttp,
   rememberStore,
+  sameInstance,
   renameInstance,
   saveInstance,
   setDefault,
@@ -79,6 +80,11 @@ async function loginTarget(rc: RunContext): Promise<string> {
   return picked === another ? askText("Its address (URL)") : picked.value;
 }
 
+/** FONTEGO_TOKEN, when FONTEGO_URL says it is this Fontego's: a token exported for one server never goes to another. */
+function envToken(url: string, env = process.env): string | undefined {
+  return env.FONTEGO_TOKEN && env.FONTEGO_URL && sameInstance(env.FONTEGO_URL, url) ? env.FONTEGO_TOKEN : undefined;
+}
+
 async function signOut(instance: Instance, store: CredentialStore) {
   const credential = await store.get(instance.url);
   if (credential?.type === "session") await revokeSession(instance.url, credential.refreshToken);
@@ -96,7 +102,7 @@ export const instanceCommands: Builtin[] = [
     args: [{ name: "TARGET", optional: true, description: "An alias you already have, or the address of a Fontego" }],
     flags: [
       { name: "device", type: "boolean", description: "Show a code to type in a browser on another device (no browser here)" },
-      { name: "token", type: "string", value: "TOKEN", description: "Sign in with a token instead, for scripts and CI (or set FONTEGO_TOKEN)" },
+      { name: "token", type: "string", value: "TOKEN", description: "Sign in with a token instead, for scripts and CI (FONTEGO_TOKEN counts only when FONTEGO_URL is this Fontego)" },
       { name: "alias", type: "string", value: "ALIAS", description: "The short name to use for this Fontego (default: from its name)" },
       { name: "allow-http", type: "boolean", description: "Accept a plain http:// address on another machine, remembered for it: passwords and tokens go unencrypted" },
     ],
@@ -121,7 +127,7 @@ export const instanceCommands: Builtin[] = [
 
       let cred: SavedCredential;
       let email: string;
-      const token = (rc.parsed.flags.token as string | undefined) ?? process.env.FONTEGO_TOKEN;
+      const token = (rc.parsed.flags.token as string | undefined) ?? envToken(url);
       if (token) {
         email = (await new Client(url, token).me()).user.email;
         cred = { type: "token", token };
