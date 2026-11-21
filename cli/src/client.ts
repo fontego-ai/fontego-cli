@@ -42,6 +42,9 @@ export class Client {
   private readonly auth: AuthProvider;
   /** Which agent runs this CLI (agents.ts): the server's log then says "Ana, from claude-code". A label, not a guarantee. */
   private readonly agent = agentName();
+  /** Where every request goes: this instance's origin, under its path's /v1/ */
+  private readonly origin: string;
+  private readonly apiPath: string;
 
   constructor(
     readonly baseUrl: string,
@@ -49,6 +52,26 @@ export class Client {
     private readonly userAgent = USER_AGENT,
   ) {
     this.auth = typeof auth === "string" ? { token: async () => auth } : auth;
+    const base = new URL(baseUrl);
+    this.origin = base.origin;
+    this.apiPath = `${base.pathname.replace(/\/+$/, "")}/v1/`;
+  }
+
+  /**
+   * The URL of an API path, which must stay on this instance and under its /v1/: the token goes with it, so a path
+   * from a declared command such as `@other:8740/v1/x` or `/v1/../x` is refused instead of sent.
+   */
+  private urlOf(path: string): string {
+    let u: URL | null = null;
+    try {
+      u = new URL(this.baseUrl.replace(/\/+$/, "") + path);
+    } catch {
+      // not a URL at all
+    }
+    if (!u || u.origin !== this.origin || u.username || u.password || !u.pathname.startsWith(this.apiPath)) {
+      throw new ClientError(400, "bad_path", `fontego only sends requests to ${this.baseUrl}/v1/, and this one would go to ${path}.`, "A command from this server asks for something else: tell its admin.");
+    }
+    return u.href;
   }
 
   /** Version of the server's commands, from the last answer that carried it */
@@ -64,9 +87,10 @@ export class Client {
   }
 
   private async request(method: string, path: string, body?: unknown, signal?: AbortSignal, retried = false): Promise<Response> {
+    const url = this.urlOf(path);
     let res: Response;
     try {
-      res = await fetch(this.baseUrl.replace(/\/+$/, "") + path, {
+      res = await fetch(url, {
         method,
         headers: await this.headers(body !== undefined ? { "content-type": "application/json" } : {}),
         body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -162,6 +186,7 @@ export class Client {
    * the line is taken as dead (a network that dropped without telling) and this throws, so the caller connects again.
    */
   private async stream(path: string, onEvent: (type: string, data: unknown) => void, signal?: AbortSignal): Promise<void> {
+    const url = this.urlOf(path);
     const local = new AbortController();
     const stop = () => local.abort();
     signal?.addEventListener("abort", stop, { once: true });
@@ -180,7 +205,7 @@ export class Client {
     try {
       const open = async () => {
         try {
-          return await fetch(`${this.baseUrl.replace(/\/+$/, "")}${path}`, { headers: await this.headers({ accept: "text/event-stream" }), signal: local.signal });
+          return await fetch(url, { headers: await this.headers({ accept: "text/event-stream" }), signal: local.signal });
         } catch (e) {
           if (signal?.aborted) return null;
           throw new ClientError(0, "unreachable", `Can't reach ${this.baseUrl}: ${(e as Error).message}`, "Check the URL and that the server is running.");

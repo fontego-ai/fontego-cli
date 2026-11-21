@@ -1,10 +1,11 @@
-// What keeps a credential where it belongs, tested piece by piece inside this process: the addresses fontego accepts
-// and the private files of this machine. The sign-in tests (login.test.ts) check the same rules through the commands.
+// What keeps a credential where it belongs, tested piece by piece inside this process: the addresses fontego accepts,
+// where the client sends a request, and the private files of this machine. The sign-in tests (login.test.ts) check
+// the same rules through the commands.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ClientError } from "../src/client.ts";
+import { Client, ClientError } from "../src/client.ts";
 import { credentialStore, instanceUrl, isLoopback, saveInstance, sameInstance } from "../src/config.ts";
 import { tempDir } from "./server.ts";
 
@@ -17,6 +18,27 @@ const scratch = (prefix: string) => {
 afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
+
+/** A server that notes every request it gets ("METHOD /path authorization body") and answers with `answer`. */
+function recorder(answer: (req: Request) => Response | Promise<Response> = () => Response.json({ ok: true })) {
+  const seen: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      seen.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("authorization") ?? ""} ${await req.text()}`.trim());
+      return answer(req);
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, port: server.port, seen, stop: () => server.stop(true) };
+}
+
+/** The error code of a promise that should fail */
+const failsWith = (p: Promise<unknown>) =>
+  p.then(
+    () => "no error",
+    (e) => (e instanceof ClientError ? e.code : String(e)),
+  );
 
 const instance = (url: string) => ({ alias: "here", url, name: "Here", email: null, addedAt: new Date().toISOString() });
 
@@ -58,6 +80,34 @@ describe("the addresses fontego accepts", () => {
     expect(sameInstance("https://Fontego.example.org/", "https://fontego.example.org")).toBe(true);
     expect(sameInstance("https://fontego.example.org", "https://fontego.example.org.evil.example")).toBe(false);
     expect(sameInstance("not an address", "not an address")).toBe(false);
+  });
+});
+
+describe("where the client sends a request", () => {
+  test("only to the instance's origin, under its /v1/: a path can't take the token to another server", async () => {
+    const instance = recorder();
+    const elsewhere = recorder();
+    const client = new Client(instance.url, "fontego_at_secret");
+    expect(await failsWith(client.call("GET", `@127.0.0.1:${elsewhere.port}/v1/x`))).toBe("bad_path");
+    expect(await failsWith(client.call("GET", "/v1/../admin"))).toBe("bad_path");
+    expect(await failsWith(client.call("GET", "/v1/%2e%2e/admin"))).toBe("bad_path");
+    expect(await failsWith(client.call("GET", "v1/x"))).toBe("bad_path");
+    expect(elsewhere.seen).toEqual([]);
+    expect(instance.seen).toEqual([]);
+    expect((await client.call("GET", "/v1/workspaces")).status).toBe(200);
+    expect(instance.seen).toEqual(["GET /v1/workspaces Bearer fontego_at_secret"]);
+    instance.stop();
+    elsewhere.stop();
+  });
+
+  test("an instance under a path keeps its requests under that path", async () => {
+    const server = recorder();
+    const client = new Client(`${server.url}/team`, "fontego_at_secret");
+    expect(await failsWith(client.call("GET", "/../v1/x"))).toBe("bad_path");
+    expect(server.seen).toEqual([]);
+    await client.call("GET", "/v1/x");
+    expect(server.seen).toEqual(["GET /team/v1/x Bearer fontego_at_secret"]);
+    server.stop();
   });
 });
 
