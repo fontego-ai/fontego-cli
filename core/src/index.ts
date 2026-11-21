@@ -1,5 +1,6 @@
 export * from "./paths.ts";
 export * from "./schemas.ts";
+export * from "./photo.ts";
 export * from "./preferences.ts";
 export * from "./icons.ts";
 export * from "./tags.ts";

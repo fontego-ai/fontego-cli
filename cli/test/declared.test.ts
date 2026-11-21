@@ -158,12 +158,14 @@ describe("a flag that sends a file, or null", () => {
         { name: "a", type: "boolean", to: "body.a", file: { maxBytes: 1 }, description: "" },
         { name: "b", type: "string", to: "query.b", unset: "none", description: "" },
         { name: "c", type: "string", to: "body.c", file: { maxBytes: 0 }, description: "" },
+        { name: "d", type: "string", to: "body.d", unset: "\u001b[2J", value: "\u001b[2J", description: "" },
       ],
     };
     expect(checkCommand(bad, [])).toEqual([
       "fontego account set: --a names a file, so it must be a string that goes into the body, with a size above 0",
-      "fontego account set: --b can send null only as a string flag into the body, with a word for it",
+      "fontego account set: --b can send null only as a string flag into the body, with a plain lowercase word for it",
       "fontego account set: --c names a file, so it must be a string that goes into the body, with a size above 0",
+      "fontego account set: --d can send null only as a string flag into the body, with a plain lowercase word for it",
     ]);
     expect(checkCommand(spec, [])).toEqual([]);
   });

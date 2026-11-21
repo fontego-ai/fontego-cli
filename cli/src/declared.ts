@@ -119,6 +119,8 @@ const REQUEST_PATH = /^\/v1(\/(?!\.{1,2}(\/|$))([A-Za-z0-9._~-]+|\{\+?[A-Za-z0-9
 /** An argument is shown in usage lines and asked for by name (a secret), so it is a plain uppercase word */
 const ARG_NAME = /^[A-Z][A-Z0-9_]*$/;
 const FLAG_NAME = /^[a-z][a-z0-9-]*$/;
+/** The word that sends null: --photo none */
+const UNSET_WORD = /^[a-z][a-z0-9-]{0,19}$/;
 const COMMAND_NAME = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$/;
 /** What a command says about itself is shown in help: one line each, so it can't pose as more lines of it */
 const ONE_LINE = /^[^\u0000-\u001f\u007f-\u009f]*$/;
@@ -145,7 +147,8 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   }
   for (const a of args) if (!ARG_NAME.test(a.name)) out.push(`${at}: "${a.name}" isn't a plain argument name`);
   for (const f of flags) if (!FLAG_NAME.test(f.name)) out.push(`${at}: "--${f.name}" isn't a plain option name`);
-  for (const f of flags) if (f.value !== undefined && !ARG_NAME.test(f.value)) out.push(`${at}: --${f.name} ${f.value} isn't a plain value name`);
+  // A flag whose word sends null may show that word as its value (--photo none)
+  for (const f of flags) if (f.value !== undefined && f.value !== f.unset && !ARG_NAME.test(f.value)) out.push(`${at}: --${f.name} ${f.value} isn't a plain value name`);
   const said = [spec.summary, spec.group, ...args.map((a) => a.description), ...flags.map((f) => f.description)];
   if (said.some((t) => t !== undefined && (typeof t !== "string" || !ONE_LINE.test(t)))) out.push(`${at}: its summary, group and descriptions must be one line each`);
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
@@ -159,8 +162,8 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
     if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || !(f.file.maxBytes > 0))) {
       out.push(`${at}: --${f.name} names a file, so it must be a string that goes into the body, with a size above 0`);
     }
-    if (f.unset !== undefined && (typeof f.unset !== "string" || !f.unset || f.type !== "string" || !f.to.startsWith("body."))) {
-      out.push(`${at}: --${f.name} can send null only as a string flag into the body, with a word for it`);
+    if (f.unset !== undefined && (typeof f.unset !== "string" || !UNSET_WORD.test(f.unset) || f.type !== "string" || !f.to.startsWith("body."))) {
+      out.push(`${at}: --${f.name} can send null only as a string flag into the body, with a plain lowercase word for it`);
     }
   }
   if (!["table", "lines", "record", "message", "raw"].includes(spec.output.kind)) out.push(`${at}: unknown output "${spec.output.kind}"`);

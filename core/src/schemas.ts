@@ -136,13 +136,6 @@ const PersonName = z
   .max(200, "use at most 200 characters")
   .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters");
 
-/**
- * What a person's photo may be when it comes in, the same for the server, the web and the CLI: a PNG, JPEG or WebP
- * (known by its bytes, never by a name or a header; never an SVG, which can carry code), of at most `maxBytes` and
- * `maxPixels`. The server keeps the square in the middle, `side` pixels a side, as WebP, with nothing else the file
- * carried (where it was taken, the camera...).
- */
-export const PHOTO_LIMITS = { maxBytes: 20 * 1024 * 1024, maxPixels: 50_000_000, side: 256 } as const;
 
 /**
  * A file's bytes in JSON: base64 with its padding. Checked as characters plus the length, never with groups, which a
