@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { blobHash } from "@fontego/core";
@@ -8,7 +8,7 @@ import { Client, ClientError } from "../src/client.ts";
 import { localStatus, SyncEngine } from "../src/sync/engine.ts";
 import { isConflictCopy } from "../src/sync/local.ts";
 import { loadState, newState, saveState } from "../src/sync/state.ts";
-import { acquireLock, LockedError, Watcher } from "../src/sync/watch.ts";
+import { acquireLock, LockedError, removeIfHeldBy, Watcher } from "../src/sync/watch.ts";
 
 let s: TestServer;
 let ana: { token: string; id: number };
@@ -221,6 +221,21 @@ describe("sync between two copies", () => {
     expect(JSON.parse(readFileSync(lock, "utf8")).pid).toBe(process.pid);
     await mine();
     expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a process that stalled after judging a lock stale never deletes the newer one that took its place", async () => {
+    const lock = join(A.root, ".fontego/lock");
+    const gone = { pid: Bun.spawnSync(["true"]).pid, host: hostname() };
+    // It judged `gone`'s lock stale, then stalled; meanwhile another process cleared it and took the lock.
+    const newer = { pid: process.ppid, host: hostname(), command: "fontego watch" };
+    writeFileSync(lock, JSON.stringify(newer));
+    await removeIfHeldBy(lock, gone);
+    expect(JSON.parse(readFileSync(lock, "utf8"))).toEqual(newer);
+    // The one it judged is still removed when it still is there, and nothing is left beside it.
+    writeFileSync(lock, JSON.stringify(gone));
+    await removeIfHeldBy(lock, gone);
+    expect(existsSync(lock)).toBe(false);
+    expect(readdirSync(join(A.root, ".fontego")).filter((n) => n.startsWith("lock"))).toEqual([]);
   });
 
   test("of several processes at once, never two inside, a lock left behind included", async () => {

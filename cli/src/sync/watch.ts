@@ -4,7 +4,7 @@
 
 import { watch as fsWatch, type FSWatcher } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { link, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { ClientError, type Client } from "../client.ts";
@@ -35,7 +35,7 @@ function alive(pid: number): boolean {
 export class LockedError extends Error {}
 
 /** Who holds a folder's lock. */
-interface Holder {
+export interface Holder {
   pid: number;
   host: string;
   command?: string;
@@ -97,6 +97,37 @@ async function create(path: string, text: string): Promise<boolean> {
   }
 }
 
+/**
+ * Removes a lock file only if it still is `holder`'s. It is moved aside in one step and read there, so a lock somebody
+ * made in its place meanwhile (while this process stalled after judging the old one stale, say) is never deleted: it
+ * goes back where it was, with link, which never overwrites. Only a lock made in that instant, between the move and
+ * the link, could still meet another one; then the one moved aside is dropped, and its holder's release, which checks
+ * the holder, leaves the other be.
+ */
+export async function removeIfHeldBy(path: string, holder: Holder): Promise<void> {
+  const aside = `${path}.${process.pid}-${randomBytes(4).toString("hex")}.stale`;
+  try {
+    await rename(path, aside);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return; // cleared meanwhile
+    throw e;
+  }
+  try {
+    const now = await holderOf(aside);
+    if (now && sameHolder(now, holder)) return;
+    try {
+      await link(aside, path);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (code === "EEXIST" || !["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK"].includes(code)) return;
+      // No hard links here: put it back by name, if the place is still free.
+      if (!(await lstat(path).then(() => true, () => false))) await rename(aside, path);
+    }
+  } finally {
+    await rm(aside, { force: true });
+  }
+}
+
 const ageOf = (path: string) => stat(path).then((st) => Date.now() - st.mtimeMs, () => 0);
 const pause = () => new Promise((r) => setTimeout(r, 10 + Math.random() * 20));
 
@@ -108,8 +139,9 @@ const TAKEOVER_STALE_MS = 10_000;
  * the first round of clone and link). The lock is made in one step (O_EXCL), so of two processes only one gets it.
  * One left by a process that is gone is cleared only under a second, short lock (lock.takeover, made the same way)
  * and after checking, under it, that it still is that one: nobody can put a new lock in its place meanwhile, because
- * nobody else can clear it. One of a live process, or of another machine (a shared folder), is a LockedError. The
- * release removes the lock only while it is still this process's.
+ * nobody else can clear it. A takeover left for more than 10 s is cleared too, and since its process may only have
+ * stalled, every removal (the lock, a takeover, the release) checks the file it moves aside (removeIfHeldBy). One of
+ * a live process, or of another machine (a shared folder), is a LockedError.
  */
 export async function acquireLock(root: string, command = "fontego"): Promise<() => Promise<void>> {
   const dir = join(root, STATE_DIR);
@@ -120,10 +152,7 @@ export async function acquireLock(root: string, command = "fontego"): Promise<()
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     if (await create(path, JSON.stringify(me))) {
-      return async () => {
-        const h = await holderOf(path);
-        if (h && sameHolder(h, me)) await rm(path, { force: true });
-      };
+      return () => removeIfHeldBy(path, me);
     }
     const holder = await holderOf(path);
     if (!holder) continue; // released meanwhile
@@ -141,15 +170,16 @@ export async function acquireLock(root: string, command = "fontego"): Promise<()
     // Left by a process that is gone: clear it under the takeover lock, if it still is that one, and try again.
     if (await create(takeover, JSON.stringify(me))) {
       try {
-        const now = await holderOf(path);
-        if (now && sameHolder(now, holder)) await rm(path, { force: true });
+        await removeIfHeldBy(path, holder);
       } finally {
-        await rm(takeover, { force: true });
+        await removeIfHeldBy(takeover, me);
       }
       continue;
     }
-    // Someone else is clearing it. If that takeover was left by a process that died midway, clear it too.
-    if ((await ageOf(takeover)) > TAKEOVER_STALE_MS) await rm(takeover, { force: true });
+    // Someone else is clearing it. If that takeover was left by a process that died midway (or stalled past the
+    // limit), clear it too, if it still is that one.
+    const clearing = await holderOf(takeover);
+    if (clearing && (await ageOf(takeover)) > TAKEOVER_STALE_MS) await removeIfHeldBy(takeover, clearing);
     await pause();
   }
   throw new LockedError("Other fontego processes keep taking this folder's lock. Try again in a moment.");
