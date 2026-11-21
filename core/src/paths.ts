@@ -91,30 +91,37 @@ export function normalizePath(input: unknown): string {
  * Windows reads as a separator or a drive. Throws a PathError (`path_escapes` or `invalid_symlink`) that says why not.
  */
 export function symlinkTarget(path: string, bytes: Uint8Array): string {
-  const target = exactText(bytes);
-  const refuse = (code: string, why: string): never => {
-    throw new PathError(code, `${path} is a symlink ${why}.`, "A symlink in a workspace points to a path relative to its folder, inside the workspace.");
-  };
-  if (!target) return refuse("invalid_symlink", target === null ? "whose target isn't UTF-8" : "with no target");
-  if (CONTROL.test(target) || target.includes("\\") || target.includes(":")) {
-    return refuse("invalid_symlink", "whose target has a backslash, a colon or a control character");
+  const problem = symlinkProblem(path, bytes);
+  if (problem) {
+    throw new PathError(problem.code, `${path} is ${problem.why}.`, "A symlink in a workspace points to a path relative to its folder, inside the workspace.");
   }
-  if (target.startsWith("/")) return refuse("invalid_symlink", "to an absolute path");
+  return exactText(bytes)!;
+}
+
+/** What is wrong with the symlink at `path`, from its bytes, by symlinkTarget's rule: its code and why in words; or null. */
+export function symlinkProblem(path: string, bytes: Uint8Array): { code: string; why: string } | null {
+  const target = exactText(bytes);
+  const bad = (code: string, why: string) => ({ code, why: `a symlink ${why}` });
+  if (!target) return bad("invalid_symlink", target === null ? "whose target isn't UTF-8" : "with no target");
+  if (CONTROL.test(target) || target.includes("\\") || target.includes(":")) {
+    return bad("invalid_symlink", "whose target has a backslash, a colon or a control character");
+  }
+  if (target.startsWith("/")) return bad("invalid_symlink", "to an absolute path");
   const names = target.replace(/(.)\/$/, "$1").split("/");
   let up = 0;
   while (names[up] === "..") up++;
-  if (up > path.split("/").length - 1) return refuse("path_escapes", "that points outside the workspace");
+  if (up > path.split("/").length - 1) return bad("path_escapes", "that points outside the workspace");
   const down = names.slice(up).filter((n) => n !== ".");
-  if (down.includes("..")) return refuse("path_escapes", "that goes back up (..) after a name");
+  if (down.includes("..")) return bad("path_escapes", "that goes back up (..) after a name");
   if (down.length) {
     try {
       normalizePath(down.join("/"));
     } catch (e) {
-      if (e instanceof PathError) return refuse(e.code === "reserved_path" ? "reserved_path" : "invalid_symlink", `to a path a workspace can't hold (${e.message})`);
-      throw e;
+      if (!(e instanceof PathError)) throw e;
+      return bad(e.code === "reserved_path" ? "reserved_path" : "invalid_symlink", `to a path a workspace can't hold (${e.message})`);
     }
   }
-  return target;
+  return null;
 }
 
 /**

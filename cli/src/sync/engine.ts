@@ -40,6 +40,8 @@ export interface SyncReport {
    * them wait: the copy stays at its last full step (state.head) until they can be read again.
    */
   unreadable: Unreadable[];
+  /** Symlinks here that could point outside the folder: not sent (nor their target), and not taken for deleted */
+  unsentLinks: Array<{ path: string; reason: string }>;
   /**
    * Local changes not sent in this round: with read-only access (readOnly), or because the round gave up (the server
    * kept refusing without saying which file). The next round tries them again.
@@ -130,7 +132,7 @@ interface Outgoing {
 }
 
 function emptyReport(): SyncReport {
-  return { head: null, pulled: [], pushed: [], conflicts: [], skipped: [], invalid: [], unreadable: [], pending: 0, readOnly: false };
+  return { head: null, pulled: [], pushed: [], conflicts: [], skipped: [], invalid: [], unreadable: [], unsentLinks: [], pending: 0, readOnly: false };
 }
 
 export class SyncEngine {
@@ -334,12 +336,15 @@ export class SyncEngine {
     const scanned = await scan(this.root, await loadIgnoreRules(this.root), this.state.files);
     report.invalid = scanned.invalid;
     report.unreadable = scanned.unreadable;
+    report.unsentLinks = scanned.unsentLinks;
     const local = scanned.files;
+    const unsent = new Set(scanned.unsentLinks.map((u) => u.path));
 
     const todo: Outgoing[] = [];
     const paths = new Set([...local.keys(), ...Object.keys(this.state.files)]);
     for (const path of [...paths].sort()) {
       if (insideUnreadable(scanned.unreadable, path)) continue; // unknown here: neither sent nor deleted
+      if (unsent.has(path)) continue; // a link that can't go up as it is: neither sent nor deleted
       const l = local.get(path);
       const s = own(this.state.files, path);
       if (same(l, s)) continue;
@@ -535,8 +540,9 @@ export async function localStatus(root: string, state: SyncState) {
     if (!s) added.push(path);
     else if (!same(l, s)) modified.push(path);
   }
+  const unsent = new Set(scanned.unsentLinks.map((u) => u.path));
   for (const path of Object.keys(state.files)) {
-    if (!scanned.files.has(path) && !insideUnreadable(scanned.unreadable, path)) deleted.push(path);
+    if (!scanned.files.has(path) && !insideUnreadable(scanned.unreadable, path) && !unsent.has(path)) deleted.push(path);
   }
   return {
     added: added.sort(),
@@ -545,6 +551,8 @@ export async function localStatus(root: string, state: SyncState) {
     invalid: scanned.invalid,
     /** Folders and files that couldn't be read: nothing under them counts as deleted */
     unreadable: scanned.unreadable,
+    /** Symlinks here that could point outside the folder: never sent */
+    unsentLinks: scanned.unsentLinks,
     skipped: state.skipped,
     /** New files and folders the ignore rules keep here */
     ignored: scanned.ignored,

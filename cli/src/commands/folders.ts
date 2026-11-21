@@ -25,6 +25,7 @@ function describeSyncIssues(r: SyncReport): string[] {
   for (const s of r.skipped) lines.push(`skipped ${s.path}: ${s.reason}`);
   for (const p of r.invalid) lines.push(`skipped ${p}: this name can't be synced`);
   for (const u of r.unreadable) lines.push(`can't read ${u.path} (${u.reason}): left as it was, nothing in it sent or deleted`);
+  for (const l of r.unsentLinks) lines.push(`not sent ${l.path}: ${l.reason}`);
   if (r.readOnly && r.pending) lines.push(`${r.pending} local change(s) not sent: you can only read this workspace.`);
   else if (r.pending) lines.push(`${r.pending} local change(s) not sent yet: run fontego sync again to send them.`);
   return lines;
@@ -157,6 +158,7 @@ export const folderCommands: Builtin[] = [
           ...st.modified.map((p) => `modified  ${p}`),
           ...st.deleted.map((p) => `deleted   ${p}`),
           ...st.unreadable.map((u) => `unreadable ${u.path} (${u.reason}): left as it was, nothing in it counts as deleted`),
+          ...st.unsentLinks.map((l) => `not sent  ${l.path}: ${l.reason}`),
           ...Object.entries(st.skipped).map(
             ([p, s]) => `skipped   ${p}: ${s.reason}${s.retryAt ? ` (sent again after ${new Date(s.retryAt).toLocaleString()}, or once it changes)` : ""}`,
           ),

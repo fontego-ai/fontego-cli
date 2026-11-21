@@ -747,3 +747,33 @@ describe("one file that can't be here never stops sync", () => {
     expect((await s.call(ana.token, "GET", "/v1/workspaces/clash/files/mine.md")).data).toBe("Bea's new work\n");
   });
 });
+
+describe("a symlink here that could point outside the folder", () => {
+  test("isn't sent, nor its target, and the rest goes up; one the workspace has isn't taken for deleted", async () => {
+    await s.call(s.adminToken, "POST", "/v1/workspaces", { slug: "links" });
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/links/members/ana@example.org", { role: "editor" });
+    const A = await copy(ana.token, "Ana", "links");
+    write(A, "guide.md", "# Guide\n");
+    symlinkSync("guide.md", join(A.root, "start.md"));
+    await A.sync();
+    symlinkSync("/tmp", join(A.root, "downloads"));
+    symlinkSync("a/../..", join(A.root, "up"));
+    unlinkSync(join(A.root, "start.md"));
+    symlinkSync("/home/ana/elsewhere.md", join(A.root, "start.md")); // was in the workspace
+    write(A, "report.md", "work\n");
+    for (let round = 1; round <= 2; round++) {
+      const r = await A.sync();
+      expect(r.unsentLinks.map((l) => l.path)).toEqual(["downloads", "start.md", "up"]);
+      expect(r.unsentLinks[0]!.reason).toBe("it is a symlink to an absolute path, so it isn't sent");
+      expect(incompleteFree(r)).toBe(true);
+    }
+    const tree = (await s.call(ana.token, "GET", "/v1/workspaces/links/tree?recursive=1")).data.entries.map((e: any) => e.path).sort();
+    expect(tree).toEqual(["guide.md", "report.md", "start.md"]);
+    expect((await s.call(ana.token, "GET", "/v1/workspaces/links/files/start.md")).data).toBe("guide.md");
+    const st = await localStatus(A.root, A.state);
+    expect([st.deleted, st.unsentLinks.map((l) => l.path)]).toEqual([[], ["downloads", "start.md", "up"]]);
+  });
+});
+
+/** A round that went through: nothing refused, nothing waiting. */
+const incompleteFree = (r: { skipped: unknown[]; pending: number; unreadable: unknown[] }) => !r.skipped.length && !r.pending && !r.unreadable.length;

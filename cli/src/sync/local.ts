@@ -1,6 +1,6 @@
 // The local side of sync: scanning the folder, reading and writing files safely.
 
-import { blobHash, MAX_PATH, MAX_SEGMENT, normalizePath, PathError, symlinkTarget, windowsNameProblem } from "@fontego/core";
+import { blobHash, MAX_PATH, MAX_SEGMENT, normalizePath, PathError, symlinkProblem, symlinkTarget, windowsNameProblem } from "@fontego/core";
 import { link, lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
@@ -84,6 +84,11 @@ export interface ScanResult {
   trackedIgnored: Array<{ path: string } & IgnoreMatch>;
   /** Folders and files that couldn't be read: left as they were, never taken for deleted */
   unreadable: Unreadable[];
+  /**
+   * Symlinks here that could point outside the folder (an absolute target, `..` after a name...): never sent, nor their
+   * target, which may name a folder of this machine. Not taken for deleted either.
+   */
+  unsentLinks: Array<{ path: string; reason: string }>;
 }
 
 /** Whether a folder holds a file the workspace doesn't have (junk aside). */
@@ -118,18 +123,25 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
   const ignored: string[] = [];
   const trackedIgnored: ScanResult["trackedIgnored"] = [];
   const unreadable: Unreadable[] = [];
+  const unsentLinks: ScanResult["unsentLinks"] = [];
   const trackedPaths = Object.keys(tracked);
 
   const add = async (path: string, match?: IgnoreMatch) => {
     const key = path.normalize("NFC");
     let entry;
+    let link: string | null = null;
     try {
       entry = await readEntry(root, path, own(tracked, key));
+      if (entry?.mode === "120000") link = await linkProblem(root, path, key);
     } catch (e) {
       unreadable.push({ path: key, reason: reasonOf(e) });
       return;
     }
     if (!entry) return;
+    if (link) {
+      unsentLinks.push({ path: key, reason: link });
+      return;
+    }
     files.set(key, entry);
     if (match?.ignored) trackedIgnored.push({ path: key, ...match });
   };
@@ -213,7 +225,14 @@ export async function scan(root: string, rules: IgnoreRules, tracked: Record<str
     ignored: ignored.sort(),
     trackedIgnored: trackedIgnored.sort((a, b) => a.path.localeCompare(b.path)),
     unreadable: unreadable.sort((a, b) => a.path.localeCompare(b.path)),
+    unsentLinks: unsentLinks.sort((a, b) => a.path.localeCompare(b.path)),
   };
+}
+
+/** Why a symlink here can't go up as it is (symlinkProblem, the rule every link in a workspace follows), or null. */
+async function linkProblem(root: string, path: string, key: string): Promise<string | null> {
+  const problem = symlinkProblem(key, new TextEncoder().encode(toPosix(await readlink(join(root, path)))));
+  return problem ? `it is ${problem.why}, so it isn't sent` : null;
 }
 
 /**
