@@ -10,8 +10,8 @@
 
 import type { DeviceAuthorization, InstanceInfo, TokenResponse } from "@fontego/core";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ClientError, refuseRedirect, type AuthProvider } from "./client.ts";
@@ -254,16 +254,80 @@ const forwardingPage = (link: string) =>
   `<script>location.replace(${JSON.stringify(link).replace(/</g, "\\u003c")})</script>` +
   `<p><a href="${escapeHtml(link)}">Continue</a></p>`;
 
+/** The browser that would open a link here: where its program or its desktop entry is, and the entry's Exec lines */
+export interface BrowserInUse {
+  path: string | null;
+  exec?: string | null;
+}
+
+/**
+ * How a link with a secret opens: through a private page (see openPrivately), or straight to the browser when that
+ * browser runs in a sandbox with a /tmp of its own (snap, flatpak: Ubuntu's default Firefox is a snap), which could
+ * never read the page. The link then shows on the browser's command line, which other users of this machine can read:
+ * a narrower risk than a sign-in that never works. When it can't be told, the page.
+ */
+export function secretLinkWay(platform: string, browser: BrowserInUse): "page" | "direct" {
+  if (platform !== "linux" || !browser.path) return "page";
+  const sandboxed =
+    browser.path.startsWith("/snap/") ||
+    browser.path.includes("/snapd/desktop/applications/") ||
+    browser.path.includes("/exports/share/applications/") ||
+    /\/snap\/bin\/|\bflatpak run\b/.test(browser.exec ?? "");
+  return sandboxed ? "direct" : "page";
+}
+
+/** Where a desktop entry (google-chrome.desktop) is, searched as the XDG spec says: data home first, then data dirs. */
+export function desktopEntryPath(id: string, env: Record<string, string | undefined>, exists: (path: string) => boolean = existsSync): string | null {
+  const dirs = [env.XDG_DATA_HOME || join(env.HOME || homedir(), ".local/share"), ...(env.XDG_DATA_DIRS || "/usr/local/share:/usr/share").split(":")];
+  for (const dir of dirs.filter(Boolean)) {
+    const path = join(dir, "applications", id);
+    if (exists(path)) return path;
+  }
+  return null;
+}
+
+/** The output of a quick command, or "" if it isn't there or fails */
+function ask(cmd: string[]): string {
+  try {
+    const r = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "ignore", timeout: 2000 });
+    return r.exitCode === 0 ? r.stdout.toString().trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+/** The browser a link would open in here: FONTEGO_BROWSER's program, or the desktop's default browser (Linux). */
+function browserInUse(env: Record<string, string | undefined>): BrowserInUse {
+  if (env.FONTEGO_BROWSER) return { path: Bun.which(env.FONTEGO_BROWSER) };
+  if (process.platform !== "linux") return { path: null };
+  const id = ask(["xdg-settings", "get", "default-web-browser"]) || ask(["xdg-mime", "query", "default", "x-scheme-handler/https"]);
+  const path = /^[\w.-]+\.desktop$/.test(id) ? desktopEntryPath(id, env) : null;
+  if (!path) return { path: null };
+  let exec = "";
+  try {
+    exec = readFileSync(path, "utf8").split("\n").filter((line) => line.startsWith("Exec=")).join("\n");
+  } catch {
+    // unreadable: its place says enough
+  }
+  return { path, exec };
+}
+
 /**
  * Opens a link that carries a secret (a one-time code) without putting it on any command line, where every user of
  * this machine can read it (ps, /proc/PID/cmdline, for as long as a browser started with it runs). The link goes into
  * a page in a new private folder (0700, the page 0600) that sends the browser on, and the browser opens the page.
  * `opened` is called once it is on its way; the page is removed a few seconds later, when the browser has read it.
- * False when nothing could open it: the caller shows the link instead.
+ * A browser in a sandbox gets the link itself (secretLinkWay). False when nothing could open it: the caller shows the
+ * link instead.
  */
-export async function openPrivately(url: string, opened: () => void, env = process.env): Promise<boolean> {
+export async function openPrivately(url: string, opened: () => void, env = process.env, way = secretLinkWay(process.platform, browserInUse(env))): Promise<boolean> {
   const link = webLink(url);
   if (!link || !openerCommand(link, process.platform, env)) return false;
+  if (way === "direct") {
+    if (!launch(link, env)) return false;
+    opened();
+    return true;
+  }
   const dir = mkdtempSync(join(tmpdir(), "fontego-open-"));
   try {
     const page = join(dir, "open.html");

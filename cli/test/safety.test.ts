@@ -7,7 +7,19 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { deviceLogin, fetchInstance, instanceLink, lockName, openerCommand, openInBrowser, replaceCredential, StoredAuth } from "../src/auth.ts";
+import {
+  desktopEntryPath,
+  deviceLogin,
+  fetchInstance,
+  instanceLink,
+  lockName,
+  openerCommand,
+  openInBrowser,
+  openPrivately,
+  replaceCredential,
+  secretLinkWay,
+  StoredAuth,
+} from "../src/auth.ts";
 import { Client, ClientError } from "../src/client.ts";
 import { credentialStore, instanceUrl, isLoopback, saveInstance, sameInstance, withLock, type Credential } from "../src/config.ts";
 import { tempDir } from "./server.ts";
@@ -208,6 +220,47 @@ describe("what fontego opens in the browser", () => {
     expect(openInBrowser("https://fontego.example.org/a b", env)).toBe(true);
     // Written by the URL parser: nothing a program would split on
     expect(await browser.opened()).toEqual(["https://fontego.example.org/a%20b"]);
+  });
+
+  test("a secret link goes through the private page, unless the browser is in a sandbox that can't read it", () => {
+    const way = (path: string | null, exec?: string) => secretLinkWay("linux", { path, exec });
+    expect(way("/usr/share/applications/google-chrome.desktop", "Exec=/usr/bin/google-chrome-stable %U")).toBe("page");
+    // Ubuntu's Firefox is a snap, with a /tmp of its own; flatpak browsers too, system-wide or the person's own
+    expect(way("/var/lib/snapd/desktop/applications/firefox_firefox.desktop")).toBe("direct");
+    expect(way("/var/lib/flatpak/exports/share/applications/org.mozilla.firefox.desktop")).toBe("direct");
+    expect(way("/home/ana/.local/share/flatpak/exports/share/applications/com.google.Chrome.desktop")).toBe("direct");
+    // A copy of their entry elsewhere still runs them sandboxed
+    expect(way("/home/ana/.local/share/applications/firefox.desktop", "Exec=/snap/bin/firefox %u")).toBe("direct");
+    expect(way("/home/ana/.local/share/applications/browser.desktop", "Exec=/usr/bin/flatpak run --branch=stable org.mozilla.firefox @@u %u @@")).toBe("direct");
+    // FONTEGO_BROWSER naming a snap's program
+    expect(way("/snap/bin/firefox")).toBe("direct");
+    // Not known: the page
+    expect(way(null)).toBe("page");
+    expect(secretLinkWay("darwin", { path: "/snap/bin/firefox" })).toBe("page");
+    expect(secretLinkWay("win32", { path: "/var/lib/snapd/desktop/applications/x.desktop" })).toBe("page");
+  });
+
+  test("the default browser's desktop entry is looked for as XDG says: data home, then each data dir", () => {
+    const there = (paths: string[]) => (p: string) => paths.includes(p);
+    const env = { HOME: "/home/ana", XDG_DATA_DIRS: "/usr/share:/var/lib/snapd/desktop" };
+    expect(desktopEntryPath("firefox_firefox.desktop", env, there(["/var/lib/snapd/desktop/applications/firefox_firefox.desktop"]))).toBe(
+      "/var/lib/snapd/desktop/applications/firefox_firefox.desktop",
+    );
+    expect(desktopEntryPath("b.desktop", env, there(["/usr/share/applications/b.desktop", "/home/ana/.local/share/applications/b.desktop"]))).toBe(
+      "/home/ana/.local/share/applications/b.desktop",
+    );
+    expect(desktopEntryPath("b.desktop", { HOME: "/h" }, there(["/usr/local/share/applications/b.desktop"]))).toBe("/usr/local/share/applications/b.desktop");
+    expect(desktopEntryPath("b.desktop", env, there([]))).toBeNull();
+  });
+
+  test("to a sandboxed browser the link goes straight, with no page and no wait", async () => {
+    const browser = fakeBrowser();
+    const started = Date.now();
+    let told = false;
+    expect(await openPrivately(link, () => (told = true), { FONTEGO_BROWSER: browser.program }, "direct")).toBe(true);
+    expect(told).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(await browser.opened()).toEqual([link]);
   });
 
   test("a link an instance gives is opened only on that instance's origin", () => {

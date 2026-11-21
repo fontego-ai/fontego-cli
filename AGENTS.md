@@ -52,7 +52,11 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   request off the instance's origin or outside its `/v1/`, whatever path a declared command gives. Links open
   without a shell (`openerCommand`: rundll32 on Windows, since cmd.exe reads the `&` of a link), only http(s);
   `fontego open` opens only a link on the instance's own origin, through a private page (`openPrivately`), so its
-  one-time code is on no command line, where any user of the machine could read it.
+  one-time code is on no command line, where any user of the machine could read it. On Linux a browser in a sandbox
+  with a /tmp of its own can't read that page (snap, such as Ubuntu's Firefox, and flatpak): it gets the link itself,
+  a narrower risk than a link that never opens. `secretLinkWay` decides, from where the default browser's desktop
+  entry is (`/var/lib/snapd/desktop/applications`, a flatpak `exports/share/applications`) or what it runs; when that
+  can't be told, the page.
 - **Ignore rules never delete** (`core/src/ignore.ts`, read from disk by `cli/src/sync/ignore.ts`; they live in core
   because the server applies them too when it imports a folder, a zip or a Git repository into a new workspace). As
   in Git, a rule only keeps new files from going up: a file already in the workspace keeps syncing both ways, and
