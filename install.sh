@@ -38,6 +38,14 @@ if [ "$os" = darwin ] && [ "$arch" = x64 ] && [ "$(sysctl -n sysctl.proc_transla
   arch=arm64
 fi
 
+case "$version" in
+  latest | v[0-9]* | [0-9]*) ;;
+  *) fail "FONTEGO_VERSION is a version such as 0.2.0, or latest" ;;
+esac
+case "$version" in
+  *[!0-9A-Za-z.+-]*) fail "FONTEGO_VERSION is a version such as 0.2.0, or latest" ;;
+esac
+
 if [ "$version" = latest ]; then
   base="$releases/latest/download"
 else
@@ -45,24 +53,37 @@ else
 fi
 file="fontego-$os-$arch"
 
+# Only over HTTPS, redirects included, unless FONTEGO_DOWNLOAD_URL itself is plain http (a local mirror).
+case "$releases" in
+  http://*) curl_proto="=http,https" wget_https="" ;;
+  *) curl_proto="=https" wget_https="--https-only" ;;
+esac
+if command -v curl >/dev/null 2>&1; then
+  fetcher=curl
+elif command -v wget >/dev/null 2>&1; then
+  fetcher=wget
+else
+  fail "this needs curl or wget"
+fi
 download() {
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 2 -o "$2" "$1"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
+  if [ "$fetcher" = curl ]; then
+    curl -fsSL --proto "$curl_proto" --proto-redir "$curl_proto" --tlsv1.2 --retry 2 -o "$2" "$1"
   else
-    fail "this needs curl or wget"
+    # shellcheck disable=SC2086 # empty when plain http is allowed
+    wget -q $wget_https -O "$2" "$1"
   fi
 }
 
+# Without a way to check the download, nothing is downloaded.
+if command -v sha256sum >/dev/null 2>&1; then
+  hasher="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  hasher="shasum -a 256"
+else
+  fail "this needs sha256sum or shasum to check the download"
+fi
 sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
-  else
-    fail "this needs sha256sum or shasum to check the download"
-  fi
+  $hasher "$1" | cut -d' ' -f1
 }
 
 tmp="$(mktemp -d)"

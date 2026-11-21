@@ -2,7 +2,7 @@
 // person would. Only this system's target is built, to keep it quick.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { SKILL } from "../src/commands/setup.ts";
 import { VERSION } from "../src/version.ts";
@@ -72,17 +72,35 @@ describe("the release build", () => {
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("usage:");
   });
+
+  test.skipIf(!Bun.which("node"))("npm: the launcher runs only the executable of its own version, never another found further up", async () => {
+    // The optional dependency is missing here, and a folder above holds some other @fontego/cli-<os>-<arch>.
+    const above = join(scratch("fontego-npm-shadow-"), "node_modules");
+    const modules = join(above, "app", "node_modules");
+    mkdirSync(join(above, "@fontego"), { recursive: true });
+    mkdirSync(modules, { recursive: true });
+    cpSync(join(out, "npm", "fontego"), join(modules, "fontego"), { recursive: true });
+    const planted = join(above, "@fontego", `cli-${target}`);
+    cpSync(join(out, "npm", `cli-${target}`), planted, { recursive: true });
+    const pkg = JSON.parse(readFileSync(join(planted, "package.json"), "utf8"));
+    writeFileSync(join(planted, "package.json"), JSON.stringify({ ...pkg, version: "9.9.9" }));
+    const r = await run(["node", join(modules, "fontego", "bin", "fontego.cjs"), "version"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(`this is fontego ${VERSION}, but the executable found is @fontego/cli-${target} 9.9.9`);
+  });
 });
 
 describe.skipIf(process.platform === "win32")("install.sh", () => {
   let server: ReturnType<typeof Bun.serve>;
   let releases: string;
+  let hits = 0;
   beforeAll(() => {
     // Laid out like GitHub releases: /latest/download/FILE and /download/vX.Y.Z/FILE
     server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
       fetch(req) {
+        hits++;
         const m = new URL(req.url).pathname.match(/^\/(?:latest\/download|download\/v([^/]+))\/([^/]+)$/);
         if (!m || (m[1] && m[1] !== VERSION)) return new Response("not found", { status: 404 });
         const file = join(out, "release", m[2]!);
@@ -122,5 +140,22 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     const missing = await install(join(scratch("fontego-install-"), "bin"), { FONTEGO_VERSION: "99.0.0" });
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("couldn't download");
+  });
+
+  test("a version that isn't one, or no way to check the download, stops it before anything is downloaded", async () => {
+    const before = hits;
+    const odd = await install(join(scratch("fontego-install-"), "bin"), { FONTEGO_VERSION: "0.1.0/../../evil" });
+    expect(odd.code).toBe(1);
+    expect(odd.err).toContain("FONTEGO_VERSION is a version");
+    // A PATH with the shell's own tools and curl, but neither sha256sum nor shasum.
+    const tools = scratch("fontego-install-tools-");
+    for (const t of ["sh", "uname", "mktemp", "rm", "curl", "cut", "awk", "mkdir", "chmod", "mv", "cat"]) {
+      const at = Bun.which(t);
+      if (at) symlinkSync(at, join(tools, t));
+    }
+    const unchecked = await install(join(scratch("fontego-install-"), "bin"), { PATH: tools });
+    expect(unchecked.code).toBe(1);
+    expect(unchecked.err).toBe("error: this needs sha256sum or shasum to check the download\n");
+    expect(hits).toBe(before);
   });
 });
