@@ -1,6 +1,7 @@
 export * from "./paths.ts";
 export * from "./schemas.ts";
 export * from "./preferences.ts";
+export * from "./icons.ts";
 export * from "./types.ts";
 export * from "./hash.ts";
 export * from "./commands.ts";

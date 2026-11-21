@@ -39,6 +39,59 @@ export const MAX_CATEGORY = 100;
 /** A template's name: what `fontego workspace templates` lists. */
 export const TEMPLATE_NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 
+/** How many tags a workspace can have, and how long each can be (in characters). */
+export const MAX_TAGS = 10;
+export const MAX_TAG_LENGTH = 32;
+
+/** A tag as it is kept: words of letters (any language), marks and digits, joined by single dashes. */
+const TAG = /^[\p{L}\p{M}\p{Nd}]+(?:-[\p{L}\p{M}\p{Nd}]+)*$/u;
+
+/**
+ * A tag the way it is kept, whoever wrote it: lowercase words joined by dashes, so "Clients", "clients" and "CLIENTS "
+ * are one tag and "Q4 planning" is q4-planning. Spaces, underscores and runs of dashes become one dash; accents stay
+ * (they change words). Whatever else is left (a comma, a slash, a #) makes it no tag, and `problem` says why.
+ */
+export function normalizeTag(text: string): { tag: string } | { problem: string } {
+  const tag = text
+    .normalize("NFC")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!tag) return { problem: "a tag needs a letter or a digit" };
+  if (!TAG.test(tag)) return { problem: `${JSON.stringify(text.trim())} can't be a tag: use letters, digits and dashes` };
+  if ([...tag].length > MAX_TAG_LENGTH) return { problem: `${JSON.stringify(text.trim())} is too long for a tag: use at most ${MAX_TAG_LENGTH} characters` };
+  return { tag };
+}
+
+/**
+ * A workspace's tags: a JSON list, or text with the tags split by commas or new lines (what the CLI sends; empty text
+ * is no tags). Each is written the way it is kept (normalizeTag), repeats go, the order stays.
+ */
+export const TagList = z.union([z.array(z.string().max(200)).max(100), z.string().max(4000)]).transform((value, ctx) => {
+  const items = typeof value === "string" ? value.split(/[,\n]/).filter((t) => t.trim() !== "") : value;
+  const tags: string[] = [];
+  for (const item of items) {
+    const n = normalizeTag(item);
+    if ("problem" in n) {
+      ctx.addIssue({ code: "custom", message: n.problem });
+      return z.NEVER;
+    }
+    if (!tags.includes(n.tag)) tags.push(n.tag);
+  }
+  if (tags.length > MAX_TAGS) {
+    ctx.addIssue({ code: "custom", message: `a workspace takes at most ${MAX_TAGS} tags, and these are ${tags.length}` });
+    return z.NEVER;
+  }
+  return tags;
+});
+
+/**
+ * A workspace's icon: one of core's list (icons.ts), which the server checks so that a wrong one says which are
+ * there. Null, empty or "none" is no icon.
+ */
+const IconName = z.string().max(40).nullable();
+
 /**
  * A new workspace starts empty, from a template, or from a Git repository the server can reach (https), with its
  * history unless `history` is false. Importing a folder from your machine is `fontego link` on an empty workspace.
@@ -53,6 +106,9 @@ export const CreateWorkspaceBody = z
     git: Line(2000).optional(),
     branch: Line(200).optional(),
     history: z.boolean().optional(),
+    /** Given, they win over the template's (also to say none) */
+    icon: IconName.optional(),
+    tags: TagList.optional(),
   })
   .refine((b) => !(b.template && b.git), { message: "start from a template or from a Git repository, not both", path: ["template"] })
   .refine((b) => b.git || (b.branch === undefined && b.history === undefined), { message: "branch and history only go with git", path: ["branch"] });
@@ -62,6 +118,9 @@ export const UpdateWorkspaceBody = z.object({
   name: Line(200).optional(),
   description: Text(5000).optional(),
   category: Line(MAX_CATEGORY).optional(),
+  icon: IconName.optional(),
+  /** The whole list, in its order: also to reorder or empty it */
+  tags: TagList.optional(),
 });
 export type UpdateWorkspaceRequest = z.input<typeof UpdateWorkspaceBody>;
 
@@ -180,7 +239,8 @@ export const SessionBody = z.union([
 const Flag = z.string().optional();
 const Opt = z.string().optional();
 
-export const WorkspacesQuery = z.object({ category: Opt });
+/** tag: the workspaces with every one of these tags (split by commas), written as they are kept or not */
+export const WorkspacesQuery = z.object({ category: Opt, tag: TagList.optional() });
 /** last=1: each entry's last change (TreeEntry.last) */
 export const TreeQuery = z.object({ path: Opt, rev: Opt, recursive: Flag, last: Flag });
 export const FileQuery = z.object({ rev: Opt, meta: Flag, download: Flag });

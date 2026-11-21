@@ -1,5 +1,6 @@
 // Types of the HTTP API (version 1): what the server answers. What requests carry is in schemas.ts.
 
+import type { WorkspaceIcon } from "./icons.ts";
 import type { PreferenceKey, Preferences } from "./preferences.ts";
 import { ROLES, type Role } from "./schemas.ts";
 
@@ -336,6 +337,10 @@ export interface WorkspaceInfo {
   lastChange?: LastChange | null;
   /** When a server admin archived it: hidden from lists and read-only until brought back */
   archivedAt?: string;
+  /** The icon its admins chose from core's list (icons.ts), or none */
+  icon: WorkspaceIcon | null;
+  /** Its tags, as they are kept (normalizeTag), in the order its admins gave them */
+  tags: string[];
 }
 
 /**
@@ -410,6 +415,27 @@ export interface TemplateInfo {
   /** The first line of its README */
   description: string;
   from: "built-in" | "instance";
+  /** What a workspace made from it starts with besides its files (its .fontego/template.toml): an icon, tags... */
+  icon: WorkspaceIcon | null;
+  tags: string[];
+  /** ...and how many top-level folders it gives a line */
+  folders: number;
+  /** What is wrong with its .fontego/template.toml, when something is: nothing can be made from it until it's fixed */
+  problem?: string;
+}
+
+/** The icons a workspace can have here (GET /workspace-icons), in the order they are offered. */
+export interface WorkspaceIconsResponse {
+  icons: Array<{
+    name: WorkspaceIcon;
+    /** What it suits: "legal, contracts, compliance" */
+    themes: string;
+  }>;
+}
+
+/** The tags of the workspaces you see (GET /tags), by name, each with how many of those workspaces have it. */
+export interface TagsResponse {
+  tags: Array<{ name: string; workspaces: number }>;
 }
 
 /**
