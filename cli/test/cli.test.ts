@@ -290,10 +290,13 @@ describe("commands the server declares", () => {
     const set = await fontego(["members", "set", "shared", "bea@example.org", "reader"], env);
     expect(set.out).toMatch(/bea@example\.org\s+reader\s+no-password\s+-\s+Bea/);
     expect((await fontego(["workspace", "edit", "shared", "--description", "For everyone"], env)).out).toContain("Updated shared.");
-    const token = JSON.parse((await fontego(["admin", "tokens", "create", "bea@example.org", "--agent", "--label", "Bea's agent", "--json"], env)).out);
-    expect(token.kind).toBe("agent");
-    const bea = await fontego(["whoami", "--json"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: token.token });
-    expect(JSON.parse(bea.out).credential).toMatchObject({ type: "token", kind: "agent", label: "Bea's agent" });
+    const made = await fontego(["admin", "tokens", "create", "bea@example.org", "Bea's CI", "--workspaces", "shared"], env);
+    expect(made.out).toContain(`"Bea's CI" for bea@example.org. It shows only this once: copy it now.`);
+    expect(made.out).toMatch(/Workspaces: shared · access: read · ends \d{4}-\d\d-\d\d \d\d:\d\d UTC \(in 90 days\)/);
+    const token = /^ {2}(fontego_pat_\S+)$/m.exec(made.out)![1]!;
+    const bea = await fontego(["whoami", "--json"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: token });
+    expect(JSON.parse(bea.out).credential).toMatchObject({ type: "token", label: "Bea's CI", scope: { workspaces: ["shared"], access: "read" } });
+    expect((await fontego(["admin", "tokens", "--user", "bea@example.org"], env)).out).toMatch(/bea@example\.org\s+\d+\s+Bea's CI\s+fontego_pat_\S{6}…\s+shared\s+read/);
     expect((await fontego(["members", "remove", "shared", "bea@example.org"], env)).out).toContain("bea@example.org is no longer in shared.");
     // Ana is no admin: the server says no, with the usual exit codes.
     expect((await fontego(["admin", "users"])).code).toBe(5);
@@ -318,7 +321,7 @@ describe("commands the server declares", () => {
     expect(none.code).toBe(3);
     expect(JSON.parse(none.out).error.hint).toContain("fontego people");
     const forAdmin = (await fontego(["people", "show", "ana@example.org"], asAdmin())).out;
-    expect(forAdmin).toMatch(/account no-password · last active \d{4}-\d\d-\d\d/);
+    expect(forAdmin).toMatch(/account active · last active \d{4}-\d\d-\d\d/);
   });
 
   test("your account: who you are, your name, your sessions", async () => {
@@ -330,9 +333,14 @@ describe("commands the server declares", () => {
     const empty = await fontego(["account", "set", "--json"], as);
     expect(empty.code).not.toBe(0);
     expect(JSON.parse(empty.out).error.message).toContain("say what to change");
-    // A token is no session: nothing open, and nothing marked as the one in use
-    expect((await fontego(["account", "sessions"], as)).out).toBe("(no open sessions)\n");
+    // Where Eli is signed in: this CLI's session, marked
+    expect((await fontego(["account", "sessions"], as)).out).toMatch(/cli\s+test-machine \(this one\)/);
     expect((await fontego(["account", "sessions", "close", "1"], as)).code).toBe(3);
+    // A token is no session, and doesn't manage the account: it says how to sign in
+    const token = { FONTEGO_URL: s.url, FONTEGO_TOKEN: s.token("eli@example.org") };
+    const refused = await fontego(["account", "sessions", "--json"], token);
+    expect(refused.code).toBe(5);
+    expect(JSON.parse(refused.out).error).toMatchObject({ code: "token_not_allowed", hint: expect.stringContaining(`fontego login ${s.url}`) });
   });
 
   test("your photo: from a file, the same for everyone, none removes it; a server admin only removes another's", async () => {
