@@ -4,7 +4,8 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
@@ -92,6 +93,16 @@ async function personWithPassword(server: TestServer, email: string): Promise<st
 }
 
 const browser = (c: string) => ({ cookie: c, "content-type": "application/json", "x-requested-with": "fontego-web" });
+
+/** Signs ana in through the browser, in the config folder of `extra` (her own, for a test that needs a session). */
+async function signInThroughBrowser(extra: Record<string, string>) {
+  const { first, finish } = await startWaiting(["login", s.url, "--json"], extra);
+  const q = Object.fromEntries(new URL(first.url).searchParams);
+  const approved = await fetch(`${s.url}/v1/oauth/authorize`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ ...q, approve: true }) });
+  await fetch(((await approved.json()) as any).redirect);
+  const r = await finish();
+  expect(r.last).toMatchObject({ ok: true, credential: "session" });
+}
 
 beforeAll(async () => {
   [s, s2] = await Promise.all([startTestServer(), startTestServer()]);
@@ -366,4 +377,32 @@ describe("opening the browser", () => {
     expect(existsSync(log)).toBe(false);
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("fontego open's one-time code is on no command line: the browser opens a private page that sends it on", async () => {
+    const own = tempDir("fontego-cli-open-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    await signInThroughBrowser(here);
+    const log = join(own, "opened.log");
+    writeFileSync(join(own, "browser.sh"), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\n`, { mode: 0o755 });
+    const proc = Bun.spawn(["bun", MAIN, "open", "notes"], { env: env({ ...here, FONTEGO_BROWSER: join(own, "browser.sh") }), stdout: "pipe", stderr: "pipe" });
+    for (let i = 0; !existsSync(log) && i < 100; i++) await Bun.sleep(50);
+
+    // What the browser was given: a page of ours, not the link
+    const argv = readFileSync(log, "utf8").trim().split("\n");
+    expect(argv).toEqual([expect.stringMatching(/^file:\/\/.*\.html$/)]);
+    expect(argv[0]).not.toContain("code=");
+    const page = fileURLToPath(argv[0]!);
+    expect(statSync(dirname(page)).mode & 0o777).toBe(0o700);
+    expect(statSync(page).mode & 0o777).toBe(0o600);
+    const html = readFileSync(page, "utf8");
+    const link = JSON.parse(/location\.replace\(("[^"]+")\)/.exec(html)![1]!) as string;
+    expect(new URL(link).origin).toBe(s.url);
+    expect(link).toMatch(/#\/login\?code=[^&]+&next=%2Fw%2Fnotes$/);
+
+    expect(await proc.exited).toBe(0);
+    expect(await new Response(proc.stdout).text()).toContain("Opening the web app in your browser");
+    // Gone once the browser has had time to read it
+    expect(existsSync(dirname(page))).toBe(false);
+    rmSync(own, { recursive: true, force: true });
+  }, 30_000);
 });

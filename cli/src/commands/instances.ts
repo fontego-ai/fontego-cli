@@ -1,7 +1,7 @@
 import type { Credential as SavedCredential } from "../config.ts";
 import { AGENTS, installed } from "../agents.ts";
 import { UsageError, type UsageArg } from "../args.ts";
-import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, instanceLink, openInBrowser, revokeSession } from "../auth.ts";
+import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, instanceLink, openInBrowser, openPrivately, revokeSession } from "../auth.ts";
 import { Client } from "../client.ts";
 import {
   aliasFor,
@@ -278,8 +278,9 @@ export const instanceCommands: Builtin[] = [
       const page = instanceLink(link.url, instance);
       const url = ws ? `${page}&next=${encodeURIComponent(`/w/${ws}`)}` : page;
       if (parsed.flags.print === true || json) return print({ url, expiresAt: link.expiresAt }, () => url);
-      if (openInBrowser(url)) console.log("Opening the web app in your browser (the link works once, for two minutes).");
-      else console.log(`Open this link in your browser (works once, for two minutes):\n${url}`);
+      // Through a private page: on the browser's command line, any user of this machine could read the code first.
+      const opened = await openPrivately(url, () => console.log("Opening the web app in your browser (the link works once, for two minutes). If it doesn't open: fontego open --print"));
+      if (!opened) console.log(`Open this link in your browser (works once, for two minutes):\n${url}`);
     },
   },
 ];

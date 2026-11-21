@@ -10,7 +10,10 @@
 
 import type { DeviceAuthorization, InstanceInfo, TokenResponse } from "@fontego/core";
 import { createHash, randomBytes } from "node:crypto";
-import { hostname } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { ClientError, refuseRedirect, type AuthProvider } from "./client.ts";
 import { normalizeUrl, setInstanceEmail, withLock, type Credential, type CredentialStore, type Instance } from "./config.ts";
 import { USER_AGENT } from "./version.ts";
@@ -181,6 +184,41 @@ function webLink(url: string): string | null {
 export function openInBrowser(url: string, env = process.env): boolean {
   const link = webLink(url);
   return link ? launch(link, env) : false;
+}
+
+/** How long the page with a secret link stays for the browser to read it */
+const PAGE_KEPT_MS = 5_000;
+
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** A page that sends the browser on to `link` (by script, or by refresh and a link without it) */
+const forwardingPage = (link: string) =>
+  `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Opening the web app</title>` +
+  `<noscript><meta http-equiv="refresh" content="0; url=${escapeHtml(link)}"></noscript>` +
+  `<script>location.replace(${JSON.stringify(link).replace(/</g, "\\u003c")})</script>` +
+  `<p><a href="${escapeHtml(link)}">Continue</a></p>`;
+
+/**
+ * Opens a link that carries a secret (a one-time code) without putting it on any command line, where every user of
+ * this machine can read it (ps, /proc/PID/cmdline, for as long as a browser started with it runs). The link goes into
+ * a page in a new private folder (0700, the page 0600) that sends the browser on, and the browser opens the page.
+ * `opened` is called once it is on its way; the page is removed a few seconds later, when the browser has read it.
+ * False when nothing could open it: the caller shows the link instead.
+ */
+export async function openPrivately(url: string, opened: () => void, env = process.env): Promise<boolean> {
+  const link = webLink(url);
+  if (!link || !openerCommand(link, process.platform, env)) return false;
+  const dir = mkdtempSync(join(tmpdir(), "fontego-open-"));
+  try {
+    const page = join(dir, "open.html");
+    writeFileSync(page, forwardingPage(link), { flag: "wx", mode: 0o600 });
+    if (!launch(pathToFileURL(page).href, env)) return false;
+    opened();
+    await Bun.sleep(PAGE_KEPT_MS);
+    return true;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** A link an instance gave to open in the browser, which must be on that instance's own origin. */
