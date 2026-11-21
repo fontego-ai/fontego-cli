@@ -62,7 +62,9 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   in Git, a rule only keeps new files from going up: a file already in the workspace keeps syncing both ways, and
   `fontego status` says so, with the `fontego rm` that takes it out (the copy stays where the rules ignore it). Three levels: built-in (`.git`, `.fontego`, system and editor
   junk; keep it short), per machine (`.fontego/ignore`, never synced), and shared (`.fontegoignore` files at the top
-  or in any folder, which sync and travel with templates; a deeper one wins). Full `.gitignore` syntax through the
+  or in any folder, which sync and travel with templates; a deeper one wins). The machine's rules come last and win
+  over every shared one, so a `!secret.env` any editor writes can't send up what this machine keeps to itself. Full
+  `.gitignore` syntax through the
   `ignore` library (MIT), case ignored. A rules file counts only as a plain file, never through a symlink (as Git
   reads .gitignore since 2.32), and only its first MiB (`MAX_RULES_BYTES`); `fontego status` names one that doesn't.
   `fontego status --ignored` lists what they keep here and `fontego

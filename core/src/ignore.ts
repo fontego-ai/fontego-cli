@@ -7,8 +7,9 @@
 //
 // The syntax is .gitignore's in full (the `ignore` library): `*`, `**`, `!` to take a file back, a leading `/` to
 // anchor a rule to its file's folder, a trailing `/` for folders only. A rule in a deeper .fontegoignore wins over one
-// higher up, the shared files over the machine's, and within a file the last rule that matches. As in Git, nothing
-// below an ignored folder can be taken back.
+// higher up, and within a file the last rule that matches. The machine's own rules come last and win over every shared
+// one: any editor can write a .fontegoignore, and a `!secret.env` there must not send up what this machine keeps to
+// itself. As in Git, nothing below an ignored folder can be taken back.
 //
 // An ignore rule only keeps new files from going up. It never deletes anything or stops a file that is already in
 // the workspace (tracked) from syncing: otherwise a `*` written by one person would make everyone's sync delete
@@ -162,14 +163,15 @@ export class IgnoreRules {
       const parent = this.match(path.slice(0, slash), true);
       if (parent.ignored) return { ...parent, folder: parent.folder ?? path.slice(0, slash) };
     }
-    // From the weakest level to the strongest; the last one with an opinion decides.
+    // From the weakest level to the strongest; the last one with an opinion decides: the shared files from the top
+    // down, then this machine's.
     const levels: Level[] = [];
-    if (this.machine) levels.push(this.machine);
     const parts = path.split("/");
     for (let i = 0; i < parts.length; i++) {
       const level = this.shared.get(parts.slice(0, i).join("/"));
       if (level) levels.push(level);
     }
+    if (this.machine) levels.push(this.machine);
     let decision: IgnoreMatch = { ignored: false };
     for (const level of levels) {
       const rel = (level.dir ? path.slice(level.dir.length + 1) : path) + (isDir ? "/" : "");

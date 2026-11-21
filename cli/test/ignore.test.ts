@@ -58,10 +58,19 @@ describe("ignore rules", () => {
     expect((await rulesFor(root, "raw", true)).ignored).toBe(false);
   });
 
-  test("the machine's own rules, in .fontego/ignore, under the shared ones", async () => {
-    const root = folder({ ".fontego/ignore": "*.mine\nshared.mine\n", ".fontegoignore": "!shared.mine\n" });
+  test("the machine's own rules, in .fontego/ignore, win over the shared ones: a shared ! can't take back what it keeps", async () => {
+    const root = folder({
+      ".fontego/ignore": "*.mine\nsecret.env\nprivate/\n!public.log\n",
+      ".fontegoignore": "!secret.env\n!private/\n*.log\n",
+      "docs/.fontegoignore": "!*.mine\n",
+    });
     expect(await rulesFor(root, "notes.mine")).toMatchObject({ ignored: true, source: ".fontego/ignore", line: 1 });
-    expect((await rulesFor(root, "shared.mine")).ignored).toBe(false);
+    expect(await rulesFor(root, "docs/deep.mine")).toMatchObject({ ignored: true, source: ".fontego/ignore", line: 1 });
+    expect(await rulesFor(root, "secret.env")).toMatchObject({ ignored: true, source: ".fontego/ignore", line: 2 });
+    expect(await rulesFor(root, "private/key.txt")).toMatchObject({ ignored: true, source: ".fontego/ignore", folder: "private" });
+    // It may also take back what a shared file ignores, for this copy.
+    expect((await rulesFor(root, "public.log")).ignored).toBe(false);
+    expect(await rulesFor(root, "other.log")).toMatchObject({ ignored: true, source: ".fontegoignore" });
   });
 
   test("built in: .git, .fontego and the junk systems and editors leave", async () => {
