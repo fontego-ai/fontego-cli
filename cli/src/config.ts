@@ -53,8 +53,8 @@ export type Credential =
 export const normalizeUrl = (url: string) => url.trim().replace(/\/+$/, "");
 
 /** This machine only (127.0.0.0/8, ::1, localhost), where plain http never crosses a network. */
-export function isLoopback(hostname: string): boolean {
-  const h = hostname.replace(/^\[(.*)\]$/, "$1");
+export function isLoopback(host: string): boolean {
+  const h = host.replace(/^\[(.*)\]$/, "$1");
   return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h);
 }
 

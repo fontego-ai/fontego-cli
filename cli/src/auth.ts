@@ -167,8 +167,18 @@ export async function fetchInstance(url: string): Promise<InstanceInfo> {
   // Nothing secret goes in this request, but every later one would: say where the server points instead of following.
   const to = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
   if (to) {
-    const moved = new URL(to, `${normalizeUrl(url)}/v1/instance`).href.replace(/\/v1\/instance$/, "");
-    throw new ClientError(res.status, "redirected", `${url} sends fontego to ${moved}, and fontego doesn't follow redirects.`, `If that is the right address: fontego login ${moved}`);
+    let moved: string | null = null;
+    try {
+      moved = new URL(to, `${normalizeUrl(url)}/v1/instance`).href.replace(/\/v1\/instance$/, "");
+    } catch {
+      // not an address
+    }
+    throw new ClientError(
+      res.status,
+      "redirected",
+      `${url} sends fontego ${moved ? `to ${moved}` : "elsewhere"}, and fontego doesn't follow redirects.`,
+      moved ? `If that is the right address: fontego login ${moved}` : "Check the address: it is the one you open in the browser.",
+    );
   }
   const info = res.ok ? ((await res.json().catch(() => null)) as InstanceInfo | null) : null;
   if (!info || info.software !== "fontego") {

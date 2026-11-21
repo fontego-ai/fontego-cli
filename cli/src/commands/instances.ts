@@ -128,7 +128,7 @@ export const instanceCommands: Builtin[] = [
         name: "token",
         type: "string",
         value: "TOKEN",
-        description: "Sign in with a token instead, for scripts and CI. - reads it from stdin, out of ps and the shell's history (FONTEGO_TOKEN counts only when FONTEGO_URL is this Fontego)",
+        description: "Sign in with a token instead, for scripts and CI; --token - reads it from stdin, out of ps and the shell's history (FONTEGO_TOKEN counts only when FONTEGO_URL is this Fontego)",
       },
       { name: "alias", type: "string", value: "ALIAS", description: "The short name to use for this Fontego (default: from its name)" },
       { name: "allow-http", type: "boolean", description: "Accept a plain http:// address on another machine, remembered for it: passwords and tokens go unencrypted" },
