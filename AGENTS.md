@@ -66,7 +66,8 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   over every shared one, so a `!secret.env` any editor writes can't send up what this machine keeps to itself. Full
   `.gitignore` syntax through the
   `ignore` library (MIT), case ignored. A rules file counts only as a plain file, never through a symlink (as Git
-  reads .gitignore since 2.32), and only its first MiB (`MAX_RULES_BYTES`); `fontego status` names one that doesn't.
+  reads .gitignore since 2.32), and only its first MiB (`MAX_RULES_BYTES`; `rulesOnDisk` reads them so, for sync and
+  for the server's import of a folder); `fontego status` names one that doesn't.
   `fontego status --ignored` lists what they keep here and `fontego
   check-ignore PATH` says which rule. This is each copy's convenience; the paths a workspace protects or rejects
   (`core/paths.ts`) are the server's policy, and separate.
