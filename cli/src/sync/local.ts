@@ -1,7 +1,8 @@
 // The local side of sync: scanning the folder, reading and writing files safely.
 
 import { blobHash, MAX_PATH, MAX_SEGMENT, normalizePath, PathError, symlinkProblem, symlinkTarget, windowsNameProblem } from "@fontego/core";
-import { link, lstat, mkdir, readdir, readFile, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { link, lstat, mkdir, open, readdir, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, posix, sep } from "node:path";
 import { BUILT_IN, IgnoreRules, isJunk, STATE_DIR, type IgnoreMatch } from "./ignore.ts";
@@ -47,6 +48,41 @@ export const insideUnreadable = (unreadable: Unreadable[], path: string) =>
  * Reads one local file (or symlink) as a sync entry; null if it doesn't exist or isn't a file. A file that is there
  * but can't be read (permissions, I/O) throws: it must never pass for a deleted one.
  */
+// Not on Windows, where both are 0: there only the lstat before reading checks.
+const { O_RDONLY, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = constants;
+
+/** A file that became something else (a symlink, a pipe) between looking at it and reading it. */
+export class SwappedError extends Error {
+  readonly code = "ESWAPPED";
+  constructor(path: string) {
+    super(`${path} changed into something else while it was being read`);
+  }
+}
+
+/**
+ * A plain file's bytes, never through a symlink nor from a pipe: one swapped for either since the lstat is refused
+ * (SwappedError), instead of sending up what is at the other end, or waiting forever for a writer.
+ */
+async function readPlain(full: string, path: string): Promise<Uint8Array> {
+  const fh = await open(full, O_RDONLY | O_NOFOLLOW | O_NONBLOCK).catch((e: NodeJS.ErrnoException) => {
+    throw e.code === "ELOOP" ? new SwappedError(path) : e;
+  });
+  try {
+    if (!(await fh.stat()).isFile()) throw new SwappedError(path);
+    return new Uint8Array(await fh.readFile());
+  } finally {
+    await fh.close();
+  }
+}
+
+/** A symlink's target as bytes, the way a workspace keeps it; SwappedError if it isn't a symlink any more. */
+async function readTarget(full: string, path: string): Promise<Uint8Array> {
+  const target = await readlink(full).catch((e: NodeJS.ErrnoException) => {
+    throw e.code === "EINVAL" ? new SwappedError(path) : e;
+  });
+  return new TextEncoder().encode(toPosix(target));
+}
+
 export async function readEntry(root: string, path: string, cached?: LocalEntry): Promise<LocalEntry | null> {
   const full = join(root, path);
   let st;
@@ -57,21 +93,20 @@ export async function readEntry(root: string, path: string, cached?: LocalEntry)
     throw e;
   }
   if (st.isSymbolicLink()) {
-    const target = await readlink(full);
-    const bytes = new TextEncoder().encode(toPosix(target));
+    const bytes = await readTarget(full, path);
     return { hash: blobHash(bytes), mode: "120000", size: bytes.length, mtimeMs: st.mtimeMs };
   }
   if (!st.isFile()) return null;
   const mode = st.mode & 0o111 ? "100755" : "100644";
   if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs && cached.mode === mode) return cached;
-  const bytes = new Uint8Array(await readFile(full));
+  const bytes = await readPlain(full, path);
   return { hash: blobHash(bytes), mode, size: st.size, mtimeMs: st.mtimeMs };
 }
 
+/** The bytes to send for a file the scan saw as `mode`; SwappedError if it became something else since. */
 export async function readBytes(root: string, path: string, mode: string): Promise<Uint8Array> {
   const full = join(root, path);
-  if (mode === "120000") return new TextEncoder().encode(toPosix(await readlink(full)));
-  return new Uint8Array(await readFile(full));
+  return mode === "120000" ? readTarget(full, path) : readPlain(full, path);
 }
 
 export interface ScanResult {

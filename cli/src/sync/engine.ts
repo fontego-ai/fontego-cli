@@ -7,7 +7,7 @@
 //
 // A real conflict keeps both: the server's version stays in place and ours is saved next to it as a conflict copy.
 
-import { blobHash, MAX_OPS, roleAtLeast, textContent, type ChangeOp, type Conflict, type FileMode, type Role } from "@fontego/core";
+import { blobHash, MAX_OPS, roleAtLeast, symlinkProblem, textContent, type ChangeOp, type Conflict, type FileMode, type Role } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
 import { loadIgnoreRules } from "./ignore.ts";
@@ -23,6 +23,7 @@ import {
   replaceIf,
   UnsafePathError,
   scan,
+  SwappedError,
   type LocalEntry,
   type Unreadable,
 } from "./local.ts";
@@ -398,9 +399,11 @@ export class SyncEngine {
     try {
       bytes = await readBytes(this.root, path, l.mode);
     } catch (e) {
-      if (absent(e)) return null;
+      if (absent(e) || e instanceof SwappedError) return null; // changed since the scan: the next round sees it
       throw e;
     }
+    // A link changed since the scan to point outside: it waits for the next scan, which lists it, target unsent.
+    if (l.mode === "120000" && symlinkProblem(path, bytes)) return null;
     // Edited between the scan and now: what goes up is what was read, so that is what the state must remember.
     const hash = blobHash(bytes);
     if (hash !== l.hash) item.local = { ...l, hash, size: bytes.length, mtimeMs: -1 };

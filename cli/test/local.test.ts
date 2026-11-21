@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { conflictName, isConflictCopy, readEntry, removeLocal, replaceIf, UnsafePathError, writeLocal } from "../src/sync/local.ts";
+import { conflictName, isConflictCopy, readBytes, readEntry, removeLocal, replaceIf, SwappedError, UnsafePathError, writeLocal } from "../src/sync/local.ts";
 import { normalizePath } from "@fontego/core";
 
 let outer: string;
@@ -189,5 +189,19 @@ describe("conflict copy names", () => {
       expect(Buffer.byteLength(name.slice(name.lastIndexOf("/") + 1))).toBeLessThanOrEqual(250);
       expect(isConflictCopy(name)).toBe(true);
     }
+  });
+});
+
+describe("what is read to go up is what the scan saw", () => {
+  test("a file swapped since the scan for a symlink, a pipe, or a link for a file, is refused, never followed", async () => {
+    writeFileSync(join(outer, "secret.txt"), "outside\n");
+    symlinkSync(join(outer, "secret.txt"), join(root, "notes.md")); // the scan saw a plain notes.md
+    await expect(readBytes(root, "notes.md", "100644")).rejects.toBeInstanceOf(SwappedError);
+    expect(Bun.spawnSync(["mkfifo", join(root, "pipe.md")]).exitCode).toBe(0); // nobody ever writes to it
+    await expect(readBytes(root, "pipe.md", "100644")).rejects.toBeInstanceOf(SwappedError);
+    writeFileSync(join(root, "was-a-link"), "a file now\n");
+    await expect(readBytes(root, "was-a-link", "120000")).rejects.toBeInstanceOf(SwappedError);
+    writeFileSync(join(root, "plain.md"), "plain\n");
+    expect(new TextDecoder().decode(await readBytes(root, "plain.md", "100644"))).toBe("plain\n");
   });
 });
