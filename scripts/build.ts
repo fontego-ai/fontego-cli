@@ -8,13 +8,14 @@
 // dist/npm/       fontego (a small launcher, what `npm i -g fontego` installs) and @fontego/cli-<os>-<arch> (one
 //                 executable each, for npm to pick by its os and cpu fields). `npm publish` each folder, launcher last.
 //
-// Bun cross-compiles every system from any of them. A macOS executable built elsewhere isn't signed: a release for
-// Macs should be built on a Mac (codesign), which this script doesn't do yet.
+// Bun cross-compiles every system from any of them. macOS: the arm64 executable is signed ad hoc (by Bun), the x64 one
+// isn't signed (macho.ts says why); neither is notarized, which takes building on a Mac with Apple's tools.
 
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { codeSignature, stripSignature } from "./macho.ts";
 
 interface Target {
   /** Name in files and npm packages */
@@ -59,6 +60,13 @@ for (const t of targets) {
   const dest = join(release, file);
   const build = Bun.spawnSync([process.execPath, "build", "--compile", "--minify", `--target=${t.bun}`, "cli/src/main.ts", "--outfile", dest], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
   if (build.exitCode !== 0) throw new Error(`Building ${t.id} failed:\n${build.stderr.toString()}`);
+  if (t.os === "darwin") {
+    const bytes = readFileSync(dest);
+    // macOS on arm64 runs only signed programs: Bun signs this one ad hoc. On x64 the signature Bun leaves is its
+    // runtime's, which no longer matches, so it goes.
+    if (t.cpu === "arm64" && !codeSignature(bytes)?.adhoc) throw new Error(`${t.id}: Bun didn't sign it ad hoc, and an arm64 Mac won't run it unsigned`);
+    if (t.cpu === "x64") writeFileSync(dest, stripSignature(bytes));
+  }
   sums.push(`${createHash("sha256").update(readFileSync(dest)).digest("hex")}  ${file}`);
 
   const dir = join(npm, `cli-${t.id}`);

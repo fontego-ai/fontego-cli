@@ -125,7 +125,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/agents.ts` | The coding agents fontego knows: the variables that tell one runs it, how to see one is installed, and the folders each reads user-level skills from |
 | `cli/src/commands/setup.ts` | `fontego setup`: the skill and writing or removing it |
 | `cli/src/version.ts` | The CLI's version, read from `cli/package.json` |
-| `scripts/build.ts`, `scripts/npm-launcher.cjs`, `scripts/npm-readme.md`, `install.sh` | The release: executables, npm packages and the install script (see above) |
+| `scripts/build.ts`, `scripts/macho.ts`, `scripts/npm-launcher.cjs`, `scripts/npm-readme.md`, `install.sh` | The release: executables (`macho.ts`: the signature of the macOS ones), npm packages and the install script (see above) |
 | `Dockerfile`, `.github/workflows/image.yml` | The command's container image and the workflow that publishes it (see How to work) |
 | `cli/src/client.ts` | HTTP client for `/v1`: a token per request, only to the instance's origin under its `/v1/` and following no redirect, and one more try after renewing on a 401. Event streams (`events` for watch, `personEvents` for `fontego events`): the server says how often it beats in `ready`, and a line silent for two and a half beats is taken as dead, so the caller connects again |
 | `cli/src/commands/live.ts` | `fontego events`: the person's stream (commits, who is in each workspace, changes in their list), one line per event or one JSON object per line, connecting again by itself. `who` and `here` come from the server |
@@ -148,8 +148,10 @@ bun run build --only linux-x64 --out /tmp/fontego-dist
 
 - **Releasing** isn't automated yet, and nothing is published until the repos are public. A release is: bump
   `cli/package.json`, `bun run build`, upload `dist/release/*` to a GitHub release `vX.Y.Z`, then `npm publish` each
-  folder of `dist/npm` (the `@fontego/cli-*` ones first, `fontego` last, with `--access public`). macOS executables
-  built on Linux aren't signed: build those on a Mac (codesign) before a real release.
+  folder of `dist/npm` (the `@fontego/cli-*` ones first, `fontego` last, with `--access public`). macOS: Bun signs
+  the arm64 executable ad hoc, as an arm64 Mac requires; the x64 one would keep the Bun runtime's own signature, which
+  no longer matches the file (a Mac kills such a program), so the build takes it out (`scripts/macho.ts`): an Intel Mac
+  or Rosetta runs it unsigned. Neither is notarized, which takes a Mac and Apple's tools.
 - **The container image** (`Dockerfile`): the same executable as a release (`scripts/build.ts`), on Debian slim with
   a shell for CI systems, as the user `fontego` (1000) in `/work`, with `FONTEGO_CREDENTIAL_STORE=file`. Bun
   cross-compiles and the last stage only copies files, so building it for another architecture needs no emulation.
@@ -162,6 +164,7 @@ bun run build --only linux-x64 --out /tmp/fontego-dist
 
 - `cli/test/build.test.ts` builds this system's executable and uses it as a person would: on its own, through the
   npm launcher, and installed by `install.sh` from a local server laid out like GitHub releases.
+- `cli/test/macho.test.ts` builds the two macOS executables and checks their signatures (arm64 ad hoc, x64 none).
 - `cli/test/safety.test.ts` checks, inside the test process, what keeps credentials where they belong: addresses,
   where requests go, redirects, what opens in the browser, the renewal lock and the private files.
 - The tests run the server in a temporary folder on a free port; they never touch real data. They run as no agent
