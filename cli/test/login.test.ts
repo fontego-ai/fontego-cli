@@ -3,7 +3,7 @@
 // which instance each command goes to; and the first version's login moving over by itself.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
@@ -343,5 +343,27 @@ describe("FONTEGO_TOKEN", () => {
     const r = await fontego(["login", `${s.url}/`, "--json"], { env: { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own, FONTEGO_URL: s.url, FONTEGO_TOKEN: token } });
     expect(JSON.parse(r.out)).toMatchObject({ ok: true, credential: "token", user: { email: "gil@example.org" } });
     rmSync(own, { recursive: true, force: true });
+  });
+});
+
+describe("opening the browser", () => {
+  test("fontego open doesn't open a link that a server points elsewhere", async () => {
+    const dir = tempDir("fontego-cli-open-");
+    const log = join(dir, "opened.log");
+    writeFileSync(join(dir, "browser.sh"), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\n`, { mode: 0o755 });
+    for (const link of ["file:///etc/passwd", "https://evil.example/#/login?code=c"]) {
+      const fake = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (req) => (new URL(req.url).pathname === "/v1/session/code" ? Response.json({ code: "c", expiresAt: new Date().toISOString(), url: link }) : new Response("no", { status: 404 })),
+      });
+      const r = await fontego(["open"], { env: { FONTEGO_URL: `http://127.0.0.1:${fake.port}`, FONTEGO_TOKEN: "fontego_pt_x", FONTEGO_BROWSER: join(dir, "browser.sh") } });
+      fake.stop(true);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("won't open it");
+    }
+    await Bun.sleep(300);
+    expect(existsSync(log)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

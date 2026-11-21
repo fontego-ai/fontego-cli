@@ -1,7 +1,7 @@
 import type { Credential as SavedCredential } from "../config.ts";
 import { AGENTS, installed } from "../agents.ts";
 import { UsageError, type UsageArg } from "../args.ts";
-import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, openInBrowser, revokeSession } from "../auth.ts";
+import { browserLogin, deviceLogin, fetchInstance, fromTokenResponse, hasBrowser, instanceLink, openInBrowser, revokeSession } from "../auth.ts";
 import { Client } from "../client.ts";
 import {
   aliasFor,
@@ -270,11 +270,13 @@ export const instanceCommands: Builtin[] = [
     args: [{ name: "WORKSPACE", optional: true }],
     flags: [{ name: "print", type: "boolean", description: "Only show the link (it works once, for two minutes)" }],
     async run({ parsed, json, print, connect: signIn }) {
-      const { client } = await signIn();
+      const { client, url: instance } = await signIn();
       const ws = parsed.args.WORKSPACE;
       if (ws) await client.workspace(ws); // fails early if it doesn't exist for you
       const link = await client.sessionCode();
-      const url = ws ? `${link.url}&next=${encodeURIComponent(`/w/${ws}`)}` : link.url;
+      // The link carries a code that signs the browser in: it opens only on the instance's own origin.
+      const page = instanceLink(link.url, instance);
+      const url = ws ? `${page}&next=${encodeURIComponent(`/w/${ws}`)}` : page;
       if (parsed.flags.print === true || json) return print({ url, expiresAt: link.expiresAt }, () => url);
       if (openInBrowser(url)) console.log("Opening the web app in your browser (the link works once, for two minutes).");
       else console.log(`Open this link in your browser (works once, for two minutes):\n${url}`);

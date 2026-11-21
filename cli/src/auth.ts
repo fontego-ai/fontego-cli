@@ -140,22 +140,60 @@ export function hasBrowser(env = process.env): boolean {
   return !!(env.DISPLAY || env.WAYLAND_DISPLAY);
 }
 
-/** Opens a link in the browser: FONTEGO_BROWSER names the program ("none" opens nothing). */
-export function openInBrowser(url: string, env = process.env): boolean {
-  if (env.FONTEGO_BROWSER === "none") return false;
-  const cmd = env.FONTEGO_BROWSER
-    ? [env.FONTEGO_BROWSER, url]
-    : process.platform === "darwin"
-      ? ["open", url]
-      : process.platform === "win32"
-        ? ["cmd", "/c", "start", "", url]
-        : ["xdg-open", url];
+/**
+ * The program and arguments that open a link here, run without a shell; null when nothing should open. FONTEGO_BROWSER
+ * names the program ("none" opens nothing). On Windows it is rundll32's FileProtocolHandler, never `cmd /c start`:
+ * cmd.exe reads & | ^ < > in a link as its own (a sign-in link has &), and nothing on that line is quoted for it.
+ */
+export function openerCommand(target: string, platform: string = process.platform, env: Record<string, string | undefined> = process.env): string[] | null {
+  if (env.FONTEGO_BROWSER === "none") return null;
+  if (env.FONTEGO_BROWSER) return [env.FONTEGO_BROWSER, target];
+  if (platform === "darwin") return ["open", target];
+  if (platform === "win32") return ["rundll32", "url.dll,FileProtocolHandler", target];
+  return ["xdg-open", target];
+}
+
+function launch(target: string, env: Record<string, string | undefined>): boolean {
+  const cmd = openerCommand(target, process.platform, env);
+  if (!cmd) return false;
   try {
     Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" }).unref();
     return true;
   } catch {
     return false;
   }
+}
+
+/** An http(s) link, as the URL parser writes it (no space or quote left), or null for anything else. */
+function webLink(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Opens a link in the browser, and says whether it could. Only http(s): the opener would just as well run a file or
+ * another program's scheme.
+ */
+export function openInBrowser(url: string, env = process.env): boolean {
+  const link = webLink(url);
+  return link ? launch(link, env) : false;
+}
+
+/** A link an instance gave to open in the browser, which must be on that instance's own origin. */
+export function instanceLink(link: string, instanceUrl: string): string {
+  const web = webLink(link);
+  if (web && new URL(web).origin === new URL(instanceUrl).origin) return web;
+  const where = web ? new URL(web).origin : "something that isn't a web address";
+  throw new ClientError(
+    502,
+    "foreign_link",
+    `${instanceUrl} gave a link to ${where}, not to itself, so fontego won't open it.`,
+    `If this is your server, its public address (FONTEGO_PUBLIC_URL) should be ${instanceUrl}; else tell its admin.`,
+  );
 }
 
 const PAGE = (title: string, text: string) =>

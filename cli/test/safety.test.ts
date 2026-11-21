@@ -1,11 +1,11 @@
 // What keeps a credential where it belongs, tested piece by piece inside this process: the addresses fontego accepts,
-// where the client sends a request, and the private files of this machine. The sign-in tests (login.test.ts) check
+// where the client sends a request, what it opens in the browser, and the private files of this machine. The sign-in tests (login.test.ts) check
 // the same rules through the commands.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { deviceLogin, fetchInstance, StoredAuth } from "../src/auth.ts";
+import { deviceLogin, fetchInstance, instanceLink, openerCommand, openInBrowser, StoredAuth } from "../src/auth.ts";
 import { Client, ClientError } from "../src/client.ts";
 import { credentialStore, instanceUrl, isLoopback, saveInstance, sameInstance, type Credential } from "../src/config.ts";
 import { tempDir } from "./server.ts";
@@ -172,6 +172,48 @@ describe("redirects", () => {
     expect(sink.seen).toEqual([]);
     server.stop();
     sink.stop();
+  });
+});
+
+/** A FONTEGO_BROWSER that writes down what it was asked to open, one line each */
+function fakeBrowser() {
+  const dir = scratch("fontego-safety-browser-");
+  const log = join(dir, "opened.log");
+  const program = join(dir, "browser.sh");
+  writeFileSync(program, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\n`, { mode: 0o755 });
+  const opened = async () => {
+    await Bun.sleep(300);
+    return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
+  };
+  return { program, opened };
+}
+
+describe("what fontego opens in the browser", () => {
+  const link = "https://fontego.example.org/#/login?code=abc&next=%2Fw%2Fnotes";
+
+  test("the command for each system runs no shell, so & in a link is just a character", () => {
+    expect(openerCommand(link, "win32", {})).toEqual(["rundll32", "url.dll,FileProtocolHandler", link]);
+    expect(openerCommand(link, "darwin", {})).toEqual(["open", link]);
+    expect(openerCommand(link, "linux", {})).toEqual(["xdg-open", link]);
+    expect(openerCommand(link, "win32", { FONTEGO_BROWSER: "firefox" })).toEqual(["firefox", link]);
+    expect(openerCommand(link, "linux", { FONTEGO_BROWSER: "none" })).toBeNull();
+  });
+
+  test("only http(s) links open", async () => {
+    const browser = fakeBrowser();
+    const env = { FONTEGO_BROWSER: browser.program };
+    for (const other of ["file:///etc/passwd", "javascript:alert(1)", "ms-settings:", "not a link"]) expect(openInBrowser(other, env)).toBe(false);
+    expect(openInBrowser("https://fontego.example.org/a b", env)).toBe(true);
+    // Written by the URL parser: nothing a program would split on
+    expect(await browser.opened()).toEqual(["https://fontego.example.org/a%20b"]);
+  });
+
+  test("a link an instance gives is opened only on that instance's origin", () => {
+    expect(instanceLink(link, "https://fontego.example.org")).toBe(link);
+    expect(instanceLink("https://fontego.example.org/team/#/login?code=a", "https://fontego.example.org/team")).toContain("/team/");
+    for (const foreign of ["https://evil.example/#/login?code=a", "http://fontego.example.org/#/login", "https://fontego.example.org:8443/", "file:///etc/passwd"]) {
+      expect(() => instanceLink(foreign, "https://fontego.example.org")).toThrow(/won't open it/);
+    }
   });
 });
 
