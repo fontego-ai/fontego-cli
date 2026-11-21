@@ -3,13 +3,13 @@
 // download).
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { blobHash, type ChangeSetRequest, type ChangeSetResult, type SyncResponse } from "@fontego/core";
 import { ClientError, type Client } from "../src/client.ts";
 import { SyncEngine } from "../src/sync/engine.ts";
 import { insideRoot, UnsafePathError } from "../src/sync/local.ts";
-import { loadState, newState, saveState } from "../src/sync/state.ts";
+import { findRoot, loadState, newState, saveState } from "../src/sync/state.ts";
 import { tempDir } from "./server.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -244,5 +244,40 @@ describe("the state of a copy", () => {
     const loaded = await loadState(A.root);
     expect(Object.keys(loaded.files)).toEqual(["notes.md"]);
     expect(Object.keys(loaded.skipped)).toEqual(["ok.md"]);
+  });
+});
+
+describe("finding the synced folder from inside it", () => {
+  const me = process.getuid!();
+
+  test("the first .fontego of this user's on the way up", async () => {
+    const root = tempDir("fontego-root-");
+    dirs.push(root);
+    await saveState(root, newState("http://localhost", "ws", "Ana"));
+    mkdirSync(join(root, "a/b"), { recursive: true });
+    expect(findRoot(join(root, "a/b"), { uid: me })).toBe(root);
+    expect(findRoot(root, { uid: me })).toBe(root);
+  });
+
+  test("a state someone else could have put there is never taken", async () => {
+    // Played with another uid: to it, every file here is someone else's, as /tmp/.fontego would be to a victim.
+    const root = tempDir("fontego-root-");
+    dirs.push(root);
+    await saveState(root, newState("https://elsewhere.example", "ws", "Mallory"));
+    mkdirSync(join(root, "a"), { recursive: true });
+    const notes: string[] = [];
+    expect(findRoot(root, { uid: me + 1, notes })).toBeNull();
+    expect(notes).toEqual([`${join(root, ".fontego/state.json")} isn't yours (or isn't a plain file in a folder of yours), so it was left alone`]);
+    // Nor does the walk go up into a folder that isn't this user's.
+    expect(findRoot(join(root, "a"), { uid: me + 1 })).toBeNull();
+  });
+
+  test("a .fontego that is a symlink to another copy's isn't taken either", async () => {
+    const real = tempDir("fontego-root-");
+    const other = tempDir("fontego-root-");
+    dirs.push(real, other);
+    await saveState(real, newState("http://localhost", "ws", "Ana"));
+    symlinkSync(join(real, ".fontego"), join(other, ".fontego"));
+    expect(findRoot(other, { uid: me })).toBeNull();
   });
 });

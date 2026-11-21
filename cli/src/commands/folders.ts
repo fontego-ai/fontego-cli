@@ -33,8 +33,13 @@ function describeSyncIssues(r: SyncReport): string[] {
 
 /** The synced folder a command works on. */
 function rootOf(dirArg: string | undefined): string {
-  const root = findRoot(dirArg ?? process.cwd());
-  if (!root) throw new UsageError(`${dirArg ?? "This folder"} is not a synced workspace. Create one with: fontego clone WORKSPACE [DIR]`);
+  const notes: string[] = [];
+  const root = findRoot(dirArg ?? process.cwd(), { notes });
+  if (!root) {
+    throw new UsageError(
+      [`${dirArg ?? "This folder"} is not a synced workspace. Create one with: fontego clone WORKSPACE [DIR]`, ...notes.map((n) => `(${n}.)`)].join(" "),
+    );
+  }
   return root;
 }
 

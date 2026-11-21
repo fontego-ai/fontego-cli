@@ -1,7 +1,7 @@
 // .fontego/state.json: what the folder looked like after the last sync. Without .git, this is all the client keeps.
 
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isWorkspacePath, STATE_DIR, type LocalEntry } from "./local.ts";
@@ -118,13 +118,31 @@ export async function saveState(root: string, state: SyncState) {
   await rename(tmp, path);
 }
 
-/** Finds the synced folder that contains "start" by walking up to the first .fontego/state.json. */
-export function findRoot(start: string): string | null {
+/**
+ * Finds the synced folder that contains "start" by walking up to the first .fontego/state.json of this user's. A state
+ * someone else could have put there is never taken (like Git since CVE-2022-24765), since it says which server the
+ * commands run here talk to and which files go up: the walk doesn't go up into a folder of another user (the top of
+ * /tmp, a shared drive), it passes over a .fontego or a state that isn't this user's, and the top of a disk is never a
+ * synced folder. Where files have no owner to compare (Windows), only the last holds: C:\.fontego is never taken.
+ * `notes` gets why a state was passed over, for the message that says there is none. `uid` is for tests.
+ */
+export function findRoot(start: string, opts: { notes?: string[]; uid?: number } = {}): string | null {
+  const uid = opts.uid ?? process.getuid?.();
+  const mine = (path: string, kind: "dir" | "file") => {
+    const st = lstatSync(path, { throwIfNoEntry: false });
+    if (!st || !(kind === "dir" ? st.isDirectory() : st.isFile())) return null;
+    return uid === undefined || st.uid === uid;
+  };
   let dir = resolve(start);
   for (;;) {
-    if (existsSync(statePath(dir))) return dir;
     const parent = dirname(dir);
     if (parent === dir) return null;
+    const state = statePath(dir);
+    if (existsSync(state)) {
+      if (mine(join(dir, STATE_DIR), "dir") && mine(state, "file")) return dir;
+      opts.notes?.push(`${state} isn't yours (or isn't a plain file in a folder of yours), so it was left alone`);
+    }
+    if (mine(parent, "dir") === false) return null;
     dir = parent;
   }
 }
