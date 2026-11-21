@@ -23,6 +23,7 @@ import {
   replaceIf,
   UnsafePathError,
   scan,
+  stillInTheWay,
   SwappedError,
   type LocalEntry,
   type Unreadable,
@@ -68,6 +69,17 @@ class DamagedDownload extends Error {
  */
 const LASTING = ["ENAMETOOLONG", "EINVAL", "EISDIR", "ENOTDIR", "EEXIST", "ENOTEMPTY", "ELOOP", "EILSEQ"];
 const lasting = (e: unknown) => e instanceof UnsafePathError || LASTING.includes((e as NodeJS.ErrnoException)?.code ?? "");
+/** Of those, the ones that say the name itself can't be here: too long, or not one this file system takes. */
+const BAD_NAME = ["ENAMETOOLONG", "EINVAL", "EILSEQ"];
+
+/** What it takes for a file of the server's that can't be here to come down, in words. */
+export function whatItTakes(k: Skipped): string {
+  const d = k.down;
+  if (!d) return "";
+  if (d.blocker) return `It comes down once ${d.blocker.path} is no longer a ${d.blocker.is} here.`;
+  if (d.never) return "It stays on the server, and comes down only once it changes there (renamed, say).";
+  return `It is tried again${k.retryAt ? ` after ${new Date(k.retryAt).toLocaleString()}` : ""}.`;
+}
 
 /** Why one path failed, in words: our own errors say it; a file system's has its code. */
 function whyNot(e: unknown): string {
@@ -211,6 +223,7 @@ export class SyncEngine {
   private async round(): Promise<SyncReport> {
     const report = emptyReport();
     await this.pull(report);
+    await this.bringDown(report);
     // A refused file (the server names one per answer), a conflict or a stale base sends the round back to scan and
     // try again. It goes on as long as each try gets somewhere, so five refusals in a row don't keep a sixth, valid,
     // file waiting; five tries in a row without progress end it, and what is left shows in `pending`.
@@ -275,22 +288,77 @@ export class SyncEngine {
         waiting = true;
         continue;
       }
+      // Listed again: what was set aside for it is superseded by what happens now.
+      if (own(this.state.skipped, path)?.down) delete this.state.skipped[path];
       try {
         await this.pullOne(report, path, r, local, rules, res.head);
       } catch (e) {
         // One path that can't be written here never stops the rest, nor what goes up. One that can't be as things
-        // are here (a name this system doesn't take, a folder in the way, a link that could lead out) is left out
-        // until it changes on the server; one that failed this once waits, like a folder that can't be read.
+        // are here (a name this system doesn't take, a folder in the way, a link that could lead out) is set aside
+        // with what it takes (notHere); one that failed this once waits, like a folder that can't be read.
         if (e instanceof ClientError) throw e;
-        noteSkipped(report, path, whyNot(e));
-        if (lasting(e)) delete this.state.files[path];
-        else waiting = true;
+        if (!lasting(e)) {
+          noteSkipped(report, path, whyNot(e));
+          waiting = true;
+          continue;
+        }
+        delete this.state.files[path];
+        if (r) this.notHere(report, path, r, res.head, e);
+        else noteSkipped(report, path, whyNot(e));
       }
     }
     // A change that had to wait keeps the copy at its last full step, so the server sends it again next round. What
     // was applied meanwhile is in state.files, and comes again as "already identical". (The server only checks that a
     // change set's baseCommit exists; each file merges from its own baseHash.)
     if (!waiting) this.state.head = res.head;
+  }
+
+  /**
+   * Sets aside a file of the server's that can't be written here as things are, in state.skipped, so that status
+   * keeps naming it and a later round brings it down: once what is in its way is gone (bringDown looks every round),
+   * or, when that isn't known, after a growing wait. A path that can't be here at all waits until it changes there.
+   */
+  private notHere(report: SyncReport, path: string, r: { hash: string; mode: string }, rev: string, e: unknown) {
+    const blocker = e instanceof UnsafePathError ? e.blocker : undefined;
+    const never = !blocker && (e instanceof UnsafePathError || BAD_NAME.includes((e as NodeJS.ErrnoException)?.code ?? ""));
+    const k: Skipped = { hash: r.hash, reason: whyNot(e), down: { mode: r.mode, rev, ...(blocker ? { blocker } : never ? { never: true } : {}) } };
+    if (!blocker && !never) {
+      const before = own(this.state.skipped, path);
+      k.tries = before?.down && before.hash === r.hash ? (before.tries ?? 0) + 1 : 1;
+      k.retryAt = new Date(this.now() + retryDelay(k.tries)).toISOString();
+    }
+    this.state.skipped[path] = k;
+    noteSkipped(report, path, `${k.reason} ${whatItTakes(k)}`);
+  }
+
+  /**
+   * Brings down the files of the server's set aside by notHere whose way is clear now: a blocker that one lstat finds
+   * gone, or a wait that is over. Each round, also when nothing changed on the server, so a folder moved out of the
+   * way lets the file come at the next sync.
+   */
+  private async bringDown(report: SyncReport) {
+    for (const [path, k] of Object.entries(this.state.skipped)) {
+      const d = k.down;
+      if (!d || d.never || report.skipped.some((s) => s.path === path)) continue;
+      if (d.blocker ? await stillInTheWay(this.root, d.blocker) : k.retryAt && Date.parse(k.retryAt) > this.now()) continue;
+      delete this.state.skipped[path];
+      try {
+        await insideRoot(this.root, path);
+        // Nothing there is expected: a file made here meanwhile stays, and goes up as a new one (a conflict, if so).
+        if (await this.writeIfUnchanged(path, undefined, d.rev, k.hash)) report.pulled.push({ path, status: "put" });
+      } catch (e) {
+        if (e instanceof ClientError) {
+          if (e.status === 404) continue; // not there any more
+          this.state.skipped[path] = k;
+          throw e;
+        }
+        if (lasting(e)) this.notHere(report, path, { hash: k.hash, mode: d.mode }, d.rev, e);
+        else {
+          this.state.skipped[path] = k;
+          noteSkipped(report, path, whyNot(e));
+        }
+      }
+    }
   }
 
   private async pullOne(

@@ -295,18 +295,42 @@ export async function insideRoot(root: string, path: string, platform: NodeJS.Pl
     } catch {
       return; // from here down nothing exists yet: mkdir makes real folders
     }
-    if (st.isSymbolicLink()) throw new UnsafePathError(path, `${folder} is a symlink here, and Fontego doesn't write through one`);
+    if (st.isSymbolicLink()) {
+      throw new UnsafePathError(path, `${folder} is a symlink here, and Fontego doesn't write through one`, { path: folder, is: "symlink" });
+    }
     if (!st.isDirectory()) return; // the write fails on its own, inside the folder
   }
+}
+
+/**
+ * What stands in the way of a path here, as things are: a folder where the file goes, or a file or a symlink where a
+ * folder above it goes. Once it is gone, the path can be written.
+ */
+export interface Blocker {
+  path: string;
+  is: "folder" | "file" | "symlink";
 }
 
 export class UnsafePathError extends Error {
   constructor(
     readonly path: string,
     why: string,
+    /** Something here in its way; none when the path itself can't be here (its name, or where a link points) */
+    readonly blocker?: Blocker,
   ) {
     super(`Left ${JSON.stringify(path)} alone: ${why}.`);
   }
+}
+
+/** Whether a blocker is still in the way, with one lstat. One that can't be looked at counts as still there. */
+export async function stillInTheWay(root: string, b: Blocker): Promise<boolean> {
+  let st;
+  try {
+    st = await lstat(join(root, b.path));
+  } catch (e) {
+    return !absent(e);
+  }
+  return b.is === "folder" ? st.isDirectory() : b.is === "symlink" ? st.isSymbolicLink() : !st.isDirectory();
 }
 
 /** Writes the bytes to a new temporary file inside the folder (so a rename or link to their place stays on one disk). */
@@ -343,7 +367,7 @@ async function notAFolder(full: string, path: string) {
     if (absent(e)) return;
     throw e;
   }
-  if (st.isDirectory()) throw new UnsafePathError(path, "it is a folder here, and a folder never becomes a file");
+  if (st.isDirectory()) throw new UnsafePathError(path, "it is a folder here, and a folder never becomes a file", { path, is: "folder" });
 }
 
 /** Makes the folders above `path`, saying which file is in the way when one is. */
@@ -356,7 +380,7 @@ async function makeFolders(root: string, path: string) {
     for (let i = 1; i < parts.length; i++) {
       const folder = parts.slice(0, i).join("/");
       const isFolder = await lstat(join(root, folder)).then((st) => st.isDirectory(), () => true);
-      if (!isFolder) throw new UnsafePathError(path, `${folder} is a file here, so nothing can go inside it`);
+      if (!isFolder) throw new UnsafePathError(path, `${folder} is a file here, so nothing can go inside it`, { path: folder, is: "file" });
     }
     throw e;
   }

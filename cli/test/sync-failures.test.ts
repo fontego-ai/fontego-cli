@@ -7,7 +7,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, syml
 import { join } from "node:path";
 import { blobHash, type ChangeSetRequest, type ChangeSetResult, type SyncResponse } from "@fontego/core";
 import { ClientError, type Client } from "../src/client.ts";
-import { SyncEngine } from "../src/sync/engine.ts";
+import { localStatus, SyncEngine, whatItTakes } from "../src/sync/engine.ts";
 import { insideRoot, UnsafePathError } from "../src/sync/local.ts";
 import { findRoot, loadState, newState, saveState } from "../src/sync/state.ts";
 import { tempDir } from "./server.ts";
@@ -25,6 +25,8 @@ class FakeServer {
   sent: ChangeSetRequest[] = [];
   /** Answers the next change set with this error instead */
   refuse: ClientError | null = null;
+  /** Every path /files was asked for */
+  downloads: string[] = [];
 
   put(path: string, text: string, mode = "100644") {
     this.files.set(path, { bytes: enc(text), mode });
@@ -40,6 +42,7 @@ class FakeServer {
         return { head: this.head, since, reset: false, changes: [...puts, ...dels] };
       },
       file: async (_ws: string, path: string) => {
+        this.downloads.push(path);
         const f = this.files.get(path);
         if (!f) throw new ClientError(404, "not_found", `${path} isn't there.`);
         const bytes = this.damaged.get(path) ?? f.bytes;
@@ -279,5 +282,84 @@ describe("finding the synced folder from inside it", () => {
     await saveState(real, newState("http://localhost", "ws", "Ana"));
     symlinkSync(join(real, ".fontego"), join(other, ".fontego"));
     expect(findRoot(other, { uid: me })).toBeNull();
+  });
+});
+
+describe("a file that can't be here as things are never goes missing", () => {
+  for (const [label, bad, block, unblock, takes] of [
+    ["a folder where the file goes", "build", (r: string) => mkdirSync(join(r, "build/sub"), { recursive: true }), (r: string) => rmSync(join(r, "build"), { recursive: true }), "It comes down once build is no longer a folder here."],
+    ["a file where its folder goes", "notes/a.md", (r: string) => writeFileSync(join(r, "notes"), "mine\n"), (r: string) => rmSync(join(r, "notes")), "It comes down once notes is no longer a file here."],
+    ["a symlink where its folder goes", "docs/a.md", (r: string) => symlinkSync("/tmp", join(r, "docs")), (r: string) => rmSync(join(r, "docs")), "It comes down once docs is no longer a symlink here."],
+  ] as const) {
+    test(`${label}: kept in the state, named by status, looked at every round, and brought down once out of the way`, async () => {
+      const server = new FakeServer();
+      server.put(bad, "theirs\n");
+      const A = copy(server);
+      block(A.root);
+      const first = await A.sync();
+      expect(first.skipped.map((s) => s.path)).toEqual([bad]);
+      expect(first.skipped[0]!.reason).toEndWith(takes);
+      expect(A.state.skipped[bad]!.down).toMatchObject({ rev: server.head });
+      // Rounds with nothing new on the server: still named, and nothing downloaded while it is in the way.
+      server.downloads = [];
+      for (let i = 0; i < 2; i++) await A.sync();
+      expect(server.downloads).toEqual([]);
+      const st = await localStatus(A.root, A.state);
+      expect(Object.keys(st.skipped)).toEqual([bad]);
+      expect(whatItTakes(st.skipped[bad]!)).toBe(takes);
+      // Out of the way: the next round brings it, from the commit it was listed at.
+      unblock(A.root);
+      const r = await A.sync();
+      expect(r.pulled).toEqual([{ path: bad, status: "put" }]);
+      expect(readFileSync(join(A.root, bad), "utf8")).toBe("theirs\n");
+      expect(Object.keys(A.state.skipped)).toEqual([]);
+      expect(A.state.files[bad]).toBeDefined();
+    });
+  }
+
+  test("a name this system doesn't take stays named, and is never tried again until it changes on the server", async () => {
+    const server = new FakeServer();
+    const long = `${"中".repeat(100)}.md`;
+    server.put(long, "v1\n");
+    const A = copy(server);
+    await A.sync();
+    expect(A.state.skipped[long]!.down).toMatchObject({ never: true });
+    server.downloads = [];
+    for (let i = 0; i < 2; i++) expect((await A.sync()).skipped).toEqual([]);
+    expect(server.downloads).toEqual([]);
+    expect(whatItTakes((await localStatus(A.root, A.state)).skipped[long]!)).toBe("It stays on the server, and comes down only once it changes there (renamed, say).");
+    // Deleted on the server: nothing is left waiting for it.
+    server.files.delete(long);
+    server.deletes = [long];
+    server.put("other.md", "x\n");
+    await A.sync();
+    expect(Object.keys(A.state.skipped)).toEqual([]);
+  });
+
+  test("changed on the server while in the way: what comes down later is the newer version", async () => {
+    const server = new FakeServer();
+    server.put("build", "v1\n");
+    const A = copy(server);
+    mkdirSync(join(A.root, "build"));
+    await A.sync();
+    server.put("build", "v2\n");
+    await A.sync();
+    expect(A.state.skipped.build).toMatchObject({ hash: blobHash(enc("v2\n")), down: { rev: server.head } });
+    rmSync(join(A.root, "build"), { recursive: true });
+    await A.sync();
+    expect(readFileSync(join(A.root, "build"), "utf8")).toBe("v2\n");
+  });
+
+  test("kept across runs: a state read again still knows, and a broken entry is forgotten", async () => {
+    const server = new FakeServer();
+    server.put("build", "theirs\n");
+    const A = copy(server);
+    mkdirSync(join(A.root, "build"));
+    await A.sync();
+    const again = await loadState(A.root);
+    expect(again.skipped.build!.down?.blocker).toEqual({ path: "build", is: "folder" });
+    const state = { ...again, skipped: { ...again.skipped, "x.md": { hash: "1", reason: "r", down: { mode: 1 } } } };
+    await saveState(A.root, state as never);
+    expect(Object.keys((await loadState(A.root)).skipped)).toEqual(["build"]);
   });
 });

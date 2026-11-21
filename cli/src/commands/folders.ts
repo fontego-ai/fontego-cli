@@ -4,7 +4,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { UsageError, type UsageArg } from "../args.ts";
 import { ClientError } from "../client.ts";
 import type { Connection } from "../connect.ts";
-import { localStatus, SyncEngine, type SyncReport } from "../sync/engine.ts";
+import { localStatus, SyncEngine, whatItTakes, type SyncReport } from "../sync/engine.ts";
 import { loadIgnoreRules, type IgnoreMatch } from "../sync/ignore.ts";
 import { isConflictCopy, own, scan } from "../sync/local.ts";
 import { findRoot, loadState, newState, saveState, statePath } from "../sync/state.ts";
@@ -164,8 +164,10 @@ export const folderCommands: Builtin[] = [
           ...st.deleted.map((p) => `deleted   ${p}`),
           ...st.unreadable.map((u) => `unreadable ${u.path} (${u.reason}): left as it was, nothing in it counts as deleted`),
           ...st.unsentLinks.map((l) => `not sent  ${l.path}: ${l.reason}`),
-          ...Object.entries(st.skipped).map(
-            ([p, s]) => `skipped   ${p}: ${s.reason}${s.retryAt ? ` (sent again after ${new Date(s.retryAt).toLocaleString()}, or once it changes)` : ""}`,
+          ...Object.entries(st.skipped).map(([p, s]) =>
+            s.down
+              ? `skipped   ${p}: ${s.reason} ${whatItTakes(s)}`
+              : `skipped   ${p}: ${s.reason}${s.retryAt ? ` (sent again after ${new Date(s.retryAt).toLocaleString()}, or once it changes)` : ""}`,
           ),
           ...(rc.parsed.flags.ignored ? st.ignored.map((p) => `ignored   ${p}`) : []),
         ];

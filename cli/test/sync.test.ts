@@ -755,11 +755,23 @@ describe("one file that can't be here never stops sync", () => {
     write(B, "mine.md", "Bea's new work\n");
     for (let round = 1; round <= 2; round++) {
       const r = await B.sync();
-      if (round === 1) expect(r.skipped).toEqual([{ path: "build", reason: 'Left "build" alone: it is a folder here, and a folder never becomes a file.' }]);
+      if (round === 1) {
+        expect(r.skipped).toEqual([
+          { path: "build", reason: 'Left "build" alone: it is a folder here, and a folder never becomes a file. It comes down once build is no longer a folder here.' },
+        ]);
+      }
       expect(read(B, "zz.md")).toBe("later file\n");
       expect(read(B, "build/out.txt")).toBe("Bea's build, local only\n");
+      // It never goes missing: status keeps naming it, with what it takes.
+      expect(Object.keys((await localStatus(B.root, B.state)).skipped)).toEqual(["build"]);
     }
     expect((await s.call(ana.token, "GET", "/v1/workspaces/clash/files/mine.md")).data).toBe("Bea's new work\n");
+    // Once the folder is out of the way, the next sync brings the file, though nothing changed on the server.
+    rmSync(join(B.root, "build"), { recursive: true });
+    const r = await B.sync();
+    expect(r.pulled).toEqual([{ path: "build", status: "put" }]);
+    expect(read(B, "build")).toBe("a file named build\n");
+    expect((await localStatus(B.root, B.state)).skipped).toEqual({});
   });
 });
 

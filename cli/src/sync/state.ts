@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { isWorkspacePath, STATE_DIR, type LocalEntry } from "./local.ts";
+import { isWorkspacePath, STATE_DIR, type Blocker, type LocalEntry } from "./local.ts";
 
 export interface SyncState {
   version: 1;
@@ -32,6 +32,14 @@ export interface Skipped {
   retryAt?: string;
   /** Refusals of this same content so far */
   tries?: number;
+  /**
+   * Set when it is a file of the server's that can't be written here as things are (without it, a local file the
+   * server refused): its mode and the commit to bring it from, `hash` being its hash there. With `blocker`, what is in
+   * its way here, looked at every round: it comes down once that is gone. With `never`, the path itself can't be here
+   * (a name this system doesn't take, a link that could lead out): it waits until it changes on the server. With
+   * neither, it is tried again from `retryAt`.
+   */
+  down?: { mode: string; rev: string; blocker?: Blocker; never?: true };
 }
 
 export const statePath = (root: string) => join(root, STATE_DIR, "state.json");
@@ -106,7 +114,17 @@ export async function loadState(root: string): Promise<SyncState> {
   const problem = version === 1 ? stateProblem(raw) : "it has no version 1";
   if (problem) throw new StateError(`${path} is damaged: ${problem}.`, relink((raw as { workspace?: string } | null)?.workspace));
   const state = raw as SyncState;
-  return { ...state, files: pathRecord(state.files), skipped: pathRecord(state.skipped) };
+  const skipped = pathRecord(state.skipped);
+  // A file to bring down whose details don't hold is forgotten: the next change to it on the server brings it again.
+  for (const [p, k] of Object.entries(skipped)) if (k.down !== undefined && !validDown(k.down)) delete skipped[p];
+  return { ...state, files: pathRecord(state.files), skipped };
+}
+
+function validDown(d: unknown): boolean {
+  const o = d as Skipped["down"] & object;
+  if (!o || typeof o !== "object" || typeof o.mode !== "string" || typeof o.rev !== "string") return false;
+  const b = o.blocker;
+  return b === undefined || (!!b && isWorkspacePath(b.path) && ["folder", "file", "symlink"].includes(b.is));
 }
 
 export async function saveState(root: string, state: SyncState) {
