@@ -134,28 +134,33 @@ const SlugList = z
   .pipe(z.array(Slug).min(1).max(MAX_TOKEN_WORKSPACES, `name at most ${MAX_TOKEN_WORKSPACES} workspaces, or all of them (--all)`));
 
 /**
- * A new token, for CI and scripts: a name to know it by, which workspaces it reaches (all of its person's, now and
- * later, or a list), whether it also writes (by default it only reads), and how many days it lasts.
+ * A new token, for CI and scripts: a name to know it by, which workspaces it reaches (some, by id, or `all` of its
+ * person's, now and later: one or the other, so a workspace named "all" is never every one), whether it also writes
+ * (by default it only reads), and how many days it lasts.
  */
-export const CreateTokenBody = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(1, "give it a name, to know it in the list")
-    .max(100, "use at most 100 characters")
-    .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters"),
-  workspaces: z.union([z.literal("all"), SlugList], {
-    error: (i) =>
-      i.input === undefined ? "say which workspaces it reaches: some (--workspaces A,B) or all of yours (--all)" : `name workspaces (--workspaces A,B), or "all" (--all)`,
-  }),
-  access: z.enum(["read", "write"]).optional(),
-  expiresInDays: z
-    .number()
-    .int("use whole days")
-    .min(1, "at least one day")
-    .max(TOKEN_MAX_DAYS, `at most ${TOKEN_MAX_DAYS} days: a token always ends, a year after it is made at the latest`)
-    .optional(),
-});
+export const CreateTokenBody = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1, "give it a name, to know it in the list")
+      .max(100, "use at most 100 characters")
+      .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters"),
+    workspaces: SlugList.optional(),
+    all: z.literal(true, "is true for every workspace, or left out").optional(),
+    access: z.enum(["read", "write"]).optional(),
+    expiresInDays: z
+      .number()
+      .int("use whole days")
+      .min(1, "at least one day")
+      .max(TOKEN_MAX_DAYS, `at most ${TOKEN_MAX_DAYS} days: a token always ends, a year after it is made at the latest`)
+      .optional(),
+  })
+  .refine((b) => b.workspaces !== undefined || b.all === true, {
+    message: "say which workspaces it reaches: some (--workspaces A,B) or all of yours (--all)",
+    path: ["workspaces"],
+  })
+  .refine((b) => !(b.workspaces !== undefined && b.all === true), { message: "either some workspaces (--workspaces) or all of them (--all), not both", path: ["all"] });
 export type CreateTokenRequest = z.input<typeof CreateTokenBody>;
 
 /** A person's name, as others see it beside what they change: never empty once it is changed. */
