@@ -3,6 +3,8 @@
 //   2. --instance ALIAS, then FONTEGO_INSTANCE;
 //   3. inside a synced folder, the instance it belongs to (its .fontego/state.json keeps the URL);
 //   4. the default instance (fontego use ALIAS), or the only one.
+// Either way the address is checked before anything is sent (instanceUrl): https, or http on this machine unless
+// accepted (FONTEGO_ALLOW_HTTP=1 for FONTEGO_URL, fontego login --allow-http for an instance).
 
 import { UsageError } from "./args.ts";
 import { fetchInstance, StoredAuth } from "./auth.ts";
@@ -12,6 +14,7 @@ import {
   defaultAlias,
   instanceByAlias,
   instanceByUrl,
+  instanceUrl,
   legacyLogin,
   listInstances,
   migrateLegacy,
@@ -55,7 +58,10 @@ export const notSignedIn = (target?: string) =>
 
 export async function connect(opts: { alias?: string; folderUrl?: string } = {}, env = process.env): Promise<Connection> {
   if (env.FONTEGO_URL && env.FONTEGO_TOKEN) {
-    const url = normalizeUrl(env.FONTEGO_URL);
+    const url = instanceUrl(env.FONTEGO_URL, {
+      allowHttp: env.FONTEGO_ALLOW_HTTP === "1",
+      httpHint: "Use its https:// address, or set FONTEGO_ALLOW_HTTP=1 if the network is yours and you accept that.",
+    });
     if (opts.folderUrl && normalizeUrl(opts.folderUrl) !== url) {
       throw new UsageError(`This folder belongs to ${opts.folderUrl}, but FONTEGO_URL is ${url}.`);
     }
@@ -85,6 +91,10 @@ export async function connect(opts: { alias?: string; folderUrl?: string } = {},
     instance = instanceByAlias(d, env)!;
   }
 
+  instanceUrl(instance.url, {
+    allowHttp: instance.allowHttp,
+    httpHint: `If the network is yours and you accept that, sign in again with: fontego login ${instance.alias} --allow-http`,
+  });
   const store = await credentialStore(env);
   const cred = await store.get(instance.url);
   if (!cred) throw notSignedIn(instance.alias);

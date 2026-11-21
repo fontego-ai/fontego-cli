@@ -6,11 +6,16 @@
 // none, to credentials.json next to it with mode 0600. FONTEGO_CREDENTIAL_STORE=file|keychain forces one.
 //
 // FONTEGO_URL with FONTEGO_TOKEN uses that server and token without touching any of this (scripts, CI).
+//
+// An instance's address is https, or plain http only to this machine (loopback) unless the person accepted it for that
+// instance (fontego login --allow-http) or for FONTEGO_URL (FONTEGO_ALLOW_HTTP=1): over plain http every password,
+// token and refresh token would cross the network as it is.
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { ClientError } from "./client.ts";
 
 export interface Instance {
   alias: string;
@@ -20,6 +25,8 @@ export interface Instance {
   /** Who signed in there, last time */
   email: string | null;
   addedAt: string;
+  /** Plain http to another machine, accepted by the person when signing in (fontego login --allow-http) */
+  allowHttp?: boolean;
 }
 
 interface Registry {
@@ -44,6 +51,50 @@ export type Credential =
   | { type: "token"; token: string };
 
 export const normalizeUrl = (url: string) => url.trim().replace(/\/+$/, "");
+
+/** This machine only (127.0.0.0/8, ::1, localhost), where plain http never crosses a network. */
+export function isLoopback(hostname: string): boolean {
+  const h = hostname.replace(/^\[(.*)\]$/, "$1");
+  return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/** Whether an address is plain http to another machine. */
+export function plainHttp(url: string): boolean {
+  const u = new URL(url);
+  return u.protocol === "http:" && !isLoopback(u.hostname);
+}
+
+/**
+ * A Fontego's address as this machine keeps it: its origin and path, without a trailing slash. Refused: what isn't
+ * http(s), a user name or password (https://good.example@evil.example goes to evil.example), a query or fragment, and
+ * plain http to another machine unless `allowHttp`; `httpHint` says how to accept it where the address came from.
+ */
+export function instanceUrl(input: string, opts: { allowHttp?: boolean; httpHint?: string } = {}): string {
+  const bad = (message: string) => new ClientError(400, "bad_url", message, "Give the address you open in the browser, such as https://fontego.example.org");
+  let u: URL;
+  try {
+    u = new URL(input.trim());
+  } catch {
+    throw bad(`"${input}" isn't an address.`);
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw bad(`${u.protocol} addresses aren't Fontegos: only https:// (or http:// on this machine).`);
+  if (u.username || u.password) throw bad(`That address has a user name or password before ${u.host}, the server it would really go to.`);
+  if (u.search || u.hash) throw bad(`A Fontego's address has no ?query or #fragment: ${u.origin}${u.pathname}`);
+  const url = u.origin + u.pathname.replace(/\/+$/, "");
+  if (plainHttp(url) && !opts.allowHttp) {
+    throw new ClientError(400, "insecure_url", `${url} is plain http: passwords and tokens would cross the network unencrypted.`, opts.httpHint ?? "Use its https:// address.");
+  }
+  return url;
+}
+
+/** Whether two addresses are the same Fontego (both as instanceUrl keeps them); false if either isn't an address. */
+export function sameInstance(a: string, b: string): boolean {
+  try {
+    return instanceUrl(a, { allowHttp: true }) === instanceUrl(b, { allowHttp: true });
+  } catch {
+    return false;
+  }
+}
 
 export const configDir = (env = process.env) => join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "fontego");
 export const configPath = (env = process.env) => join(configDir(env), "config.json");
@@ -130,7 +181,7 @@ export function aliasFor(name: string, url: string, env = process.env): string {
 
 export function saveInstance(i: Instance, opts: { makeDefault?: boolean } = {}, env = process.env) {
   const r = readRegistry(env);
-  r.instances[i.alias] = { url: normalizeUrl(i.url), name: i.name, email: i.email, addedAt: i.addedAt };
+  r.instances[i.alias] = { url: normalizeUrl(i.url), name: i.name, email: i.email, addedAt: i.addedAt, ...(i.allowHttp ? { allowHttp: true } : {}) };
   if (opts.makeDefault || !r.default || !r.instances[r.default]) r.default = i.alias;
   writeRegistry(r, env);
 }

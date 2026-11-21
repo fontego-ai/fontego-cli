@@ -263,3 +263,42 @@ describe("several Fontegos on one machine", () => {
     rmSync(empty, { recursive: true, force: true });
   });
 });
+
+describe("the addresses it signs in to", () => {
+  test("plain http to another machine is refused before anything is sent, unless accepted with --allow-http", async () => {
+    const own = tempDir("fontego-cli-http-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    const refused = JSON.parse((await fontego(["login", "http://fontego.example.org", "--json"], { env: here })).out).error;
+    expect(refused).toMatchObject({ code: "insecure_url", hint: expect.stringContaining("--allow-http") });
+    const tricked = await fontego(["login", "https://good.example@127.0.0.1:1", "--json"], { env: here });
+    expect(JSON.parse(tricked.out).error.code).toBe("bad_url");
+
+    // 0.0.0.0 reaches this machine, but it isn't a loopback address: it stands for one on another machine.
+    const remote = s.url.replace("127.0.0.1", "0.0.0.0");
+    const { token } = await s.person("eli@example.org");
+    expect(JSON.parse((await fontego(["login", remote, "--token", token, "--json"], { env: here })).out).error.code).toBe("insecure_url");
+    expect(JSON.parse((await fontego(["login", remote, "--token", token, "--allow-http", "--json"], { env: here })).out)).toMatchObject({ ok: true, url: remote });
+    // Remembered for that instance only
+    expect(JSON.parse((await fontego(["sessions", "--json"], { env: here })).out).instances[0]).toMatchObject({ url: remote, allowHttp: true });
+    expect(JSON.parse((await fontego(["whoami", "--json"], { env: here })).out).user.email).toBe("eli@example.org");
+
+    // An instance saved without it (by hand, or before this check) is refused, with how to accept it.
+    const config = join(own, "fontego", "config.json");
+    const saved = JSON.parse(readFileSync(config, "utf8"));
+    for (const i of Object.values(saved.instances) as any[]) delete i.allowHttp;
+    writeFileSync(config, JSON.stringify(saved));
+    const old = JSON.parse((await fontego(["whoami", "--json"], { env: here })).out).error;
+    expect(old).toMatchObject({ code: "insecure_url", hint: expect.stringContaining("--allow-http") });
+    rmSync(own, { recursive: true, force: true });
+  });
+
+  test("FONTEGO_URL is checked the same way, and FONTEGO_ALLOW_HTTP=1 accepts plain http", async () => {
+    const { token } = await s.person("fay@example.org");
+    const remote = s.url.replace("127.0.0.1", "0.0.0.0");
+    const refused = JSON.parse((await fontego(["whoami", "--json"], { env: { FONTEGO_URL: remote, FONTEGO_TOKEN: token } })).out).error;
+    expect(refused).toMatchObject({ code: "insecure_url", hint: expect.stringContaining("FONTEGO_ALLOW_HTTP=1") });
+    const ok = await fontego(["whoami", "--json"], { env: { FONTEGO_URL: remote, FONTEGO_TOKEN: token, FONTEGO_ALLOW_HTTP: "1" } });
+    expect(JSON.parse(ok.out).user.email).toBe("fay@example.org");
+    expect(JSON.parse((await fontego(["whoami", "--json"], { env: { FONTEGO_URL: `https://x@${s.url.slice(7)}`, FONTEGO_TOKEN: token } })).out).error.code).toBe("bad_url");
+  });
+});

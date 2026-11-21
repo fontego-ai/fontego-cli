@@ -11,8 +11,9 @@ import {
   forgetInstance,
   instanceByAlias,
   instanceByUrl,
+  instanceUrl,
   listInstances,
-  normalizeUrl,
+  plainHttp,
   rememberStore,
   renameInstance,
   saveInstance,
@@ -97,13 +98,20 @@ export const instanceCommands: Builtin[] = [
       { name: "device", type: "boolean", description: "Show a code to type in a browser on another device (no browser here)" },
       { name: "token", type: "string", value: "TOKEN", description: "Sign in with a token instead, for scripts and CI (or set FONTEGO_TOKEN)" },
       { name: "alias", type: "string", value: "ALIAS", description: "The short name to use for this Fontego (default: from its name)" },
+      { name: "allow-http", type: "boolean", description: "Accept a plain http:// address on another machine, remembered for it: passwords and tokens go unencrypted" },
     ],
     async run(rc) {
       await ensureMigrated();
       const target = await loginTarget(rc);
-      const known = instanceByAlias(target) ?? (isUrl(target) ? instanceByUrl(target) : null);
+      let known = instanceByAlias(target);
       if (!known && !isUrl(target)) throw new UsageError(`No instance "${target}" on this machine.${listInstances().length ? ` Yours: ${listed()}.` : ""} Give its address: fontego login URL`);
-      const url = known?.url ?? normalizeUrl(target);
+      // Nothing is sent before the address is checked: https, or http on this machine unless accepted.
+      const checked = instanceUrl(known?.url ?? target, {
+        allowHttp: rc.parsed.flags["allow-http"] === true || known?.allowHttp === true,
+        httpHint: `Use its https:// address. If the network is yours and you accept that: fontego login ${target} --allow-http`,
+      });
+      known ??= instanceByUrl(checked);
+      const url = known?.url ?? checked;
       const info = await fetchInstance(url);
       const wanted = rc.parsed.flags.alias as string | undefined;
       if (wanted && !known && instanceByAlias(wanted)) throw new UsageError(`"${wanted}" is already the alias of ${instanceByAlias(wanted)!.url}.`);
@@ -145,7 +153,7 @@ export const instanceCommands: Builtin[] = [
       if (previous?.type === "session") await revokeSession(url, previous.refreshToken);
       await store.set(url, cred);
       rememberStore(store.kind);
-      saveInstance({ alias, url, name: info.name, email, addedAt: known?.addedAt ?? new Date().toISOString() });
+      saveInstance({ alias, url, name: info.name, email, addedAt: known?.addedAt ?? new Date().toISOString(), allowHttp: plainHttp(url) });
       const access = cred.type === "token" ? cred.token : cred.accessToken;
       await refreshCommands(new Client(url, access)).catch(() => {});
       const result = {
