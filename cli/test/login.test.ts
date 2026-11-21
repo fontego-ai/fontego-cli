@@ -455,3 +455,20 @@ describe("tokens, and what signing out leaves open", () => {
     rmSync(own, { recursive: true, force: true });
   }, 30_000);
 });
+
+describe("signing in as someone else", () => {
+  test("signing in again as another account than before says so, in text and JSON", async () => {
+    const own = tempDir("fontego-cli-other-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    const [ida, jon] = await Promise.all([s.person("ida@example.org"), s.person("jon@example.org")]);
+    expect(JSON.parse((await fontego(["login", s.url, "--token", ida.token, "--json"], { env: here })).out).accountChanged).toBeNull();
+    expect(JSON.parse((await fontego(["login", "fontego", "--token", ida.token, "--json"], { env: here })).out).accountChanged).toBeNull();
+    const json = JSON.parse((await fontego(["login", "fontego", "--token", jon.token, "--json"], { env: here })).out);
+    expect(json.accountChanged).toEqual({ from: "ida@example.org", to: "jon@example.org" });
+    const text = await fontego(["login", "fontego", "--token", ida.token], { env: here });
+    expect(text.out).toContain("Until now this machine was signed in there as jon@example.org, not ida@example.org.");
+    // The token it replaced still works: said too
+    expect(text.out).toContain("The previous token still works on the server");
+    rmSync(own, { recursive: true, force: true });
+  });
+});

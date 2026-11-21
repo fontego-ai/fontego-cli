@@ -182,6 +182,10 @@ export const instanceCommands: Builtin[] = [
         email = t.session.email;
       }
 
+      // Someone else than before: say so. It may be what the person wanted, or another user of this machine who got
+      // their own approval to this sign-in's waiting port first, so the files synced from here would go to them.
+      const accountChanged = known?.email && known.email !== email ? { from: known.email, to: email } : null;
+
       // A new sign-in replaces this machine's previous session there, which closes on the server.
       const previous = await replaceCredential(url, store, cred);
       const stillOpen = previous ? [leftOpen(alias, previous, true)] : [];
@@ -202,6 +206,7 @@ export const instanceCommands: Builtin[] = [
         store: store.kind,
         agentSkill: skillInstalled(),
         stillOpen,
+        accountChanged,
       };
       if (rc.json) return console.log(JSON.stringify(result));
       console.log(
@@ -209,6 +214,9 @@ export const instanceCommands: Builtin[] = [
           ? `Signed in to ${info.name} (${alias}) as ${email}. The session ends on ${when(cred.expiresAt)} unless you use it before.`
           : `Signed in to ${info.name} (${alias}) as ${email}, with a token.`,
       );
+      if (accountChanged) {
+        console.log(`Until now this machine was signed in there as ${accountChanged.from}, not ${accountChanged.to}. If you didn't mean to change accounts, sign in again: fontego login ${alias}`);
+      }
       for (const o of stillOpen) console.log(o.message);
       // The first time, say how the agents here learn to use fontego.
       if (!result.agentSkill && AGENTS.some((a) => installed(a))) console.log("To teach the AI agents on this machine to use fontego: fontego setup");
