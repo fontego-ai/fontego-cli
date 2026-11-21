@@ -7,13 +7,14 @@
 
 import { agentName } from "./agents.ts";
 import { leadingWords, parseCommand, readGlobals, resolveName, UsageError } from "./args.ts";
-import { BUILTIN_NAMES, BUILTINS, type RunContext } from "./builtins.ts";
+import { BUILTIN_NAMES, BUILTINS, VERSION, type RunContext } from "./builtins.ts";
 import { ClientError } from "./client.ts";
 import { connect, type Connection } from "./connect.ts";
 import { findCommand, nameLength, readCommands, refreshCommands, runCommand, type CachedCommands } from "./declared.ts";
 import { agentPointer, describe } from "./help.ts";
 import { failureOf, printFailure } from "./output.ts";
 import { findRoot, loadState } from "./sync/state.ts";
+import { guardConsole } from "./terminal.ts";
 
 const DAY = 86_400_000;
 
@@ -25,6 +26,8 @@ async function folderUrl(): Promise<string | undefined> {
 
 async function main(): Promise<void> {
   let json = process.argv.includes("--json");
+  // What others wrote (names, messages, file names) reaches the terminal only without control characters.
+  guardConsole(() => json);
   let conn: Connection | null = null;
   let cache: CachedCommands | null = null;
   /** The command being run, once known: a usage error points to its help */
@@ -63,7 +66,13 @@ async function main(): Promise<void> {
         cache = await refreshCommands(client);
         spec = findCommand(cache, words);
       }
-      if (!spec) throw new UsageError(`Unknown command "${words.join(" ") || tokens[0]}". Run: fontego help`);
+      if (!spec) {
+        const refused = cache?.refused?.find((r) => words.join(" ").startsWith(r.name));
+        if (refused) {
+          throw new UsageError(`This fontego (${VERSION}) won't run "fontego ${refused.name}" as this server declares it: ${refused.problems[0]}. A newer fontego may.`);
+        }
+        throw new UsageError(`Unknown command "${words.join(" ") || tokens[0]}". Run: fontego help`);
+      }
       commandName = spec.name;
       if (help) return showHelp(spec.name, describe(spec));
       const parsed = parseCommand(spec, tokens.slice(nameLength(spec, words)));

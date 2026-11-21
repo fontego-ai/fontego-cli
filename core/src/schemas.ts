@@ -18,7 +18,18 @@ export const EMAIL = /^[^\s@]+@[^\s@]+$/;
 
 const Slug = z.string().regex(WORKSPACE_SLUG, "use lowercase letters, digits and dashes, starting with a letter or a digit");
 const Email = z.string().trim().regex(EMAIL, "is not an email address");
-const Text = (max: number) => z.string().max(max);
+/**
+ * Text never holds control characters (but tab and newline), a carriage return that doesn't end a line, or the bidi
+ * controls that reorder what is shown: they mean nothing in a name or a message, and in a terminal they can clear the
+ * screen, fake a line or set the clipboard. A line (a name, a label) holds no tab or line break either.
+ */
+const CONTROL_TEXT = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]|\r(?!\n)/;
+const Text = (max: number) => z.string().max(max).refine((s) => !CONTROL_TEXT.test(s), "can't hold control characters");
+const Line = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters");
 
 // --- Workspaces and members ---
 
@@ -35,12 +46,12 @@ export const TEMPLATE_NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 export const CreateWorkspaceBody = z
   .object({
     slug: Slug,
-    name: Text(200).optional(),
+    name: Line(200).optional(),
     description: Text(5000).optional(),
-    category: Text(MAX_CATEGORY).optional(),
+    category: Line(MAX_CATEGORY).optional(),
     template: z.string().regex(TEMPLATE_NAME, "is not a template name").optional(),
-    git: Text(2000).optional(),
-    branch: Text(200).optional(),
+    git: Line(2000).optional(),
+    branch: Line(200).optional(),
     history: z.boolean().optional(),
   })
   .refine((b) => !(b.template && b.git), { message: "start from a template or from a Git repository, not both", path: ["template"] })
@@ -48,9 +59,9 @@ export const CreateWorkspaceBody = z
 export type CreateWorkspaceRequest = z.input<typeof CreateWorkspaceBody>;
 
 export const UpdateWorkspaceBody = z.object({
-  name: Text(200).optional(),
+  name: Line(200).optional(),
   description: Text(5000).optional(),
-  category: Text(MAX_CATEGORY).optional(),
+  category: Line(MAX_CATEGORY).optional(),
 });
 export type UpdateWorkspaceRequest = z.input<typeof UpdateWorkspaceBody>;
 
@@ -67,7 +78,7 @@ export const FolderDescriptionBody = z.object({
     .trim()
     .min(1, "write what goes in the folder (to take its description away: fontego workspace folders unset)")
     .max(MAX_FOLDER_DESCRIPTION, `use at most ${MAX_FOLDER_DESCRIPTION} characters`)
-    .regex(/^[^\u0000-\u001f\u007f]*$/, "use one line, without line breaks or tabs"),
+    .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "use one line, without line breaks, tabs or control characters"),
 });
 
 // --- People, passwords and tokens ---
@@ -82,17 +93,22 @@ const NewPassword = z
 
 export const CreateUserBody = z.object({
   email: Email,
-  name: Text(200).optional(),
+  name: Line(200).optional(),
   isAdmin: z.boolean().optional(),
 });
 
 export const CreateTokenBody = z.object({
-  label: Text(200).optional(),
+  label: Line(200).optional(),
   kind: z.enum(["person", "agent"]).optional(),
 });
 
 /** A person's name, as others see it beside what they change: never empty once it is changed. */
-const PersonName = z.string().trim().min(1, "can't be empty").max(200, "use at most 200 characters");
+const PersonName = z
+  .string()
+  .trim()
+  .min(1, "can't be empty")
+  .max(200, "use at most 200 characters")
+  .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters");
 
 /** Your own account: what you may change yourself. The email is changed by a server admin (UpdateUserBody). */
 export const UpdateMeBody = z
@@ -109,12 +125,12 @@ export type UpdateUserRequest = z.input<typeof UpdateUserBody>;
 /** Invites someone: creates their account, without a password, and sends them a one-time link to set one. */
 export const InviteBody = z.object({
   email: Email,
-  name: Text(200).optional(),
+  name: Line(200).optional(),
   admin: z.boolean().optional(),
 });
 
 /** Uses a one-time link (set up the first admin, accept an invitation, reset a password): the new password. */
-export const UseLinkBody = z.object({ password: NewPassword, name: Text(200).optional() });
+export const UseLinkBody = z.object({ password: NewPassword, name: Line(200).optional() });
 
 /** Asks for a link to set a new password. The answer is the same whether the address has an account or not. */
 export const PasswordResetBody = z.object({ email: Email });
@@ -135,11 +151,11 @@ export const AuthorizeBody = z.object({
   code_challenge: z.string(),
   code_challenge_method: z.string(),
   state: z.string().max(500).optional(),
-  machine: Text(80).optional(),
+  machine: Line(80).optional(),
   approve: z.boolean(),
 });
 
-export const DeviceStartBody = z.object({ client_id: z.string(), machine: Text(80).optional() });
+export const DeviceStartBody = z.object({ client_id: z.string(), machine: Line(80).optional() });
 
 export const DeviceDecisionBody = z.object({ approve: z.boolean() });
 
@@ -206,7 +222,7 @@ export const PresenceQuery = z.object({ workspace: Opt });
 export const SetPresenceBody = z.object({
   activity: z.enum(PRESENCE_ACTIVITIES).default("working"),
   /** A file, or a folder ending in / */
-  path: Text(1024).optional(),
+  path: Line(1024).optional(),
   tab: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "use 8 to 64 letters, digits, - or _").optional(),
   minutes: z.number().int().min(1).max(PRESENCE_MINUTES.max).default(PRESENCE_MINUTES.default),
 });
@@ -260,7 +276,7 @@ export const ChangeSetBody = z.object({
   message: Text(10_000).default(""),
   ops: z.array(ChangeOpSchema).min(1, "send at least one operation").max(MAX_OPS, `split it: at most ${MAX_OPS} operations`),
   /** Free label of the client: "fontego", "web", "script"... */
-  client: Text(40).optional(),
+  client: Line(40).optional(),
 });
 
 // --- Writing one file, without a copy of the workspace (agents, scripts) ---
