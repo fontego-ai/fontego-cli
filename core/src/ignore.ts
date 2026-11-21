@@ -65,12 +65,19 @@ function parse(text: string): Ignore {
   return rules;
 }
 
-/** A rules file's text by its path from the top (".fontegoignore", "docs/.fontegoignore", ".fontego/ignore"), or null. */
+/**
+ * A rules file's text by its path from the top (".fontegoignore", "docs/.fontegoignore", ".fontego/ignore"), or null
+ * when there is none. One that is there but can't be read throws, and the rules go on without it (`problems`).
+ */
 export type ReadRules = (path: string) => Promise<string | null>;
 
-async function readRules(read: ReadRules, file: string): Promise<Ignore | null> {
-  const text = await read(file).catch(() => null);
-  return text === null ? null : parse(text);
+/** The most of a rules file that counts: a file this big is no list of patterns (a link to /dev/zero, a log). */
+export const MAX_RULES_BYTES = 1024 * 1024;
+
+/** A rules file left out, or read only in part, and why. */
+export interface RulesProblem {
+  source: string;
+  reason: string;
 }
 
 /** Whether a file name is junk an operating system or editor leaves. */
@@ -87,24 +94,45 @@ export class IgnoreRules {
   /** .fontegoignore of each folder seen so far; null where there is none */
   private readonly shared = new Map<string, Level | null>();
   private readonly memo = new Map<string, IgnoreMatch>();
+  private machine: Level | null = null;
+  /** Rules files that couldn't be read, or only in part, so far */
+  readonly problems: RulesProblem[] = [];
 
-  private constructor(
-    private readonly read: ReadRules,
-    private readonly machine: Level | null,
-  ) {}
+  private constructor(private readonly read: ReadRules) {}
 
   static async load(read: ReadRules): Promise<IgnoreRules> {
-    const machine = await readRules(read, MACHINE_IGNORE);
-    const r = new IgnoreRules(read, machine ? { dir: "", source: MACHINE_IGNORE, rules: machine } : null);
+    const r = new IgnoreRules(read);
+    const machine = await r.readRules(MACHINE_IGNORE);
+    r.machine = machine ? { dir: "", source: MACHINE_IGNORE, rules: machine } : null;
     await r.enter("");
     return r;
+  }
+
+  /** One rules file, parsed: at most its first MAX_RULES_BYTES, and nothing (noted in `problems`) if it can't be read. */
+  private async readRules(file: string): Promise<Ignore | null> {
+    let text: string | null;
+    try {
+      text = await this.read(file);
+    } catch (e) {
+      this.problems.push({ source: file, reason: (e as Error)?.message ?? String(e) });
+      return null;
+    }
+    if (text === null) return null;
+    // Each UTF-16 unit is at most 3 bytes of UTF-8, so most files need no encoding to know they fit.
+    if (text.length * 3 > MAX_RULES_BYTES && new TextEncoder().encode(text).length > MAX_RULES_BYTES) {
+      // Up to the last whole line within the limit; what follows doesn't count.
+      const head = text.slice(0, MAX_RULES_BYTES);
+      text = head.slice(0, head.lastIndexOf("\n") + 1);
+      this.problems.push({ source: file, reason: `it is over ${MAX_RULES_BYTES / 1024 / 1024} MiB, so only its first MiB counts` });
+    }
+    return parse(text);
   }
 
   /** Reads a folder's .fontegoignore, once. Scanning calls it on the way down; match needs it for every folder above. */
   async enter(dir: string): Promise<void> {
     if (this.shared.has(dir)) return;
     const source = dir ? `${dir}/${IGNORE_FILE}` : IGNORE_FILE;
-    const rules = await readRules(this.read, source);
+    const rules = await this.readRules(source);
     this.shared.set(dir, rules ? { dir, source, rules } : null);
     if (rules) this.memo.clear();
   }

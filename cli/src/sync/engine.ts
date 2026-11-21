@@ -449,7 +449,8 @@ export class SyncEngine {
 
 /** Local changes compared with the last sync, without talking to the server. */
 export async function localStatus(root: string, state: SyncState) {
-  const scanned = await scan(root, await loadIgnoreRules(root), state.files);
+  const rules = await loadIgnoreRules(root);
+  const scanned = await scan(root, rules, state.files);
   const added: string[] = [];
   const modified: string[] = [];
   const deleted: string[] = [];
@@ -473,5 +474,7 @@ export async function localStatus(root: string, state: SyncState) {
     ignored: scanned.ignored,
     /** Files in the workspace that the rules match: they keep syncing */
     trackedIgnored: scanned.trackedIgnored,
+    /** Ignore files that couldn't be read (a symlink, not a plain file), or only in part: the rest doesn't count */
+    rulesNotRead: rules.problems,
   };
 }

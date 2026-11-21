@@ -63,7 +63,9 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `fontego status` says so, with the `fontego rm` that takes it out (the copy stays where the rules ignore it). Three levels: built-in (`.git`, `.fontego`, system and editor
   junk; keep it short), per machine (`.fontego/ignore`, never synced), and shared (`.fontegoignore` files at the top
   or in any folder, which sync and travel with templates; a deeper one wins). Full `.gitignore` syntax through the
-  `ignore` library (MIT), case ignored. `fontego status --ignored` lists what they keep here and `fontego
+  `ignore` library (MIT), case ignored. A rules file counts only as a plain file, never through a symlink (as Git
+  reads .gitignore since 2.32), and only its first MiB (`MAX_RULES_BYTES`); `fontego status` names one that doesn't.
+  `fontego status --ignored` lists what they keep here and `fontego
   check-ignore PATH` says which rule. This is each copy's convenience; the paths a workspace protects or rejects
   (`core/paths.ts`) are the server's policy, and separate.
 - **The CLI says which agent runs it** (`fontego-agent` header: `FONTEGO_AGENT`, or the variables each agent sets in

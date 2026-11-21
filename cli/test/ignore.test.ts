@@ -1,9 +1,12 @@
 // Ignore rules: .gitignore's syntax, in three levels (built-in, per machine, shared), deepest file winning.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { MAX_RULES_BYTES } from "@fontego/core";
+import { localStatus } from "../src/sync/engine.ts";
 import { loadIgnoreRules } from "../src/sync/ignore.ts";
+import { newState } from "../src/sync/state.ts";
 import { scan } from "../src/sync/local.ts";
 import { tempDir } from "./server.ts";
 
@@ -67,6 +70,36 @@ describe("ignore rules", () => {
       expect(await rulesFor(root, path, isDir)).toMatchObject({ ignored: true, source: "built-in" });
     }
     expect((await rulesFor(root, "sub/.fontego", true)).ignored).toBe(false);
+  });
+
+  test("an ignore file is read only from a plain file: a link to /dev/zero or a pipe is left out, and named", async () => {
+    const root = folder({ "inside.txt": "*.log\n" });
+    symlinkSync("/dev/zero", join(root, ".fontegoignore"));
+    mkdirSync(join(root, "a"));
+    symlinkSync("../inside.txt", join(root, "a/.fontegoignore")); // to a file in the folder, still a link
+    mkdirSync(join(root, "b"));
+    expect(Bun.spawnSync(["mkfifo", join(root, "b/.fontegoignore")]).exitCode).toBe(0); // nobody ever writes to it
+    const rules = await loadIgnoreRules(root);
+    await rules.prepare("a/x.log");
+    await rules.prepare("b/x.log");
+    expect(rules.match("a/x.log", false).ignored).toBe(false);
+    expect(rules.problems.map((p) => [p.source, p.reason])).toEqual([
+      [".fontegoignore", "it is a symlink, and ignore rules are read only from a plain file, so its rules don't count"],
+      ["a/.fontegoignore", "it is a symlink, and ignore rules are read only from a plain file, so its rules don't count"],
+      ["b/.fontegoignore", "it isn't a plain file, so its rules don't count"],
+    ]);
+    // fontego status names them.
+    const st = await localStatus(root, newState("http://localhost", "ws", "Ana"));
+    expect(st.rulesNotRead.map((p) => p.source)).toEqual([".fontegoignore", "a/.fontegoignore", "b/.fontegoignore"]);
+  });
+
+  test("only the first MiB of an ignore file counts", async () => {
+    const filler = "# a comment line that rules nothing\n".repeat(Math.ceil(MAX_RULES_BYTES / 36));
+    const root = folder({ ".fontegoignore": `*.tmp\n${filler}*.late\n` });
+    const rules = await loadIgnoreRules(root);
+    expect(rules.match("a.tmp", false).ignored).toBe(true);
+    expect(rules.match("a.late", false).ignored).toBe(false);
+    expect(rules.problems).toEqual([{ source: ".fontegoignore", reason: "it is over 1 MiB, so only its first MiB counts" }]);
   });
 
   test("scanning sends files the workspace has even when ignored, also inside an ignored folder, and lists the rest", async () => {

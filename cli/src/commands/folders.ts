@@ -166,11 +166,12 @@ export const folderCommands: Builtin[] = [
           (t) =>
             `note: ${t.path} matches ${ruleText(t)} but is in the workspace, so it keeps syncing. To take it out of the workspace (the copy here stays): fontego rm ${state.workspace} ${t.path} --base ${t.hash}`,
         );
+        const rulesNotRead = st.rulesNotRead.map((p) => `note: ${p.source}: ${p.reason}.`);
         const ignored =
           st.ignored.length && !rc.parsed.flags.ignored
             ? [`${st.ignored.length} ignored here (fontego status --ignored lists them; fontego check-ignore PATH says why).`]
             : [];
-        return [`${state.workspace} in ${root}`, lines.length ? lines.join("\n") : "Nothing to send.", ...notes, ...ignored].join("\n");
+        return [`${state.workspace} in ${root}`, lines.length ? lines.join("\n") : "Nothing to send.", ...notes, ...rulesNotRead, ...ignored].join("\n");
       });
     },
   },
