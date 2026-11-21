@@ -14,16 +14,14 @@ export interface ErrorBody {
   error: { code: string; message: string; hint?: string; details?: unknown };
 }
 
-/** How a caller proved who it is: a session (a signed-in browser or CLI) or a token. */
-export interface Credential {
-  type: "session" | "token";
-  id: number;
-  /** web or cli for a session; person or agent for a token */
-  kind: "web" | "cli" | "person" | "agent";
-  /** The browser or the machine of a session; what a token is for */
-  label: string;
-  /** Sessions only: when it ends if nothing else happens (unused too long, or at its maximum) */
-  expiresAt: string | null;
+/**
+ * What a token reaches: every workspace of its person (now and later) or these, and whether it only reads. In each,
+ * it can do what its person can, up to reading (`read`) or writing files (`write`): never more than its person, and
+ * never managing a workspace.
+ */
+export interface TokenScope {
+  workspaces: "all" | string[];
+  access: "read" | "write";
 }
 
 /**
@@ -31,6 +29,27 @@ export interface Credential {
  * changes when the photo does, so it can be kept for good), or null when they have none or the caller may not see it.
  */
 export type PhotoUrl = string | null;
+
+/** How a caller proved who it is: a session (a signed-in browser or CLI) or a token (for CI and scripts). */
+export type Credential =
+  | {
+      type: "session";
+      id: number;
+      kind: "web" | "cli";
+      /** The browser, or the machine */
+      label: string;
+      /** When it ends if nothing else happens: unused too long, or at its maximum */
+      expiresAt: string;
+    }
+  | {
+      type: "token";
+      id: number;
+      /** Its name: what it is for */
+      label: string;
+      /** When it stops working; a token always ends */
+      expiresAt: string;
+      scope: TokenScope;
+    };
 
 export interface Me {
   user: { id: number; email: string; name: string; isAdmin: boolean; photoUrl: PhotoUrl };
@@ -198,25 +217,53 @@ export interface AdminSession extends SessionInfo {
   user: PersonRef;
 }
 
-export interface AdminToken {
+/** A token, as its person (GET /me/tokens) or a server admin sees it. The secret itself is never there. */
+export interface TokenInfo {
   id: number;
-  user: PersonRef;
-  kind: "person" | "agent";
-  label: string;
+  name: string;
+  /** Its first characters ("fontego_pat_7f8e3Q"), to know it by: not secret. Null for tokens made before they were kept */
+  hint: string | null;
+  scope: TokenScope;
   createdAt: string;
+  /** Who made it when it wasn't its own person: a server admin. Null when it was, or it isn't known */
+  createdBy: PersonRef | null;
+  /** When it stops working */
+  expiresAt: string;
   lastUsedAt: string | null;
+}
+
+/** Your tokens that still work (GET /me/tokens), newest first. */
+export interface TokensResponse {
+  tokens: TokenInfo[];
+}
+
+/** A token just made: the only answer that carries its secret. */
+export interface NewToken extends TokenInfo {
+  token: string;
+}
+
+/** A token revoked: it stopped working at once. */
+export interface RevokedToken {
+  revoked: number;
+}
+
+/** Someone's token, in the lists of server admins */
+export interface AdminToken extends TokenInfo {
+  user: PersonRef;
 }
 
 /** One API call, from the access log */
 export interface AccessEntry {
   at: string;
   user: string | null;
-  /** How they signed in: "cli joel-laptop", "web Firefox on Linux", "token ci (agent)" */
+  /** How they signed in: "cli joel-laptop", "web Firefox on Linux", "token CI of the website" */
   credential: string | null;
   agent: string | null;
   method: string;
   route: string;
   workspace: string | null;
+  /** What the call acted on, when the operation says: "token 12" */
+  target: string | null;
   status: number;
 }
 
@@ -602,8 +649,8 @@ export interface ChangeBy {
   agent: string | null;
   /** The client that sent it: fontego (the CLI), web, api... */
   client: string | null;
-  /** How the writer had signed in, with the label it has today: a session ("cli", "joel-laptop") or a token */
-  credential: { type: "session" | "token"; id: number; kind: Credential["kind"]; label: string } | null;
+  /** How the writer had signed in, with the label it has today: a session ("cli", "joel-laptop") or a token (its name) */
+  credential: { type: "session"; id: number; kind: "web" | "cli"; label: string } | { type: "token"; id: number; label: string } | null;
 }
 
 /** GET /history: commits, newest first. */

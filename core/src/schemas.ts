@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { normalizeTags } from "./tags.ts";
+import { MAX_TOKEN_WORKSPACES, TOKEN_MAX_DAYS } from "./tokens.ts";
 
 export const ROLES = ["reader", "editor", "admin"] as const;
 export const RoleSchema = z.enum(ROLES);
@@ -123,10 +124,40 @@ export const CreateUserBody = z.object({
   isAdmin: z.boolean().optional(),
 });
 
+
+/**
+ * Workspace ids, as a JSON list or as text with commas (what the CLI sends: --workspaces a,b). Spaces around each
+ * are dropped and a repeated one counts once.
+ */
+const SlugList = z
+  .union([z.array(z.string()), z.string()])
+  .transform((v) => [...new Set((typeof v === "string" ? v.split(",") : v).map((s) => s.trim()).filter(Boolean))])
+  .pipe(z.array(Slug).min(1).max(MAX_TOKEN_WORKSPACES, `name at most ${MAX_TOKEN_WORKSPACES} workspaces, or all of them (--all)`));
+
+/**
+ * A new token, for CI and scripts: a name to know it by, which workspaces it reaches (all of its person's, now and
+ * later, or a list), whether it also writes (by default it only reads), and how many days it lasts.
+ */
 export const CreateTokenBody = z.object({
-  label: Line(200).optional(),
-  kind: z.enum(["person", "agent"]).optional(),
+  name: z
+    .string()
+    .trim()
+    .min(1, "give it a name, to know it in the list")
+    .max(100, "use at most 100 characters")
+    .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters"),
+  workspaces: z.union([z.literal("all"), SlugList], {
+    error: (i) =>
+      i.input === undefined ? "say which workspaces it reaches: some (--workspaces A,B) or all of yours (--all)" : `name workspaces (--workspaces A,B), or "all" (--all)`,
+  }),
+  access: z.enum(["read", "write"]).optional(),
+  expiresInDays: z
+    .number()
+    .int("use whole days")
+    .min(1, "at least one day")
+    .max(TOKEN_MAX_DAYS, `at most ${TOKEN_MAX_DAYS} days: a token always ends, a year after it is made at the latest`)
+    .optional(),
 });
+export type CreateTokenRequest = z.input<typeof CreateTokenBody>;
 
 /** A person's name, as others see it beside what they change: never empty once it is changed. */
 const PersonName = z
@@ -219,12 +250,11 @@ export const TokenBody = z.discriminatedUnion("grant_type", [
 
 export const RevokeBody = z.object({ token: z.string(), token_type_hint: z.string().optional() });
 
-/** Opens a browser session: with email and password, a token, or a one-time code from `fontego open`. */
-export const SessionBody = z.union([
-  z.object({ email: z.string(), password: z.string().max(MAX_PASSWORD) }),
-  z.object({ token: z.string() }),
-  z.object({ code: z.string() }),
-]);
+/**
+ * Opens a browser session: with email and password, or a one-time code from `fontego open`. Never with a token: a
+ * token reaches only some workspaces, and a browser session would reach everything its person does.
+ */
+export const SessionBody = z.union([z.object({ email: z.string(), password: z.string().max(MAX_PASSWORD) }), z.object({ code: z.string() })]);
 
 // --- Reading ---
 

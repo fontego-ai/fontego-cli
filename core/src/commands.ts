@@ -193,6 +193,9 @@ export interface CommandsManifest {
 /** Header on every API answer: the version of the server's commands. */
 export const COMMANDS_HEADER = "fontego-commands";
 
+/** On every answer to a call made with a token: when that token stops working, so a client can say so before it does. */
+export const TOKEN_EXPIRES_HEADER = "fontego-token-expires";
+
 /** Names of the path parameters in a route path: "/v1/workspaces/{workspace}/files/{+path}" → workspace, path. */
 export function pathParams(path: string): string[] {
   return [...path.matchAll(/\{\+?([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);

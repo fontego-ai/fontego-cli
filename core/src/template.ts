@@ -13,12 +13,13 @@
 //     or:PATH             the value at PATH when this one is empty
 //     map:a=x,b=y         x for a, y for b, nothing for anything else
 //     join, join:FIELD    a list as one text, "a, b": its items, or that field of each ({workspaces|join:slug})
+//     relative            a date from now, by the clock of whoever prints it: "in 89 days", "3 hours ago"
 
 export type TemplateVars = Record<string, unknown>;
 
 const TOKEN = /\{([^{}]*)\}/g;
 const FILTERS_WITH_ARG = new Set(["if", "or", "map"]);
-const FILTERS = new Set(["short", "date", "datetime", "firstLine", "bytes", "dash", "join", ...FILTERS_WITH_ARG]);
+const FILTERS = new Set(["short", "date", "datetime", "firstLine", "bytes", "dash", "join", "relative", ...FILTERS_WITH_ARG]);
 
 function valueAt(data: unknown, path: string): unknown {
   let v: unknown = data;
@@ -45,6 +46,21 @@ function bytes(v: unknown): string {
   return `${(v / 1024 / 1024).toFixed(1)} MB`;
 }
 
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** How far a date is from now, in the largest whole unit: "in 89 days", "in 5 hours", "3 minutes ago". */
+export function relativeTime(iso: string, now = Date.now()): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return iso;
+  const ms = at - now;
+  const span = Math.abs(ms);
+  const [n, unit] = span >= DAY ? [Math.round(span / DAY), "day"] : span >= HOUR ? [Math.round(span / HOUR), "hour"] : [Math.max(1, Math.round(span / MINUTE)), "minute"];
+  const amount = `${n} ${unit}${n === 1 ? "" : "s"}`;
+  return ms < 0 ? `${amount} ago` : `in ${amount}`;
+}
+
 function applyFilter(v: unknown, filter: string, data: unknown, vars: TemplateVars): unknown {
   const colon = filter.indexOf(":");
   const name = colon < 0 ? filter : filter.slice(0, colon);
@@ -60,6 +76,8 @@ function applyFilter(v: unknown, filter: string, data: unknown, vars: TemplateVa
       return text(v).split("\n")[0];
     case "bytes":
       return bytes(v);
+    case "relative":
+      return empty(v) ? "" : relativeTime(text(v));
     case "dash":
       return empty(v) ? "-" : v;
     case "if":
