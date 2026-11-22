@@ -1,0 +1,11 @@
+# What a Docker build never needs from this repo, whether it builds the CLI's image (Dockerfile here) or the server's
+# (fontego-app's Dockerfile takes core from here as its second build context).
+node_modules
+**/node_modules
+dist
+.git
+.env
+*.log
+data
+cli/test
+.github

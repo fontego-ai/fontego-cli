@@ -1,0 +1,234 @@
+// Which files sync leaves alone, in three levels, as Git does:
+//
+//   built-in     the .git and .fontego folders, and the junk operating systems and editors leave (short on purpose);
+//   per machine  .fontego/ignore, never synced, like .git/info/exclude;
+//   shared       .fontegoignore files in the workspace, at the top or in any folder. They sync to everyone and travel
+//                with templates.
+//
+// The syntax is .gitignore's in full (the `ignore` library): `*`, `**`, `!` to take a file back, a leading `/` to
+// anchor a rule to its file's folder, a trailing `/` for folders only. A rule in a deeper .fontegoignore wins over one
+// higher up, and within a file the last rule that matches. The machine's own rules come last and win over every shared
+// one: any editor can write a .fontegoignore, and a `!secret.env` there must not send up what this machine keeps to
+// itself. As in Git, nothing below an ignored folder can be taken back.
+//
+// An ignore rule only keeps new files from going up. It never deletes anything or stops a file that is already in
+// the workspace (tracked) from syncing: otherwise a `*` written by one person would make everyone's sync delete
+// every file. To take such a file out of the workspace: fontego rm.
+//
+// This is a convenience of each copy. The paths the server protects or rejects (paths.ts) are the workspace's
+// policy, enforced on the server whatever these files say.
+//
+// The rules live here, in core, because the server applies them too when it imports a folder, a zip or a Git
+// repository into a new workspace: there every file is new, so what the rules ignore stays out. They read their files
+// through a function, so the same code works on a disk, inside a zip or on a Git tree.
+
+import ignore, { type Ignore } from "ignore";
+import { constants } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { join } from "node:path";
+
+export const STATE_DIR = ".fontego";
+export const IGNORE_FILE = ".fontegoignore";
+/** The machine's own rules, inside the state folder, so they never sync. */
+export const MACHINE_IGNORE = `${STATE_DIR}/ignore`;
+export const BUILT_IN = "built-in";
+
+const JUNK_FILES: Array<[RegExp, string]> = [
+  [/^\.DS_Store$/, ".DS_Store"],
+  [/^Thumbs\.db$/i, "Thumbs.db"],
+  [/^desktop\.ini$/i, "desktop.ini"],
+  [/\.sw[op]$/, "*.swp, *.swo"],
+  [/~$/, "*~"],
+  [/^\.#/, ".#*"],
+  [/^#.*#$/, "#*#"],
+];
+
+export interface IgnoreMatch {
+  ignored: boolean;
+  /** The file the deciding rule is in (".fontegoignore", "docs/.fontegoignore", ".fontego/ignore"), or "built-in" */
+  source?: string;
+  /** Its line in that file, from 1 */
+  line?: number;
+  pattern?: string;
+  /** The folder ignored, when the path is ignored because a folder above it is */
+  folder?: string;
+}
+
+interface Level {
+  /** The folder its rules apply to, "" for the top */
+  dir: string;
+  source: string;
+  rules: Ignore;
+}
+
+function parse(text: string): Ignore {
+  const rules = ignore();
+  text.split(/\r?\n/).forEach((pattern, i) => {
+    if (pattern.trim() && !pattern.trimStart().startsWith("#")) rules.add({ pattern, mark: String(i + 1) });
+  });
+  return rules;
+}
+
+/**
+ * A rules file's text by its path from the top (".fontegoignore", "docs/.fontegoignore", ".fontego/ignore"), or null
+ * when there is none. One that is there but can't be read throws, and the rules go on without it (`problems`).
+ */
+export type ReadRules = (path: string) => Promise<string | null>;
+
+/** The most of a rules file that counts: a file this big is no list of patterns (a link to /dev/zero, a log). */
+export const MAX_RULES_BYTES = 1024 * 1024;
+
+/** A rules file left out, or read only in part, and why. */
+export interface RulesProblem {
+  source: string;
+  reason: string;
+}
+
+/** Whether a file name is junk an operating system or editor leaves. */
+export const isJunk = (name: string) => JUNK_FILES.some(([re]) => re.test(name));
+
+/** Built-in rules: true with the rule's name, or null. */
+function builtIn(path: string, isDir: boolean): string | null {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (isDir) return name === ".git" ? ".git/" : path === STATE_DIR ? `${STATE_DIR}/` : null;
+  return JUNK_FILES.find(([re]) => re.test(name))?.[1] ?? null;
+}
+
+export class IgnoreRules {
+  /** .fontegoignore of each folder seen so far; null where there is none */
+  private readonly shared = new Map<string, Level | null>();
+  private readonly memo = new Map<string, IgnoreMatch>();
+  private machine: Level | null = null;
+  /** Rules files that couldn't be read, or only in part, so far */
+  readonly problems: RulesProblem[] = [];
+
+  private constructor(private readonly read: ReadRules) {}
+
+  static async load(read: ReadRules): Promise<IgnoreRules> {
+    const r = new IgnoreRules(read);
+    const machine = await r.readRules(MACHINE_IGNORE);
+    r.machine = machine ? { dir: "", source: MACHINE_IGNORE, rules: machine } : null;
+    await r.enter("");
+    return r;
+  }
+
+  /** One rules file, parsed: at most its first MAX_RULES_BYTES, and nothing (noted in `problems`) if it can't be read. */
+  private async readRules(file: string): Promise<Ignore | null> {
+    let text: string | null;
+    try {
+      text = await this.read(file);
+    } catch (e) {
+      this.problems.push({ source: file, reason: (e as Error)?.message ?? String(e) });
+      return null;
+    }
+    if (text === null) return null;
+    // Each UTF-16 unit is at most 3 bytes of UTF-8, so most files need no encoding to know they fit.
+    if (text.length * 3 > MAX_RULES_BYTES && new TextEncoder().encode(text).length > MAX_RULES_BYTES) {
+      // Up to the last whole line within the limit; what follows doesn't count.
+      const head = text.slice(0, MAX_RULES_BYTES);
+      text = head.slice(0, head.lastIndexOf("\n") + 1);
+      this.problems.push({ source: file, reason: `it is over ${MAX_RULES_BYTES / 1024 / 1024} MiB, so only its first MiB counts` });
+    }
+    return parse(text);
+  }
+
+  /** Reads a folder's .fontegoignore, once. Scanning calls it on the way down; match needs it for every folder above. */
+  async enter(dir: string): Promise<void> {
+    if (this.shared.has(dir)) return;
+    const source = dir ? `${dir}/${IGNORE_FILE}` : IGNORE_FILE;
+    const rules = await this.readRules(source);
+    this.shared.set(dir, rules ? { dir, source, rules } : null);
+    if (rules) this.memo.clear();
+  }
+
+  /** Reads the .fontegoignore of every folder above a path, for a path that wasn't reached by scanning. */
+  async prepare(path: string): Promise<void> {
+    const parts = path.split("/");
+    for (let i = 0; i < parts.length; i++) await this.enter(parts.slice(0, i).join("/"));
+  }
+
+  /** Whether the rules ignore a path, and which rule decides. The folders above it must have been entered. */
+  match(path: string, isDir: boolean): IgnoreMatch {
+    const key = `${isDir ? "d" : "f"}:${path}`;
+    const known = this.memo.get(key);
+    if (known) return known;
+    const result = this.decide(path, isDir);
+    this.memo.set(key, result);
+    return result;
+  }
+
+  private decide(path: string, isDir: boolean): IgnoreMatch {
+    const builtin = builtIn(path, isDir);
+    if (builtin) return { ignored: true, source: BUILT_IN, pattern: builtin };
+    // Nothing below an ignored folder comes back.
+    const slash = path.lastIndexOf("/");
+    if (slash > 0) {
+      const parent = this.match(path.slice(0, slash), true);
+      if (parent.ignored) return { ...parent, folder: parent.folder ?? path.slice(0, slash) };
+    }
+    // From the weakest level to the strongest; the last one with an opinion decides: the shared files from the top
+    // down, then this machine's.
+    const levels: Level[] = [];
+    const parts = path.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const level = this.shared.get(parts.slice(0, i).join("/"));
+      if (level) levels.push(level);
+    }
+    if (this.machine) levels.push(this.machine);
+    let decision: IgnoreMatch = { ignored: false };
+    for (const level of levels) {
+      const rel = (level.dir ? path.slice(level.dir.length + 1) : path) + (isDir ? "/" : "");
+      const r = level.rules.test(rel);
+      if (r.ignored) decision = { ignored: true, source: level.source, line: Number(r.rule!.mark), pattern: r.rule!.pattern };
+      else if (r.unignored) decision = { ignored: false };
+    }
+    return decision;
+  }
+}
+
+// --- Reading the rules from a disk: a synced folder, or a folder imported into a new workspace ---
+
+// Not on Windows, where both are 0: there the lstat before opening is the check.
+const { O_RDONLY, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = constants;
+
+const isAbsent = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
+
+/**
+ * A rules file's text, only from a plain file in the folder, as Git reads .gitignore since 2.32: never through a
+ * symlink (which could lead to /dev/zero, or to a pipe that never ends), and at most a little over MAX_RULES_BYTES,
+ * which is all that counts. Opened without following a link nor waiting for a writer, then checked again, in case it
+ * was swapped since the lstat. Null when there is none; an error with the reason when it can't be read.
+ */
+async function readRulesFile(full: string): Promise<string | null> {
+  const unread = (why: string) => new Error(`${why}, so its rules don't count`);
+  const symlink = unread("it is a symlink, and ignore rules are read only from a plain file");
+  const special = unread("it isn't a plain file");
+  const failed = (e: unknown) => unread(`it can't be read (${(e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message})`);
+  try {
+    const st = await lstat(full);
+    if (st.isSymbolicLink()) throw symlink;
+    if (!st.isFile()) throw special;
+  } catch (e) {
+    if (isAbsent(e)) return null;
+    throw e === symlink || e === special ? e : failed(e);
+  }
+  const fh = await open(full, O_RDONLY | O_NOFOLLOW | O_NONBLOCK).catch((e: NodeJS.ErrnoException) => {
+    throw e.code === "ELOOP" ? symlink : failed(e);
+  });
+  try {
+    if (!(await fh.stat()).isFile()) throw special;
+    const buf = new Uint8Array(MAX_RULES_BYTES + 1);
+    let got = 0;
+    while (got < buf.length) {
+      const { bytesRead } = await fh.read(buf, got, buf.length - got, got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+    }
+    return new TextDecoder().decode(buf.subarray(0, got));
+  } finally {
+    await fh.close();
+  }
+}
+
+/** The rules files of the folder at `root`, read from its disk by readRulesFile. */
+export const rulesOnDisk = (root: string): ReadRules => (path) => readRulesFile(join(root, path));

@@ -1,0 +1,128 @@
+# The fontego command's container image, built and published for each release: a tag vX.Y.Z pushed to
+# fontego-ai/fontego-cli, the same version as cli/package.json. One image, the same digest in two registries:
+#
+#   ghcr.io/fontego-ai/fontego   the one the docs give (no pull limits)
+#   docker.io/fontego/fontego    the same image, for whoever looks for it on Docker Hub
+#
+# Tags: the version (0.1.0), and for a version without a pre-release part also its minor line (0.1) and latest.
+# For linux/amd64 and linux/arm64, with the build's provenance and an SBOM attached.
+#
+# Needs, in this repository's settings: the variable DOCKERHUB_USERNAME and the secret DOCKERHUB_TOKEN (a Docker Hub
+# access token that can read and write repositories). GHCR takes the workflow's own token. To build a release again,
+# re-run this workflow's run for its tag.
+name: Image
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # GHCR shows the description of the index, so the labels also go there as annotations.
+  DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+jobs:
+  image:
+    # A fork has neither the secrets nor the right to these names.
+    if: github.repository == 'fontego-ai/fontego-cli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The tag is the version in cli/package.json
+        run: |
+          version=$(jq -r .version cli/package.json)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME doesn't match cli/package.json ($version). Tag the commit that has the version."
+            exit 1
+          fi
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+
+      # No QEMU: the Dockerfile runs everything on the runner (Bun cross-compiles) and its last stage only copies.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: |
+            ghcr.io/fontego-ai/fontego
+            docker.io/fontego/fontego
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=fontego
+            org.opencontainers.image.description=The fontego command: sign in to a Fontego server, explore its workspaces and keep a folder in sync
+            org.opencontainers.image.url=https://fontego.ai
+            org.opencontainers.image.documentation=https://docs.fontego.ai
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build for this runner
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: fontego:release-check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Try it before publishing
+        run: |
+          got=$(docker run --rm fontego:release-check version)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::The image says version '$got', the release is $VERSION"
+            exit 1
+          fi
+          docker run --rm fontego:release-check help >/dev/null
+          # Any user, not only the image's: a CI job often runs as the owner of the folder it mounts.
+          docker run --rm --user 4321:4321 fontego:release-check help >/dev/null
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - id: push
+        name: Build for every platform and publish
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### fontego $VERSION"
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            while IFS= read -r tag; do echo "- \`$tag\`"; done <<<"$TAGS"
+          } >>"$GITHUB_STEP_SUMMARY"
