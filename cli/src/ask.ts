@@ -5,6 +5,7 @@
 import { UsageError, usageLine, type Parsed, type Usage, type UsageArg } from "./args.ts";
 import { canAsk } from "./output.ts";
 import { askText, choose, type Choice } from "./picker.ts";
+import { forPerson, writeStderr } from "./terminal.ts";
 
 /** Where one argument's values come from, or null when it is typed. */
 export type ChoicesSource = { local: boolean; load: () => Promise<Choice[]> } | null;
@@ -33,7 +34,7 @@ export async function askMissing<A extends UsageArg>(u: Usage & { args?: A[] }, 
     parsed.args[arg.name] = (await choose(title, choices)).value;
   }
   delete parsed.missing;
-  process.stderr.write(`Same as: ${commandLine(u, parsed, opts.instance)}\n`);
+  writeStderr(`Same as: ${forPerson(commandLine(u, parsed, opts.instance))}\n`);
 }
 
 /** The usage line, and for each argument left out whose values are known here, what it can be. */

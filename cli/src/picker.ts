@@ -7,7 +7,7 @@
 // output stays clean on stdout. A terminal that can't move the cursor (TERM=dumb) gets a numbered list instead.
 
 import { UsageError } from "./args.ts";
-import { colorful } from "./terminal.ts";
+import { colorful, forPerson } from "./terminal.ts";
 
 export interface Choice {
   value: string;
@@ -137,10 +137,14 @@ export interface Screen {
   color: boolean;
 }
 
+/** A choice, a title or a label on one line and with nothing that acts on the terminal: a server may have written it. */
+const plain = (text: string) => forPerson(text.replace(/\s*[\r\n]+\s*/g, " "));
+
 /** Cuts a line to the terminal's width, so it never wraps (the list redraws itself line by line). */
 export function fit(text: string, width: number): string {
-  const chars = [...text];
-  return chars.length <= width ? text : `${chars.slice(0, Math.max(0, width - 1)).join("")}…`;
+  const line = plain(text);
+  const chars = [...line];
+  return chars.length <= width ? line : `${chars.slice(0, Math.max(0, width - 1)).join("")}…`;
 }
 
 /** What the list looks like now: a title line, the rows that fit around the cursor, and a line of keys. */
@@ -264,7 +268,7 @@ export async function choose(title: string, choices: Choice[], term: Terminal = 
 
 /** The list for a terminal that can't redraw: numbered rows, then the number (or the value itself) typed in. */
 async function chooseByNumber(title: string, choices: Choice[], term: Terminal): Promise<Choice> {
-  term.output.write(`${title}\n${choices.map((c, i) => `  ${i + 1}) ${c.value}${c.label ? `  ${c.label}` : ""}`).join("\n")}\n`);
+  term.output.write(`${plain(title)}\n${choices.map((c, i) => plain(`  ${i + 1}) ${c.value}${c.label ? `  ${c.label}` : ""}`)).join("\n")}\n`);
   const answer = (await askText("Number", { term })).trim();
   const n = Number(answer);
   const picked = Number.isInteger(n) && n >= 1 && n <= choices.length ? choices[n - 1] : choices.find((c) => c.value === answer);
@@ -286,7 +290,7 @@ export async function askText(label: string, opts: TextOptions = {}): Promise<st
   const { output } = term;
   let typed = "";
   const value = await withKeys<string | null>(term, {
-    start: () => output.write(opts.hidden ? `${label} (not shown): ` : `${label}: `),
+    start: () => output.write(opts.hidden ? `${plain(label)} (not shown): ` : `${plain(label)}: `),
     onKeys(keys) {
       for (const key of keys) {
         if (key.name === "enter") return { done: typed };

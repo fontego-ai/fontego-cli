@@ -162,7 +162,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/table.ts` | The terminal's width, for core's tables (none through a pipe) |
 | `cli/src/args.ts` | Command words, arguments and flags, and usage lines |
 | `cli/src/ask.ts` | The arguments a command was given without: asked for when a person can be asked, else the usage error with the values known here; and the command written back |
-| `cli/src/picker.ts` | Asking at a terminal: picking from a list (arrows, filter by text or number, Enter, Esc) and typing a line, also a secret without echo; a numbered list where the terminal can't redraw (`TERM=dumb`) |
+| `cli/src/picker.ts` | Asking at a terminal: picking from a list (arrows, filter by text or number, Enter, Esc) and typing a line, also a secret without echo; a numbered list where the terminal can't redraw (`TERM=dumb`). What it shows goes on one line and through the filter of `terminal.ts`; what is picked is the value as it came |
 | `cli/src/builtins.ts` | Collects the built-in commands for dispatch, help and the reference docs. Instance and sign-in commands live in `cli/src/commands/instances.ts` and synced-folder commands in `cli/src/commands/folders.ts` |
 | `cli/src/declared.ts` | Commands the server declares: cache, checks, building the request, printing the answer |
 | `cli/src/help.ts` | `fontego help`, `fontego help COMMAND` and `fontego help --agent`, built from the commands themselves |

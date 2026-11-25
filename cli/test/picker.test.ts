@@ -114,7 +114,7 @@ describe("the command written back", () => {
  * A terminal in memory: keys go in through `type`, and what fontego writes lands on a screen that understands the
  * few sequences it uses (cursor up, carriage return, clear to the end, backspace), so a test sees what a person would.
  */
-function fakeTerminal() {
+function fakeTerminal(env: Record<string, string> = {}) {
   const input = Object.assign(new EventEmitter(), { setRawMode: () => input, setEncoding: () => input, resume: () => input, pause: () => input });
   const screen: string[] = [""];
   let row = 0;
@@ -144,7 +144,7 @@ function fakeTerminal() {
     return true;
   };
   const output = Object.assign(new EventEmitter(), { write, columns: 80, rows: 24 });
-  const term = { input, output, env: {} } as unknown as Terminal;
+  const term = { input, output, env } as unknown as Terminal;
   const type = async (...chunks: string[]) => {
     for (const c of chunks) {
       await Bun.sleep(1);
@@ -177,6 +177,25 @@ describe("on a terminal", () => {
     const cancelled = askText("EMAIL", { term: u.term });
     await u.type("ana\x1b");
     await expect(cancelled).rejects.toThrow("Cancelled: nothing changed.");
+  });
+
+  test("what a server wrote can't act on the terminal nor pose as another line: choices, titles and labels", async () => {
+    const evil = "a\u001b]52;c;aGk=\u0007b\r\n  2) safe";
+    const unsafe = /[\u0000-\u0009\u000b-\u001f\u0080-\u009f]|\n/;
+    const drawn = drawPicker(startPicker([{ value: evil, label: evil }, { value: "safe" }]), evil, SCREEN);
+    expect(drawn).toHaveLength(4);
+    for (const line of drawn) expect(line).not.toMatch(unsafe);
+    const dumb = fakeTerminal({ TERM: "dumb" });
+    const picked = choose(evil, [{ value: evil }], dumb.term);
+    await dumb.type("1\r");
+    // What is picked is the value itself; only how it shows changes
+    expect((await picked).value).toBe(evil);
+    expect(dumb.screen.join("")).not.toContain("\u001b]52");
+    const t = fakeTerminal();
+    const typed = askText(evil, { term: t.term });
+    await t.type("x\r");
+    expect(await typed).toBe("x");
+    expect(t.screen.join("")).not.toContain("\u001b]52");
   });
 
   test("a secret shows nothing of what is typed", async () => {
