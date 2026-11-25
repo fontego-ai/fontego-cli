@@ -48,7 +48,12 @@ export type Credential =
       expiresAt: string;
       email: string;
     }
-  | { type: "token"; token: string };
+  | {
+      type: "token";
+      token: string;
+      /** When it stops working, as the server said (from /me at sign-in, or its fontego-token-expires header) */
+      expiresAt?: string;
+    };
 
 export const normalizeUrl = (url: string) => url.trim().replace(/\/+$/, "");
 
@@ -202,11 +207,16 @@ export function setDefault(alias: string, env = process.env) {
   writeRegistry(r, env);
 }
 
+/** What is wrong with an alias, or null: lowercase letters, digits and dashes, 32 at most. */
+export const aliasProblem = (alias: string): string | null =>
+  /^[a-z0-9][a-z0-9-]{0,31}$/.test(alias) ? null : `"${alias}" can't be an alias: an alias is lowercase letters, digits and dashes (32 at most).`;
+
 export function renameInstance(from: string, to: string, env = process.env) {
   const r = readRegistry(env);
   if (!r.instances[from]) throw new Error(`No instance "${from}".`);
   if (r.instances[to]) throw new Error(`"${to}" is already the alias of ${r.instances[to]!.url}.`);
-  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(to)) throw new Error("An alias is lowercase letters, digits and dashes.");
+  const problem = aliasProblem(to);
+  if (problem) throw new Error(problem);
   r.instances[to] = r.instances[from]!;
   delete r.instances[from];
   if (r.default === from) r.default = to;

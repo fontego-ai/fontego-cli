@@ -307,6 +307,37 @@ describe("several Fontegos on one machine", () => {
     expect(JSON.parse((await fontego(["sessions", "--json"])).out).instances.map((i: any) => i.alias)).toEqual(["fontego"]);
   });
 
+  test("signing in again with --alias renames the Fontego this machine knows, and says so; a taken alias is refused first", async () => {
+    const own = tempDir("fontego-cli-alias-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    const { token } = await s.person("ivo@example.org");
+    expect(JSON.parse((await fontego(["login", s.url, "--token", token, "--json"], { env: here })).out)).toMatchObject({ alias: "fontego", renamed: null });
+    const again = await fontego(["login", s.url, "--token", token, "--alias", "office"], { env: here });
+    expect(again.out).toContain("Signed in to Fontego (office)");
+    expect(again.out).toContain("fontego is now office.");
+    // By alias, too, in JSON; the default follows it
+    expect(JSON.parse((await fontego(["login", "office", "--token", token, "--alias", "casa", "--json"], { env: here })).out).renamed).toEqual({ from: "office", to: "casa" });
+    const list = JSON.parse((await fontego(["sessions", "--json"], { env: here })).out);
+    expect([list.default, list.instances.map((i: any) => i.alias)]).toEqual(["casa", ["casa"]]);
+
+    // An alias another Fontego has, or one that can't be an alias, is refused before anything is sent.
+    expect((await fontego(["login", s2.url, "--token", (await s2.person("ivo@example.org")).token, "--alias", "work"], { env: here })).code).toBe(0);
+    const fake = fakeFontego();
+    try {
+      for (const [alias, says] of [["casa", '"casa" is already the alias of'], ["Mi Casa", "an alias is lowercase letters"]]) {
+        const r = await fontego(["login", "work", "--token", "t", "--alias", alias!], { env: here });
+        expect([r.code, r.err]).toEqual([1, expect.stringContaining(says!)]);
+        const other = await fontego(["login", fake.url, "--token", "t", "--alias", alias!], { env: here });
+        expect([other.code, other.err]).toEqual([1, expect.stringContaining(says!)]);
+      }
+      expect(fake.seen).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+    expect(JSON.parse((await fontego(["sessions", "--json"], { env: here })).out).instances.map((i: any) => i.alias)).toEqual(["casa", "work"]);
+    rmSync(own, { recursive: true, force: true });
+  });
+
   test("the first version's login moves over by itself", async () => {
     const old = tempDir("fontego-cli-legacy-");
     writeFileSync(join(old, "placeholder"), "");
@@ -467,6 +498,29 @@ describe("tokens, and what signing out leaves open", () => {
     expect(JSON.parse((await fontego(["logout", "--json"], { env: here })).out).stillOpen).toEqual([
       { alias: "fontego", credential: "token", message: expect.stringContaining("revoke it where it was created") },
     ]);
+    rmSync(own, { recursive: true, force: true });
+  });
+
+  test("fontego sessions says when a token ends: learnt at sign-in, or from the server's answer when it was saved without", async () => {
+    const own = tempDir("fontego-cli-token-end-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    await s.person("kai@example.org");
+    const token = s.token("kai@example.org", { days: 30 });
+    const signedIn = JSON.parse((await fontego(["login", s.url, "--token", token, "--json"], { env: here })).out);
+    const row = async () => JSON.parse((await fontego(["sessions", "--json"], { env: here })).out).instances[0];
+    expect(await row()).toMatchObject({ status: "token", credential: "token", endsAt: signedIn.expiresAt });
+    expect((await fontego(["sessions"], { env: here })).out).toMatch(new RegExp(`token\\s+${signedIn.expiresAt.slice(0, 10)}\\s+http`));
+    // Saved by an earlier fontego, without its end: the next command's answer brings it.
+    const file = join(own, "fontego", "credentials.json");
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    delete saved[s.url].expiresAt;
+    writeFileSync(file, JSON.stringify(saved));
+    expect((await row()).endsAt).toBeNull();
+    expect((await fontego(["whoami"], { env: here })).code).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))[s.url]).toEqual({ type: "token", token, expiresAt: signedIn.expiresAt });
+    // One that ended has ended, whatever kind it is.
+    writeFileSync(file, JSON.stringify({ [s.url]: { type: "token", token, expiresAt: "2026-01-01T00:00:00.000Z" } }));
+    expect(await row()).toMatchObject({ status: "ended", credential: "token" });
     rmSync(own, { recursive: true, force: true });
   });
 

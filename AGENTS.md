@@ -51,17 +51,18 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   machine allows. There is no full-screen interface: that is the web app's job.
 - **One machine, several Fontegos.** `fontego login` signs in through the browser (OAuth with PKCE and a loopback
   redirect), or with a code typed on another device when there is no display, over SSH (Linux too) or when no program
-  here opens a browser (`--device` asks for it); every machine signs in so, as its person. `--token` stays for
-  scripts and CI, with each person's own tokens (they always end: in their last week every command says so, from the
-  `fontego-token-expires` header, and one that ended isn't renewed: the server's hint comes through) (`--token -` reads it from stdin, out of `ps` and the shell's history; `FONTEGO_TOKEN` counts for
-  login only when `FONTEGO_URL` is that same Fontego). `config.json` lists the instances under short aliases and holds
-  no secrets; credentials go to the system keychain (`Bun.secrets`), or to `credentials.json` (0600, in a 0700
-  folder, written under a random name) where there is none. Each command goes to `--instance`, `FONTEGO_INSTANCE`,
-  the synced folder's instance, or the default (`connect.ts`). Sessions renew by themselves under a lock: two
-  processes swapping the same refresh token would make the server close the session. The lock is never taken from a
-  process that still runs, and login and logout swap the credential under it too. Signing in as another account than
-  before says so (`accountChanged`), and signing out says what stays open on the server (`stillOpen`: a token, or a
-  session the server didn't close).
+  here opens a browser (`--device` asks for it); every machine signs in so, as its person. `--token` stays for scripts
+  and CI, with each person's own tokens (they always end: in their last week every command says so, from the
+  `fontego-token-expires` header, and one that ended isn't renewed: the server's hint comes through) (`--token -` reads
+  it from stdin, out of `ps` and the shell's history; `FONTEGO_TOKEN` counts for login only when `FONTEGO_URL` is that
+  same Fontego; a token's end is saved with it, for `fontego sessions`). `--alias` names a Fontego, or renames one this
+  machine knows. `config.json` lists the instances under short aliases and holds no secrets; credentials go to the
+  system keychain (`Bun.secrets`), or to `credentials.json` (0600, in a 0700 folder, written under a random name) where
+  there is none. Each command goes to `--instance`, `FONTEGO_INSTANCE`, the synced folder's instance, or the default
+  (`connect.ts`). Sessions renew by themselves under a lock: two processes swapping the same refresh token would make
+  the server close the session. The lock is never taken from a process that still runs, and login and logout swap the
+  credential under it too. Signing in as another account than before says so (`accountChanged`), and signing out says
+  what stays open on the server (`stillOpen`: a token, or a session the server didn't close).
 - **Credentials go only where the person said.** An instance's address is https, or plain http only to this machine
   (loopback) unless accepted: `fontego login --allow-http`, remembered for that instance, or `FONTEGO_ALLOW_HTTP=1`
   for `FONTEGO_URL`; never with a user name, query or fragment (`instanceUrl`, `config.ts`). No redirect is followed

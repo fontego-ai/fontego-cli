@@ -18,6 +18,7 @@ import {
 import { Client } from "../client.ts";
 import {
   aliasFor,
+  aliasProblem,
   configPath,
   credentialStore,
   defaultAlias,
@@ -56,13 +57,16 @@ const reach = (scope: TokenScope) =>
 
 type Status = "active" | "ends soon" | "ended" | "signed out" | "token";
 
-/** How an instance stands on this machine, from what is stored (no network). */
-async function statusOf(i: Instance, store: CredentialStore): Promise<{ status: Status; endsAt: string | null }> {
+/** How an instance stands on this machine, from what is stored (no network): a token that ended has ended too. */
+async function statusOf(i: Instance, store: CredentialStore): Promise<{ status: Status; endsAt: string | null; credential: SavedCredential["type"] | null }> {
   const c: SavedCredential | null = await store.get(i.url);
-  if (!c) return { status: "signed out", endsAt: null };
-  if (c.type === "token") return { status: "token", endsAt: null };
+  if (!c) return { status: "signed out", endsAt: null, credential: null };
+  if (c.type === "token") {
+    const ended = c.expiresAt !== undefined && Date.parse(c.expiresAt) <= Date.now();
+    return { status: ended ? "ended" : "token", endsAt: c.expiresAt ?? null, credential: "token" };
+  }
   const left = Date.parse(c.expiresAt) - Date.now();
-  return { status: left <= 0 ? "ended" : left < 3 * DAY ? "ends soon" : "active", endsAt: c.expiresAt };
+  return { status: left <= 0 ? "ended" : left < 3 * DAY ? "ends soon" : "active", endsAt: c.expiresAt, credential: "session" };
 }
 
 /** One of this machine's Fontegos, picked from its list when left out at a terminal */
@@ -139,7 +143,7 @@ export const instanceCommands: Builtin[] = [
         value: "TOKEN",
         description: "Sign in with a token instead, for scripts and CI; --token - reads it from stdin, out of ps and the shell's history (FONTEGO_TOKEN counts only when FONTEGO_URL is this Fontego)",
       },
-      { name: "alias", type: "string", value: "ALIAS", description: "The short name to use for this Fontego (default: from its name)" },
+      { name: "alias", type: "string", value: "ALIAS", description: "The short name to use for this Fontego (default: from its name); one this machine knows takes it as its new alias" },
       { name: "allow-http", type: "boolean", description: "Accept a plain http:// address on another machine, remembered for it: passwords and tokens go unencrypted" },
     ],
     async run(rc) {
@@ -154,10 +158,18 @@ export const instanceCommands: Builtin[] = [
       });
       known ??= instanceByUrl(checked);
       const url = known?.url ?? checked;
-      const info = await fetchInstance(url);
+      // The alias asked for, checked before anything opens: this Fontego's already, or one no other has.
       const wanted = rc.parsed.flags.alias as string | undefined;
-      if (wanted && !known && instanceByAlias(wanted)) throw new UsageError(`"${wanted}" is already the alias of ${instanceByAlias(wanted)!.url}.`);
-      const alias = known?.alias ?? wanted ?? aliasFor(info.name, url);
+      if (wanted !== undefined) {
+        const problem = aliasProblem(wanted);
+        if (problem) throw new UsageError(problem);
+        const owner = instanceByAlias(wanted);
+        if (owner && owner.url !== url) throw new UsageError(`"${wanted}" is already the alias of ${owner.url}.`);
+      }
+      const info = await fetchInstance(url);
+      // A Fontego this machine knows under another alias takes the one asked for, once signed in.
+      const renamed = known && wanted && wanted !== known.alias ? { from: known.alias, to: wanted } : null;
+      const alias = wanted ?? known?.alias ?? aliasFor(info.name, url);
       const store = await credentialStore();
       const say = (data: Record<string, unknown>, text: string) => (rc.json ? console.log(JSON.stringify(data)) : console.error(text));
 
@@ -170,7 +182,7 @@ export const instanceCommands: Builtin[] = [
         const me = await new Client(url, token).me();
         email = me.user.email;
         if (me.credential.type === "token") tokenCredential = me.credential;
-        cred = { type: "token", token };
+        cred = { type: "token", token, ...(tokenCredential ? { expiresAt: tokenCredential.expiresAt } : {}) };
       } else {
         const viaCode = () =>
           deviceLogin(url, {
@@ -213,6 +225,7 @@ export const instanceCommands: Builtin[] = [
       const previous = await replaceCredential(url, store, cred);
       const stillOpen = previous ? [leftOpen(alias, previous, true)] : [];
       rememberStore(store.kind);
+      if (renamed) renameInstance(renamed.from, renamed.to);
       saveInstance({ alias, url, name: info.name, email, addedAt: known?.addedAt ?? new Date().toISOString(), allowHttp: plainHttp(url) });
       const access = cred.type === "token" ? cred.token : cred.accessToken;
       await refreshCommands(new Client(url, access)).catch(() => {});
@@ -230,6 +243,7 @@ export const instanceCommands: Builtin[] = [
         agentSkill: skillInstalled(),
         stillOpen,
         accountChanged,
+        renamed,
       };
       if (rc.json) return console.log(JSON.stringify(result));
       console.log(
@@ -237,6 +251,7 @@ export const instanceCommands: Builtin[] = [
           ? `Signed in to ${info.name} (${alias}) as ${email}. The session ends on ${when(cred.expiresAt)} unless you use it before.`
           : `Signed in to ${info.name} (${alias}) as ${email}, with a token${tokenCredential ? `: it ${reach(tokenCredential.scope)} until ${when(tokenCredential.expiresAt)}` : ""}.`,
       );
+      if (renamed) console.log(`${renamed.from} is now ${renamed.to}.`);
       if (accountChanged) {
         console.log(`Until now this machine was signed in there as ${accountChanged.from}, not ${accountChanged.to}. If you didn't mean to change accounts, sign in again: fontego login ${alias}`);
       }

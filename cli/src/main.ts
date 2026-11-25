@@ -114,6 +114,8 @@ async function main(): Promise<void> {
         const days = Math.max(1, Math.round(left / DAY));
         console.error(`Your session on ${used.label} ends in ${days} day(s) unless you use it; renew it with: fontego login ${used.label}`);
       }
+      // A token saved without its end learns it from the answer, for fontego sessions.
+      if (used.client.tokenExpiresAt && used.auth) await used.auth.rememberTokenEnd(used.client.tokenExpiresAt).catch(() => {});
       // The last week of a token, say so too: a script or a CI job runs where nobody looks, but its log says it.
       const tokenLeft = used.client.tokenExpiresAt ? Date.parse(used.client.tokenExpiresAt) - Date.now() : Infinity;
       if (tokenLeft > 0 && tokenLeft < TOKEN_WARN_DAYS * DAY) {

@@ -42,7 +42,9 @@ export const lockName = (url: string) => `session-${createHash("sha256").update(
 /** How long a renewal waits for the server: well under how long another process waits for the lock (config.ts) */
 const REFRESH_TIMEOUT_MS = 15_000;
 
-const same = (a: Credential | null, b: Credential | null) => JSON.stringify(a) === JSON.stringify(b);
+/** The same credential: a token by its secret (what is noted with it, such as its end, may be added), a session whole. */
+const same = (a: Credential | null, b: Credential | null) =>
+  a?.type === "token" && b?.type === "token" ? a.token === b.token : JSON.stringify(a) === JSON.stringify(b);
 
 /** The credential stored for an instance: a session that renews itself, or a token. */
 export class StoredAuth implements AuthProvider {
@@ -66,6 +68,23 @@ export class StoredAuth implements AuthProvider {
 
   recover(): Promise<void> {
     return this.renew();
+  }
+
+  /**
+   * A token saved without its end (by an earlier fontego), or with another one, takes the one the server just said
+   * (the fontego-token-expires header), so `fontego sessions` can show it. Under the lock, and only if the same token
+   * is still the one saved.
+   */
+  async rememberTokenEnd(expiresAt: string): Promise<void> {
+    const mine = this.cred;
+    if (mine.type !== "token" || mine.expiresAt === expiresAt) return;
+    const url = this.instance.url;
+    await withLock(lockName(url), async () => {
+      const latest = await this.store.get(url);
+      if (latest?.type !== "token" || latest.token !== mine.token) return;
+      this.cred = { ...latest, expiresAt };
+      await this.store.set(url, this.cred);
+    });
   }
 
   /** Renews a session, or picks up a credential another process saved. Throws session_ended when there is none. */

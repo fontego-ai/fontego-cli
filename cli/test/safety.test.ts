@@ -350,6 +350,16 @@ describe("the renewal lock", () => {
     refusing.stop();
   });
 
+  test("a token refused is refused, even when another fontego noted its end meanwhile: it isn't a new sign-in", async () => {
+    const store = await credentialStore({ XDG_CONFIG_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" });
+    const refusing = recorder(() => Response.json({ error: { code: "unauthenticated", message: "Not signed in." } }, { status: 401 }));
+    const mine = { type: "token" as const, token: "fontego_pat_revoked" };
+    await store.set(refusing.url, { ...mine, expiresAt: "2027-01-01T00:00:00.000Z" });
+    const client = new Client(refusing.url, new StoredAuth(instance(refusing.url), store, mine));
+    expect(await failsWith(client.me())).toBe("token_refused");
+    refusing.stop();
+  });
+
   test("a new sign-in waits for a renewal under way before it saves its credential", async () => {
     const store = await credentialStore({ XDG_CONFIG_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" });
     const url = "https://lock.example.org";
