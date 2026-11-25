@@ -21,7 +21,10 @@ export const EXIT = {
   forbidden: 5,
   /** The server can't be reached, or is too busy to answer now */
   unreachable: 6,
-  /** A sync that did only part: something was refused or couldn't be read this time, or changes still wait */
+  /**
+   * A sync that left something new undone: a file refused for the first time, something that couldn't be read, or
+   * changes that still wait. A file refused before, unchanged, is set aside as before (SyncReport.setAside), not this.
+   */
   partial: 7,
 } as const;
 
@@ -79,7 +82,10 @@ export function whyNotAsked(json: boolean, env: NodeJS.ProcessEnv = process.env,
 /** Whether fontego may ask the person something (whyNotAsked says why not). */
 export const canAsk = (json: boolean, env: NodeJS.ProcessEnv = process.env, tty: Ttys = ttys()) => whyNotAsked(json, env, tty) === null;
 
-/** Whether a sync round left something undone, which the next one tries again (the report says what). */
+/**
+ * Whether a sync round left something new undone, which the next one tries again (the report says what). What stays
+ * set aside as before doesn't count: a script or CI can tell "a new file couldn't go up" from "the same .env is there".
+ */
 export const incomplete = (r: SyncReport) => r.pending > 0 || r.skipped.length > 0 || r.unreadable.length > 0;
 
 export interface Failure {

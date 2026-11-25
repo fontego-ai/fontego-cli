@@ -20,16 +20,29 @@ export function describeReport(r: SyncReport): string[] {
   return lines.concat(describeSyncIssues(r));
 }
 
+/** How to keep a file in the folder for good without sync sending it, said once under what the server refused. */
+export const KEEP_IT_HERE = "To keep a file here without sending it, list it in .fontegoignore (every copy) or .fontego/ignore (only this one).";
+
 function describeSyncIssues(r: SyncReport): string[] {
   const lines: string[] = [];
   for (const c of r.conflicts) lines.push(`! ${c.message}`);
-  for (const s of r.skipped) lines.push(`skipped ${s.path}: ${s.reason}`);
+  // The server's hint goes with its refusal: for a protected or rejected path, the pattern it matches.
+  for (const s of r.skipped) lines.push(`skipped ${s.path}: ${s.reason}${s.hint ? ` ${s.hint}` : ""}`);
+  if (r.skipped.some((s) => s.code)) lines.push(KEEP_IT_HERE);
   for (const p of r.invalid) lines.push(`skipped ${p}: this name can't be synced`);
   for (const u of r.unreadable) lines.push(`can't read ${u.path} (${u.reason}): left as it was, nothing in it sent or deleted`);
   for (const l of r.unsentLinks) lines.push(`not sent ${l.path}: ${l.reason}`);
   if (r.readOnly && r.pending) lines.push(`${r.pending} local change(s) not sent: you can only read this workspace.`);
   else if (r.pending) lines.push(`${r.pending} local change(s) not sent yet: run fontego sync again to send them.`);
   return lines;
+}
+
+/** What stays set aside as before, in one line (fontego sync; watch says only what is new). */
+export function setAsideLine(r: SyncReport): string | null {
+  if (!r.setAside.length) return null;
+  const names = r.setAside.slice(0, 5).map((s) => s.path);
+  const more = r.setAside.length - names.length;
+  return `Set aside as before: ${names.join(", ")}${more ? ` and ${more} more` : ""} (fontego status says why).`;
 }
 
 /** The synced folder a command works on. */
@@ -168,7 +181,7 @@ export const folderCommands: Builtin[] = [
           ...Object.entries(st.skipped).map(([p, s]) =>
             s.down
               ? `skipped   ${p}: ${s.reason} ${whatItTakes(s)}`
-              : `skipped   ${p}: ${s.reason}${s.retryAt ? ` (sent again after ${localDateTime(s.retryAt)}, or once it changes)` : ""}`,
+              : `skipped   ${p}: ${s.reason}${s.hint ? ` ${s.hint}` : ""}${s.retryAt ? ` (sent again after ${localDateTime(s.retryAt)}, or once it changes)` : ""}`,
           ),
           ...(rc.parsed.flags.ignored ? st.ignored.map((p) => `ignored   ${p}`) : []),
         ];
@@ -177,11 +190,13 @@ export const folderCommands: Builtin[] = [
             `note: ${t.path} matches ${ruleText(t)} but is in the workspace, so it keeps syncing. To take it out of the workspace (the copy here stays): fontego rm ${state.workspace} ${t.path} --base ${t.hash}`,
         );
         const rulesNotRead = st.rulesNotRead.map((p) => `note: ${p.source}: ${p.reason}.`);
+        // Only under what the server refused (it has a code), as sync says it
+        const refused = Object.values(st.skipped).some((k) => !k.down && k.code) ? [KEEP_IT_HERE] : [];
         const ignored =
           st.ignored.length && !rc.parsed.flags.ignored
             ? [`${st.ignored.length} ignored here (fontego status --ignored lists them; fontego check-ignore PATH says why).`]
             : [];
-        return [`${state.workspace} in ${root}`, lines.length ? lines.join("\n") : "Nothing to send.", ...notes, ...rulesNotRead, ...ignored].join("\n");
+        return [`${state.workspace} in ${root}`, lines.length ? lines.join("\n") : "Nothing to send.", ...refused, ...notes, ...rulesNotRead, ...ignored].join("\n");
       });
     },
   },
@@ -226,7 +241,7 @@ export const folderCommands: Builtin[] = [
       const { root, engine, release } = await lockedFolder(rc, rc.parsed.args.DIR, "fontego sync");
       try {
         const r = await engine.sync();
-        rc.print({ root, complete: !incomplete(r), ...r }, () => describeReport(r).join("\n") || "Up to date.");
+        rc.print({ root, complete: !incomplete(r), ...r }, () => [describeReport(r).join("\n") || "Up to date.", setAsideLine(r)].filter((l) => l !== null).join("\n"));
         if (incomplete(r)) process.exitCode = EXIT.partial;
       } finally {
         await release();

@@ -147,8 +147,9 @@ per-workspace access.
 - Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict (the file changed since you
   read it, the name is taken), 5 not allowed (your role, a token's reach, or the rules: a protected or rejected path,
   a secret, a file too big, an archived workspace), 6 the server can't be reached or is too busy now (try again
-  later), 7 a sync that did only part (something was refused or couldn't be read this time, or changes
-  still wait: the output says what, with \`"complete": false\`, and the next sync tries again).
+  later), 7 a sync that left something new undone (a file refused for the first time, something that couldn't be
+  read, changes that still wait: the output says what, with \`"complete": false\`, and the next sync tries again). A
+  file refused before, unchanged, is listed in \`setAside\` and doesn't make it 7.
 - Nothing is ever asked of you, nor of anyone with \`--json\`: an argument left out is a usage error, which lists the
   values it can take when they are known, and a secret left out has to come on stdin. With \`--json\`, \`--help\`
   and \`fontego help\` print \`{"help": ...}\` too.
@@ -175,8 +176,10 @@ A synced folder is a normal folder with a hidden \`.fontego/\` (don't touch it).
   \`name (conflict <who> <date>).ext\` and the file keeps the server's version. The copy syncs to everyone, so they
   see there is something to merge. \`fontego conflicts --json\` lists them: merge the copy into the file by hand, then
   delete the copy and sync. When it isn't clear which version should win, ask your person first.
-- Changes are rejected when you are a reader, or for secrets (\`.env\`, keys) and oversized files; \`fontego sync\`
-  reports them as "skipped".
+- Changes are rejected when you are a reader, for secrets (\`.env\`, keys) and oversized files, and on a protected
+  or rejected path (the hint names its pattern); \`fontego sync\` reports them in \`skipped\` the first time and in
+  \`setAside\` after that, and keeps the file here. To keep a file here for good without sending it, list it in
+  \`.fontegoignore\` (every copy) or \`.fontego/ignore\` (only this one).
 
 ## Others in the same workspace
 

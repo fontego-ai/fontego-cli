@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CommandsManifest } from "@fontego/core";
 import { BUILTIN_NAMES } from "../src/builtins.ts";
+import { KEEP_IT_HERE } from "../src/commands/folders.ts";
 import { checkCommand, commandsCachePath } from "../src/declared.ts";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
@@ -548,16 +549,42 @@ describe("commands the server declares", () => {
     expect(r.pushed).toEqual([{ path: "fine.md", status: "put" }]);
     expect(r.skipped.map((x: any) => x.path).sort()).toEqual([".mcp.json", "AGENTS.md"]);
     expect(r.skipped.find((x: any) => x.path === "AGENTS.md").reason).toContain("protected path");
-    expect((await fontego(["status", dir])).out).toContain("skipped   AGENTS.md");
+    const status = (await fontego(["status", dir])).out;
+    expect(status).toContain("skipped   AGENTS.md");
+    expect(status).toContain(KEEP_IT_HERE);
+    // The same files again are nothing new: named in one line, and the sync is complete.
+    const again = await fontego(["sync", dir]);
+    expect([again.code, again.out.trim()]).toEqual([0, "Up to date.\nSet aside as before: .mcp.json, AGENTS.md (fontego status says why)."]);
 
     expect((await fontego(["workspace", "paths", "notes"])).out).toMatch(/protected\s+\*\*\/AGENTS\.md\s+instance default/);
     expect((await fontego(["workspace", "paths", "protect", "notes", "travel/**"], env)).out).toContain("travel/** is protected in notes.");
     expect((await fontego(["workspace", "paths", "notes"])).out).toMatch(/protected\s+travel\/\*\*\s+this workspace/);
     await Bun.write(`${dir}/travel/japan.md`, "# Japan, edited by Ana\n");
-    expect(JSON.parse((await fontego(["sync", dir, "--json"])).out).skipped.map((x: any) => x.path)).toContain("travel/japan.md");
+    // A new refusal leaves with 7, says the pattern it matches and how to keep a file here without sending it.
+    const travel = await fontego(["sync", dir]);
+    expect(travel.code).toBe(7);
+    expect(travel.out).toContain('skipped travel/japan.md: Only an admin of "notes" can write travel/japan.md: it is a protected path. It matches "travel/**"');
+    expect(travel.out).toContain(KEEP_IT_HERE);
+    expect(travel.out).toContain("Set aside as before: .mcp.json, AGENTS.md");
     const reject = await fontego(["workspace", "paths", "reject", "notes", "**/*.exe"]);
     expect(reject.code).toBe(5); // Ana is no admin
     expect((await fontego(["workspace", "paths", "reset", "notes"], env)).out).not.toContain("this workspace");
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  test("status says how to keep a file here only under what the server refused, not under what this copy set aside", async () => {
+    const parent = tempDir("fontego-cli-aside-");
+    const dir = `${parent}/notes`;
+    expect((await fontego(["clone", "notes", dir])).code).toBe(0);
+    await Bun.write(`${dir}/mine.txt`, "mine\n");
+    // Set aside here (a conflict that couldn't keep both, say): no code, since the server refused nothing
+    const statePath = join(dir, ".fontego", "state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    state.skipped["mine.txt"] = { hash: "0".repeat(40), reason: "it can't be written in this folder (EISDIR)" };
+    writeFileSync(statePath, JSON.stringify(state));
+    const out = (await fontego(["status", dir])).out;
+    expect(out).toContain("skipped   mine.txt: it can't be written in this folder (EISDIR)");
+    expect(out).not.toContain(KEEP_IT_HERE);
     rmSync(parent, { recursive: true, force: true });
   });
 

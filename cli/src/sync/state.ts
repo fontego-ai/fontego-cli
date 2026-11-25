@@ -28,6 +28,10 @@ export interface SyncState {
 export interface Skipped {
   hash: string;
   reason: string;
+  /** The server's code for a refusal (path_protected, secret_file...), to tell the same refusal from a new one */
+  code?: string;
+  /** What the server said to do about it: for a protected or rejected path, the pattern it matches */
+  hint?: string;
   /** When to send the same content again (ISO time); none (a state from an earlier version): at the next round */
   retryAt?: string;
   /** Refusals of this same content so far */
