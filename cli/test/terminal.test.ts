@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { ChangeSetBody, CreateWorkspaceBody, FolderDescriptionBody, UpdateMeBody } from "@fontego/core";
 import { forJson, forPerson } from "../src/terminal.ts";
+import { onTerminal } from "./pty.ts";
 import { tempDir } from "./server.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
@@ -59,6 +60,80 @@ describe("a server's words on the terminal", () => {
       const json = await run(["workspaces", "--json"]);
       expect(json.out).not.toMatch(CONTROLS);
       expect(JSON.parse(json.out).error.message).toBe(EVIL);
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe("colour on a terminal", () => {
+  /** Something that answers like a Fontego: who it is, and 404 to everything else */
+  const fake = () =>
+    Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const base = new URL(req.url).origin;
+        if (new URL(req.url).pathname === "/v1/instance") {
+          return Response.json({ name: "Fake", software: "fontego", version: "1", oauth: { authorizationEndpoint: `${base}/oauth/authorize`, clientId: "fontego-cli" } });
+        }
+        return Response.json({ error: { code: "not_found", message: "No workspace \"nope\" for you.", hint: "Run fontego workspaces." } }, { status: 404 });
+      },
+    });
+  const env = (home: string, extra: Record<string, string | undefined> = {}) => ({
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+    FONTEGO_CREDENTIAL_STORE: "file",
+    FONTEGO_BROWSER: "none",
+    ...extra,
+  });
+  const RED = "\x1b[31m";
+
+  test("a notice on stderr, such as signing in, isn't red: it isn't a failure", async () => {
+    const server = fake();
+    try {
+      const r = await onTerminal(["login", `http://127.0.0.1:${server.port}`], env(tempDir("fontego-colour-")), { until: /Waiting/ });
+      expect(r.text).toContain("Open this link in your browser to sign in to Fake");
+      expect(r.text).not.toContain("\x1b[");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a failure has its label red, and only that; never with NO_COLOR or a TERM that draws none", async () => {
+    const server = fake();
+    try {
+      const url = { FONTEGO_URL: `http://127.0.0.1:${server.port}`, FONTEGO_TOKEN: "t" };
+      const home = tempDir("fontego-colour-");
+      const r = await onTerminal(["info", "nope"], env(home, url));
+      expect(r.code).toBe(3);
+      expect(r.text).toContain(`${RED}error:\x1b[39m No workspace "nope" for you.\r\nhint: Run fontego workspaces.`);
+      expect(r.text.split(RED).length).toBe(2);
+      for (const plain of [{ NO_COLOR: "1" }, { TERM: "dumb" }]) {
+        const p = await onTerminal(["info", "nope"], env(home, { ...url, ...plain }));
+        expect(p.text).toContain('error: No workspace "nope" for you.');
+        expect(p.text).not.toContain("\x1b[");
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe("stderr nobody reads", () => {
+  test("a failure whose stderr was closed still leaves with its exit code, not a crash (2>&1 | head)", async () => {
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ error: { code: "not_found", message: "No." } }, { status: 404 }) });
+    try {
+      const home = tempDir("fontego-epipe-");
+      // The reader is gone before fontego writes: its write gets EPIPE
+      const script = `{ sleep 0.3; "${process.execPath}" "${MAIN}" info nope; } 2>&1 >/dev/null | true; exit \${PIPESTATUS[0]}`;
+      const proc = Bun.spawn(["bash", "-c", script], {
+        env: { PATH: process.env.PATH!, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), FONTEGO_URL: `http://127.0.0.1:${server.port}`, FONTEGO_TOKEN: "t" },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      expect(await proc.exited).toBe(3);
     } finally {
       server.stop(true);
     }

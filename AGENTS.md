@@ -11,6 +11,9 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 - **Everything goes through the API** (`/v1`). Every command accepts `--json`, and errors say what to do (`hint`).
   With `--json` nothing is ever asked, help and errors are JSON too, and the exit codes mean the same everywhere
   (`cli/src/output.ts`, written also in the agents' guide, `AGENT_INTRO` in `help.ts`: change both together).
+- **What a person reads is one way everywhere.** Colour only marks a failure's `error:` (or `usage:`) on a terminal that
+  shows it, never with `NO_COLOR` or `TERM=dumb` (`colorful` in `terminal.ts`): notices on stderr are plain, since Bun
+  would paint every `console.error` red.
 - **Anything the web app can do, the CLI can do too.** The only exception is proving who you are (a password, an
   invitation, authorizing a machine), which happens in the browser.
 - **The CLI only talks HTTP to the server.** It imports `@fontego/core`, never server code. Its tests start a real

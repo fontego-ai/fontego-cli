@@ -8,6 +8,7 @@ import { ClientError } from "./client.ts";
 import type { SyncReport } from "./sync/engine.ts";
 import { StateError } from "./sync/state.ts";
 import { LockedError } from "./sync/watch.ts";
+import { colorful, forPerson, writeStderr } from "./terminal.ts";
 
 export const EXIT = {
   ok: 0,
@@ -86,13 +87,21 @@ export function failureOf(e: unknown, usageHint: string): Failure {
   };
 }
 
-/** Prints a failure: on stdout as JSON with --json, else on stderr as text. */
-export function printFailure(f: Failure, json: boolean) {
+/**
+ * Prints a failure: on stdout as JSON with --json, else on stderr as text, where only its label is red (on a terminal
+ * that shows colour), so that a failure looks like one and a notice doesn't.
+ */
+export function printFailure(f: Failure, json: boolean, stderrIsTerminal = !!process.stderr.isTTY) {
   if (json) {
     const { code, message, hint, details } = f;
     console.log(JSON.stringify({ error: { code, message, ...(hint ? { hint } : {}), ...(details !== undefined ? { details } : {}) } }, null, 2));
     return;
   }
-  console.error(`${f.label}: ${f.message}`);
-  if (f.hint) console.error(`hint: ${f.hint}`);
+  writeStderr(failureText(f, colorful(stderrIsTerminal)));
+}
+
+/** A failure as text: "error: …" (the label red with colour), then "hint: …". The server's words carry no controls. */
+export function failureText(f: Failure, color: boolean): string {
+  const label = color ? `\x1b[31m${f.label}:\x1b[39m` : `${f.label}:`;
+  return `${label} ${forPerson(f.message)}\n${f.hint ? `hint: ${forPerson(f.hint)}\n` : ""}`;
 }

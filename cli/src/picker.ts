@@ -7,6 +7,7 @@
 // output stays clean on stdout. A terminal that can't move the cursor (TERM=dumb) gets a numbered list instead.
 
 import { UsageError } from "./args.ts";
+import { colorful } from "./terminal.ts";
 
 export interface Choice {
   value: string;
@@ -224,7 +225,7 @@ export async function choose(title: string, choices: Choice[], term: Terminal = 
   const screen = (): Screen => ({
     width: output.columns || 80,
     height: output.rows || 24,
-    color: !term.env.NO_COLOR && term.env.TERM !== "dumb",
+    color: colorful(true, term.env),
   });
   let state = startPicker(choices);
   let drawn = 0;
