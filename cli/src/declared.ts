@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import { UsageError, usageLine, type Parsed } from "./args.ts";
 import type { ChoicesSource } from "./ask.ts";
 import type { Client } from "./client.ts";
-import { readSecret, readStdin } from "./prompt.ts";
+import { readSecret, readStdin, readStdinBytes, sizeText } from "./prompt.ts";
 import { formatTable, terminalWidth } from "./table.ts";
 import { forPerson, unsafeForTerminal } from "./terminal.ts";
 
@@ -169,6 +169,7 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
     if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || f.value !== "FILE" || !(f.file.maxBytes > 0) || f.file.maxBytes > MAX_FILE_FLAG)) {
       out.push(`${at}: --${f.name} names a file, so it must be a string into the body shown as FILE, of at most ${MAX_FILE_FLAG / 1024 / 1024} MB`);
     }
+    if (f.file !== undefined && f.file.json !== undefined && typeof f.file.json !== "boolean") out.push(`${at}: --${f.name}: file.json is true or false`);
     // Which file of this machine is read is the person's to say, never the server's
     if (f.file !== undefined && f.default !== undefined) out.push(`${at}: --${f.name} names a file, so it can't have a default`);
     if (f.unset !== undefined && (typeof f.unset !== "string" || !UNSET_WORD.test(f.unset) || f.type !== "string" || !f.to.startsWith("body."))) {
@@ -205,7 +206,7 @@ function encodeParam(name: string, value: string, spans: boolean): string {
 export function buildRequest(
   spec: CommandSpec,
   parsed: Parsed,
-  files: Record<string, string> = {},
+  files: Record<string, unknown> = {},
 ): { method: string; path: string; query: URLSearchParams; body?: unknown } {
   const pathValues: Record<string, string> = {};
   const query = new URLSearchParams();
@@ -338,14 +339,41 @@ export function renderOutput(output: CommandOutput, data: unknown, vars: Templat
 }
 
 /**
- * Reads the files that file flags name (`--photo me.jpg`), as base64, each checked against its size before it is read.
- * The word that sends null (`--photo none`, in any capitals) reads nothing; a file called that way is `./none`.
+ * What a command was given that would read stdin: a `stdin` argument left out, a secret left out when stdin isn't a
+ * terminal (readSecret), a file flag given `-`.
  */
-export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
+function stdinReaders(spec: CommandSpec, parsed: Parsed): string[] {
+  const fromStdin = (a: CommandArg) => a.stdin || (a.secret && !process.stdin.isTTY);
+  const args = (spec.args ?? []).filter((a) => fromStdin(a) && parsed.args[a.name] === undefined).map((a) => a.name);
+  const flags = (spec.flags ?? []).filter((f) => f.file && parsed.flags[f.name] === "-").map((f) => `--${f.name} -`);
+  return [...args, ...flags];
+}
+
+/** A file flag's bytes as the request carries them: base64, or with `json` the JSON they hold. */
+function fileValue(f: CommandFlag, from: string, bytes: Uint8Array): unknown {
+  if (!f.file?.json) return Buffer.from(bytes).toString("base64");
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (e) {
+    throw new UsageError(`--${f.name}: ${from} isn't JSON (${(e as Error).message}).`);
+  }
+}
+
+/**
+ * Reads the files that file flags name (`--photo me.jpg`), as base64 or, for a `json` one, the JSON they hold, each
+ * checked against its size before it is read. `-` reads stdin, and nothing on it is an error. The word that sends
+ * null (`--photo none`, in any capitals) reads nothing; a file called that way is `./none`, and one called `-` is `./-`.
+ */
+export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
   for (const f of spec.flags ?? []) {
     const v = parsed.flags[f.name];
     if (!f.file || typeof v !== "string" || isUnset(f, v)) continue;
+    if (v === "-") {
+      const usage = [`fontego ${spec.name}`, ...(spec.args ?? []).filter((a) => !a.optional).map((a) => a.name), `--${f.name} -`].join(" ");
+      out[f.name] = fileValue(f, "what came on stdin", await readStdinBytes(`--${f.name}`, usage, f.file.maxBytes));
+      continue;
+    }
     const file = Bun.file(v);
     let size: number;
     try {
@@ -359,14 +387,15 @@ export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<
     if (size > f.file.maxBytes) {
       throw new UsageError(`--${f.name}: ${v} is ${sizeText(size)}; this Fontego takes at most ${sizeText(f.file.maxBytes)}. Make it smaller first.`);
     }
-    out[f.name] = Buffer.from(await file.arrayBuffer()).toString("base64");
+    out[f.name] = fileValue(f, v, new Uint8Array(await file.arrayBuffer()));
   }
   return out;
 }
 
-const sizeText = (n: number) => (n < 1024 * 1024 ? `${Math.ceil(n / 1024)} KB` : `${(n / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`);
-
 export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Client, opts: { json: boolean }): Promise<void> {
+  // stdin can be read once: two values that would both come from it is a mistake, said before reading either.
+  const readers = stdinReaders(spec, parsed);
+  if (readers.length > 1) throw new UsageError(`Only one value can come from stdin, and ${readers.join(" and ")} would: give the others here. ${usageLine(spec)}`);
   // A secret left out is asked for; it lands in parsed, so trying the command again doesn't ask twice.
   for (const a of spec.args ?? []) {
     if (parsed.args[a.name] !== undefined) continue;

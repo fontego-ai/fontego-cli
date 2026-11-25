@@ -86,10 +86,12 @@ export interface CommandFlag {
   /** Sent when the flag is not given */
   default?: string | number | boolean;
   /**
-   * The value names a file on this machine: the CLI reads it and sends its bytes, in base64, where `to` says (a
-   * string flag, into the body). It refuses a file over `maxBytes` before reading it, so nothing too big is sent.
+   * The value names a file on this machine, or `-` for stdin: the CLI reads it and sends its bytes, in base64, where
+   * `to` says (a string flag, into the body); with `json`, the JSON it holds, as it is (`fontego edit --edits FILE`),
+   * and a file that isn't JSON is a usage error. It refuses a file over `maxBytes` before reading it (stdin, as soon
+   * as more comes), so nothing too big is sent. Only one value of a command reads stdin.
    */
-  file?: { maxBytes: number };
+  file?: { maxBytes: number; json?: boolean };
   /** This word instead of a value sends null where `to` says (into the body): `--photo none` removes the photo */
   unset?: string;
   description: string;

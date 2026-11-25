@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CommandOutput, CommandSpec } from "@fontego/core";
 import { UsageError } from "../src/args.ts";
-import { buildRequest, checkCommand, commandsCachePath, readCommands, readFileFlags, renderOutput } from "../src/declared.ts";
+import type { Client } from "../src/client.ts";
+import { buildRequest, checkCommand, commandsCachePath, readCommands, readFileFlags, renderOutput, runCommand } from "../src/declared.ts";
 import { agentHelp } from "../src/help.ts";
 import { tempDir } from "./server.ts";
 
@@ -150,6 +151,46 @@ describe("a flag that sends a file, or null", () => {
     await expect(readFileFlags(spec, { args: {}, flags: { photo: join(dir, "nope") } })).rejects.toThrow("there is no file");
     await expect(readFileFlags(spec, { args: {}, flags: { photo: dir } })).rejects.toThrow("isn't a file");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a JSON file goes as the JSON it holds, and one that isn't JSON is a usage error", async () => {
+    const edit: CommandSpec = {
+      name: "edit",
+      summary: "",
+      group: "Write",
+      request: { method: "PATCH", path: "/v1/workspaces/{workspace}/files/{+path}" },
+      args: [{ name: "WORKSPACE", to: "path.workspace" }, { name: "PATH", to: "path.path" }],
+      flags: [{ name: "edits", type: "string", to: "body.edits", value: "FILE", file: { maxBytes: 64, json: true }, description: "" }],
+      output: { kind: "message", text: "ok" },
+    };
+    expect(checkCommand(edit, [])).toEqual([]);
+    const dir = mkdtempSync(join(tmpdir(), "fontego-json-flag-"));
+    // A file called "-" is ./-: only - alone reads stdin
+    const file = join(dir, "-");
+    writeFileSync(file, '[{"old": "a\\n", "new": "b"}]');
+    const parsed = { args: { WORKSPACE: "notes", PATH: "a.md" }, flags: { edits: file } };
+    expect(buildRequest(edit, parsed, await readFileFlags(edit, parsed)).body).toEqual({ edits: [{ old: "a\n", new: "b" }] });
+    writeFileSync(file, "[{");
+    await expect(readFileFlags(edit, parsed)).rejects.toThrow(`--edits: ${file} isn't JSON`);
+    writeFileSync(file, new Uint8Array([0x5b, 0x22, 0xe9, 0x22, 0x5d]));
+    await expect(readFileFlags(edit, parsed)).rejects.toThrow("isn't JSON");
+    expect(checkCommand({ ...edit, flags: [{ ...edit.flags![0]!, file: { maxBytes: 64, json: "yes" as never } }] }, [])).toEqual(["fontego edit: --edits: file.json is true or false"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("only one value comes from stdin: two that would is a usage error, said before reading either", async () => {
+    const write: CommandSpec = {
+      name: "write",
+      summary: "",
+      group: "Write",
+      request: { method: "PUT", path: "/v1/workspaces/{workspace}/files/{+path}" },
+      args: [{ name: "WORKSPACE", to: "path.workspace" }, { name: "PATH", to: "path.path" }, { name: "CONTENT", to: "body.content", optional: true, stdin: true }],
+      flags: [{ name: "photo", type: "string", to: "body.photo", value: "FILE", file: { maxBytes: 8 }, description: "" }],
+      output: { kind: "message", text: "ok" },
+    };
+    const never = {} as Client;
+    const parsed = { args: { WORKSPACE: "notes", PATH: "a.md" }, flags: { photo: "-" } };
+    await expect(runCommand(write, parsed, never, { json: true })).rejects.toThrow("Only one value can come from stdin, and CONTENT and --photo - would");
   });
 
   test("only a string flag into the body may send a file or null", () => {

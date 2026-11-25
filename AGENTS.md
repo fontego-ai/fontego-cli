@@ -25,21 +25,23 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   invitation, authorizing a machine), which happens in the browser.
 - **The CLI only talks HTTP to the server.** It imports `@fontego/core`, never server code. Its tests start a real
   `fontego-server` and use it from the outside.
-- **Most commands come from the server.** Built-in commands (`builtins.ts`) work with this machine or a synced
-  folder: login, logout, sessions (rename, forget), use, open, help, version, clone, link, status, sync, watch,
-  conflicts, check-ignore, and events (the person's live stream, `commands/live.ts`). Everything else is declared
-  by the server (`GET /v1/commands`): a description of one API call, never code, run by `declared.ts` and cached per
-  server in `$XDG_CACHE_HOME/fontego/commands/`. Every answer carries the version of the server's commands
-  (`fontego-commands` header); a different one refreshes the cache. With `--json`, a declared command prints exactly
-  what the API answered. `cli/test/cli.test.ts` fails if the server declares something this CLI can't run. An
-  argument marked `secret` (a password) is asked for without echo when left out, or read from stdin when that isn't a
-  terminal (`prompt.ts`), and never printed. One marked `stdin` (a file's content, for `fontego write`) is read whole
-  from stdin when left out; nothing on stdin is an error, so a forgotten `< file` never writes an empty file. A flag
-  marked `file` names a file of this machine: the CLI checks its size against the declaration before reading it and
-  sends its bytes in base64 (`fontego account set --photo me.jpg`). So that no server can turn an innocent flag into
-  one that uploads a file, a file flag must show FILE in its usage, can't have a default, and can't ask for more than
-  64 MB (`checkCommand`). One with `unset` sends null for that word, in any capitals (`--photo none`), and a file of
-  that name is `./none`.
+- **Most commands come from the server.** Built-in commands (`builtins.ts`) work with this machine or a synced folder:
+  login, logout, sessions (rename, forget), use, open, help, version, clone, link, status, sync, watch, conflicts,
+  check-ignore, and events (the person's live stream, `commands/live.ts`). Everything else is declared by the server
+  (`GET /v1/commands`): a description of one API call, never code, run by `declared.ts` and cached per server in
+  `$XDG_CACHE_HOME/fontego/commands/`. Every answer carries the version of the server's commands (`fontego-commands`
+  header); a different one refreshes the cache. With `--json`, a declared command prints exactly what the API answered.
+  `cli/test/cli.test.ts` fails if the server declares something this CLI can't run. An argument marked `secret` (a
+  password) is asked for without echo when left out, or read from stdin when that isn't a terminal (`prompt.ts`), and
+  never printed. One marked `stdin` (a file's content, for `fontego write`) is read whole from stdin when left out;
+  nothing on stdin is an error, so a forgotten `< file` never writes an empty file. A flag marked `file` names a file of
+  this machine: the CLI checks its size against the declaration before reading it and sends its bytes in base64
+  (`fontego account set --photo me.jpg`), or, marked `json`, the JSON it holds (a file that isn't JSON is a usage
+  error). `-` reads it from stdin instead, counted against the same size as it comes, and nothing on stdin is an error;
+  only one value of a command reads stdin, said before reading any. So that no server can turn an innocent flag into one
+  that uploads a file, a file flag must show FILE in its usage, can't have a default, and can't ask for more than 64 MB
+  (`checkCommand`). One with `unset` sends null for that word, in any capitals (`--photo none`), and a file of that name
+  is `./none` (one called `-`, `./-`).
 - **A person who leaves an argument out is asked for it; nobody else ever is.** At a terminal, a required argument
   left out is picked from its list (`choices` in a declaration, from `core`: fixed values or a GET to the same
   server; `pick` in a built-in) or typed, and then the whole command goes to stderr (`Same as: fontego ...`), so it

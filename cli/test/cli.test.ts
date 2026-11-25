@@ -21,9 +21,9 @@ const ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42
 const NO_AGENT = { FONTEGO_AGENT: "", CLAUDECODE: "", CODEX_THREAD_ID: "", COPILOT_CLI: "", OPENCODE: "", CURSOR_AGENT: "", GEMINI_CLI: "" };
 
 /** `input`: what comes on stdin, which is then not a terminal. */
-async function fontego(args: string[], env: Record<string, string> = {}, input?: string) {
+async function fontego(args: string[], env: Record<string, string> = {}, input?: string | Uint8Array) {
   const proc = Bun.spawn(["bun", MAIN, ...args], {
-    stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+    stdin: input === undefined ? "ignore" : typeof input === "string" ? new TextEncoder().encode(input) : input,
     // Never the real keychain or browser: credentials go to a file in the test home, and links are not opened. No
     // agent either, unless a test names one: the tests may run under one, and its name would land in every commit.
     env: { ...process.env, ...NO_AGENT, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", ...env },
@@ -369,9 +369,13 @@ describe("commands the server declares", () => {
     const got = JSON.parse((await fontego(["people", "photo", "gil@example.org", "--json"])).out);
     expect([got.type, got.text, got.version]).toEqual(["image/webp", false, expect.stringMatching(/^[0-9a-f]{16}$/)]);
     expect(await new Bun.Image(Buffer.from(got.contentBase64, "base64")).metadata()).toEqual({ width: 256, height: 256, format: "webp" });
-    expect((await fontego(["help", "account", "set"])).out).toMatch(/--photo FILE +A PNG, JPEG or WebP .* none removes yours \(a file on this machine, sent to this Fontego\)/);
+    expect((await fontego(["help", "account", "set"])).out).toMatch(/--photo FILE +A PNG, JPEG or WebP .* none removes yours \(a file on this machine, sent to this Fontego; - reads stdin\)/);
 
     // Said before calling the server: no such file, or one too big
+    // From stdin too, the same bytes
+    await fontego(["account", "set", "--photo", "none"], as);
+    const piped = await fontego(["account", "set", "--photo", "-"], as, new Uint8Array(readFileSync(file)));
+    expect([piped.code, piped.out]).toEqual([0, `Saved your account on ${s.url}.\nname: Gil\nphoto: yes\n`]);
     const missing = await fontego(["account", "set", "--photo", join(dir, "nope.jpg"), "--json"], as);
     expect(JSON.parse(missing.out).error).toMatchObject({ code: "usage", message: expect.stringContaining("there is no file") });
     expect(JSON.parse(missing.out).error.message).toContain("--photo none");

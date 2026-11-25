@@ -1,7 +1,7 @@
 // Help, built from the commands themselves: the built-in ones and those the signed-in server declares. Nothing here
 // lists commands by hand, so help can't fall behind.
 
-import type { CommandSpec } from "@fontego/core";
+import type { CommandFlag, CommandSpec } from "@fontego/core";
 import { usageLine, type Usage } from "./args.ts";
 import type { CachedCommands } from "./declared.ts";
 
@@ -109,8 +109,9 @@ export function describe(u: Usage | CommandSpec): string {
   const names = flags.map((f) => `${f.short ? `-${f.short}, ` : ""}--${f.name}${f.type === "boolean" ? "" : ` ${f.value ?? f.name.toUpperCase()}`}`);
   const w = Math.max(8, ...names.map((n) => n.length)) + 2;
   // A file flag reads a file of this machine; what its `unset` word does, its description says
+  const fileNote = (file: CommandFlag["file"]) => (file ? `a ${file.json ? "JSON " : ""}file on this machine, sent to this Fontego; - reads stdin` : "");
   const extra = (f: (typeof flags)[number]) =>
-    [f.default !== undefined ? `default ${f.default}` : "", "file" in f && f.file ? "a file on this machine, sent to this Fontego" : ""].filter(Boolean);
+    [f.default !== undefined ? `default ${f.default}` : "", fileNote("file" in f ? (f as CommandFlag).file : undefined)].filter(Boolean);
   flags.forEach((f, i) => {
     const notes = extra(f);
     out.push(`  ${names[i]!.padEnd(w)}${f.description}${notes.length ? ` (${notes.join("; ")})` : ""}`);
