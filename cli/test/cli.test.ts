@@ -733,6 +733,30 @@ describe("commands the server declares", () => {
     expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(saved.version);
   });
 
+  test("a new subcommand under what the saved list knows as another command's alias is learned and run the first time", async () => {
+    expect((await fontego(["workspaces"])).code).toBe(0);
+    const path = commandsCachePath(s.url, { XDG_CACHE_HOME: home });
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    const stale = () => writeFileSync(path, JSON.stringify({ ...saved, version: "old", commands: saved.commands.filter((c: any) => c.name !== "account tokens") }));
+    // "account" is an alias of whoami, which takes no argument
+    expect(saved.commands.find((c: any) => c.aliases?.includes("account"))?.name).toBe("whoami");
+    expect(saved.commands.some((c: any) => c.name === "account tokens")).toBe(true);
+    stale();
+    const help = await fontego(["account", "tokens", "--help"]);
+    expect([help.code, help.out.split("\n")[0]]).toEqual([0, expect.stringContaining("fontego account tokens")]);
+    stale();
+    const r = await fontego(["account", "tokens", "--json"]);
+    expect(r.err + r.out).not.toContain("Too many arguments");
+    expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(saved.version);
+    // A list that hasn't changed leaves the error as it was, and so does a server that doesn't answer
+    const wrong = await fontego(["account", "nonsense"]);
+    expect([wrong.code, wrong.err]).toEqual([1, expect.stringContaining("Too many arguments: fontego whoami")]);
+    const offline = "http://127.0.0.1:9";
+    writeFileSync(commandsCachePath(offline, { XDG_CACHE_HOME: home }), JSON.stringify({ ...saved, url: offline }));
+    const unreachable = await fontego(["account", "nonsense"], { FONTEGO_URL: offline, FONTEGO_TOKEN: ana.token });
+    expect([unreachable.code, unreachable.err]).toEqual([1, expect.stringContaining("Too many arguments: fontego whoami")]);
+  });
+
   test("offline, help still lists the saved commands and calls fail clearly", async () => {
     const offline = "http://127.0.0.1:9";
     const saved = JSON.parse(readFileSync(commandsCachePath(s.url, { XDG_CACHE_HOME: home }), "utf8"));
