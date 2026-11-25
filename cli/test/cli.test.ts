@@ -493,6 +493,9 @@ describe("commands the server declares", () => {
     const bad = await fontego(["admin", "settings", "set", "smtp.port", "lots"], env);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("smtp.port: it needs a number.");
+    // A negative number is a value, which the server judges, not an option this command doesn't have.
+    const negative = await fontego(["admin", "settings", "set", "sessions.web.idleDays", "-3", "--json"], env);
+    expect([negative.code, JSON.parse(negative.out).error.code]).toEqual([1, "invalid_value"]);
     expect((await fontego(["admin", "settings", "get", "smtp.port"], env)).out).toContain("From: the default");
     expect((await fontego(["admin", "settings", "reset", "displayName"], env)).out).toContain("displayName is back to Fontego (the default).");
   });

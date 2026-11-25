@@ -75,11 +75,18 @@ export function readGlobals(argv: string[]): Globals {
   return { json, help, instance, tokens };
 }
 
+/**
+ * Whether a word is an option: -x or --word. A word that starts with "-" and a digit, or "-." and a digit, is a
+ * negative number (`settings set sessions.web.idleDays -3`), since an option's letter is never a digit; "-" alone is
+ * stdin's name, a value too.
+ */
+export const isFlag = (t: string) => t.startsWith("-") && t !== "-" && !/^-\.?\d/.test(t);
+
 /** The words before the first flag: the command and, after it, its first arguments. */
 export function leadingWords(tokens: string[]): string[] {
   const out: string[] = [];
   for (const t of tokens) {
-    if (t.startsWith("-")) break;
+    if (isFlag(t)) break;
     out.push(t);
   }
   return out;
@@ -134,7 +141,7 @@ export function parseCommand(u: Usage, tokens: string[], opts: { allowMissing?: 
       positional.push(...tokens.slice(i + 1));
       break;
     }
-    if (!t.startsWith("-") || t === "-") {
+    if (!isFlag(t)) {
       positional.push(t);
       continue;
     }
