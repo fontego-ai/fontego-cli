@@ -178,6 +178,37 @@ describe("a flag that sends a file, or null", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("a flag people pass a text with can't become one that sends a file: only names that say so, and no short name", () => {
+    const flag = (name: string, more: object = {}) => ({
+      ...spec,
+      flags: [{ name, type: "string" as const, to: `body.${name.replaceAll("-", "_")}` as const, value: "FILE", file: { maxBytes: 8 }, description: "", ...more }],
+    });
+    for (const name of ["photo", "edits", "file", "logo-file"]) expect(checkCommand(flag(name), [])).toEqual([]);
+    for (const name of ["new", "old", "message", "description", "profile", "files", "file-name"]) {
+      expect(checkCommand(flag(name), [])).toEqual([`fontego account set: --${name} names a file, so it must be called photo, edits, file or something-file, with no short name`]);
+    }
+    expect(checkCommand(flag("photo", { short: "m" }), [])).toEqual(["fontego account set: --photo names a file, so it must be called photo, edits, file or something-file, with no short name"]);
+  });
+
+  test("only the commands people pipe into read stdin: any other asks for the value, whatever its server declares", async () => {
+    const listing: CommandSpec = {
+      name: "ls",
+      summary: "",
+      group: "Read",
+      request: { method: "POST", path: "/v1/workspaces/{workspace}/list" },
+      args: [{ name: "WORKSPACE", to: "path.workspace" }, { name: "MORE", to: "body.more", optional: true, stdin: true }],
+      output: { kind: "message", text: "ok" },
+    };
+    const never = {} as Client;
+    const parsed = () => ({ args: { WORKSPACE: "notes" }, flags: {} });
+    await expect(runCommand(listing, parsed(), never, { json: true })).rejects.toThrow("MORE is missing, and this fontego reads stdin only for fontego write and fontego admin settings set");
+    const secret: CommandSpec = { ...listing, args: [listing.args![0]!, { name: "PASSWORD", to: "body.password", optional: true, secret: true }] };
+    if (!process.stdin.isTTY) await expect(runCommand(secret, parsed(), never, { json: true })).rejects.toThrow("PASSWORD is missing, and this fontego reads stdin only for");
+    // Nor under another name of a command that does
+    expect(checkCommand({ ...listing, name: "write", aliases: ["ls"] }, [])).toEqual(["fontego write: it may read stdin, so it can't have other names"]);
+    expect(checkCommand({ ...listing, name: "write" }, [])).toEqual([]);
+  });
+
   test("only one value comes from stdin: two that would is a usage error, said before reading either", async () => {
     const write: CommandSpec = {
       name: "write",
@@ -197,24 +228,24 @@ describe("a flag that sends a file, or null", () => {
     const bad: CommandSpec = {
       ...spec,
       flags: [
-        { name: "a", type: "boolean", to: "body.a", value: "FILE", file: { maxBytes: 1 }, description: "" },
+        { name: "a-file", type: "boolean", to: "body.a", value: "FILE", file: { maxBytes: 1 }, description: "" },
         { name: "b", type: "string", to: "query.b", unset: "none", description: "" },
-        { name: "c", type: "string", to: "body.c", value: "FILE", file: { maxBytes: 0 }, description: "" },
+        { name: "c-file", type: "string", to: "body.c", value: "FILE", file: { maxBytes: 0 }, description: "" },
         { name: "d", type: "string", to: "body.d", unset: "\u001b[2J", description: "" },
-        { name: "e", type: "string", to: "body.e", value: "FILE", file: { maxBytes: 10 }, default: "/home/someone/.ssh/id_ed25519", description: "" },
+        { name: "e-file", type: "string", to: "body.e", value: "FILE", file: { maxBytes: 10 }, default: "/home/someone/.ssh/id_ed25519", description: "" },
         // An innocent-looking flag can't become one that sends a file, nor ask for any size
-        { name: "path", type: "string", to: "body.path", value: "PATH", file: { maxBytes: 10 }, description: "" },
-        { name: "big", type: "string", to: "body.big", value: "FILE", file: { maxBytes: 1e9 }, description: "" },
+        { name: "path-file", type: "string", to: "body.path", value: "PATH", file: { maxBytes: 10 }, description: "" },
+        { name: "big-file", type: "string", to: "body.big", value: "FILE", file: { maxBytes: 1e9 }, description: "" },
       ],
     };
     expect(checkCommand(bad, [])).toEqual([
-      "fontego account set: --a names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
+      "fontego account set: --a-file names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
       "fontego account set: --b can send null only as a string flag into the body, with a plain lowercase word for it",
-      "fontego account set: --c names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
+      "fontego account set: --c-file names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
       "fontego account set: --d can send null only as a string flag into the body, with a plain lowercase word for it",
-      "fontego account set: --e names a file, so it can't have a default",
-      "fontego account set: --path names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
-      "fontego account set: --big names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
+      "fontego account set: --e-file names a file, so it can't have a default",
+      "fontego account set: --path-file names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
+      "fontego account set: --big-file names a file, so it must be a string into the body shown as FILE, of at most 64 MB",
     ]);
     expect(checkCommand(spec, [])).toEqual([]);
   });

@@ -124,6 +124,18 @@ const ARG_NAME = /^[A-Z][A-Z0-9_]*$/;
 const FLAG_NAME = /^[a-z][a-z0-9-]*$/;
 /** The word that sends null: --photo none (NONE too) */
 const UNSET_WORD = /^[a-z][a-z0-9-]{0,19}$/;
+/**
+ * What a flag that reads a file of this machine may be called: a name that says it is one. A path is also a text people
+ * and agents pass (`fontego edit WS PATH --new TEXT`), so a server that declared --new as a file would get the file
+ * that text happens to name.
+ */
+const FILE_FLAG_NAME = /^(photo|edits|file|[a-z][a-z0-9-]*-file)$/;
+/**
+ * The commands that read stdin for a value left out. What is on stdin isn't always for fontego (the rest of a script
+ * run with `bash -s`, the list a `while read` goes through), so which commands take it is not the server's to say: a
+ * value any other command leaves out has to be given.
+ */
+const READS_STDIN = new Set(["write", "admin settings set"]);
 /** The most a declared command may send of one file, whatever the server says */
 const MAX_FILE_FLAG = 64 * 1024 * 1024;
 const COMMAND_NAME = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$/;
@@ -156,6 +168,7 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   const said = [spec.summary, spec.group, ...args.map((a) => a.description), ...flags.map((f) => f.description)];
   if (said.some((t) => t !== undefined && (typeof t !== "string" || !ONE_LINE.test(t)))) out.push(`${at}: its summary, group and descriptions must be one line each`);
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
+  if (args.some((a) => a.secret || a.stdin) && spec.aliases?.length) out.push(`${at}: it may read stdin, so it can't have other names`);
   for (const a of args) if (a.stdin && !a.optional) out.push(`${at}: ${a.name} comes from stdin when left out, so it must be optional`);
   args.forEach((a, i) => {
     if (a.choices) out.push(...checkChoices(a.choices, args.slice(0, i)).map((p) => `${at}: ${a.name}: ${p}`));
@@ -166,6 +179,10 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
     // A file of this machine goes to the server only when the person can see that it does: the usage says FILE
     if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || f.value !== "FILE" || !(f.file.maxBytes > 0) || f.file.maxBytes > MAX_FILE_FLAG)) {
       out.push(`${at}: --${f.name} names a file, so it must be a string into the body shown as FILE, of at most ${MAX_FILE_FLAG / 1024 / 1024} MB`);
+    }
+    // ...and only under a name that nobody passes a text with, by its long name
+    if (f.file !== undefined && (!FILE_FLAG_NAME.test(f.name) || f.short !== undefined)) {
+      out.push(`${at}: --${f.name} names a file, so it must be called photo, edits, file or something-file, with no short name`);
     }
     if (f.file !== undefined && f.file.json !== undefined && typeof f.file.json !== "boolean") out.push(`${at}: --${f.name}: file.json is true or false`);
     // Which file of this machine is read is the person's to say, never the server's
@@ -292,6 +309,10 @@ export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<
 export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Client, opts: { json: boolean }): Promise<void> {
   // stdin can be read once: two values that would both come from it is a mistake, said before reading either.
   const readers = stdinReaders(spec, parsed);
+  if (!READS_STDIN.has(spec.name)) {
+    const left = (spec.args ?? []).find((a) => readers.includes(a.name));
+    if (left) throw new UsageError(`${left.name} is missing, and this fontego reads stdin only for ${[...READS_STDIN].map((n) => `fontego ${n}`).join(" and ")}: ${usageLine(spec)}`);
+  }
   if (readers.length > 1) throw new UsageError(`Only one value can come from stdin, and ${readers.join(" and ")} would: give the others here. ${usageLine(spec)}`);
   // A secret left out is asked for; it lands in parsed, so trying the command again doesn't ask twice.
   for (const a of spec.args ?? []) {
