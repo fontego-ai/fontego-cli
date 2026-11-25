@@ -3,3 +3,6 @@
 
 /** The longest name a session takes */
 export const MAX_SESSION_NAME = 80;
+
+/** The fontego CLI's client id at every Fontego's OAuth server: a public client, built in, that gets a session */
+export const CLI_CLIENT_ID = "fontego-cli";

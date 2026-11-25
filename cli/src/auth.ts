@@ -8,7 +8,7 @@
 // CLI renews it by itself, under a lock, because two processes renewing with the same refresh token would make the
 // server close the session.
 
-import type { DeviceAuthorization, InstanceInfo, TokenResponse } from "@fontego/core";
+import { CLI_CLIENT_ID, type DeviceAuthorization, type InstanceInfo, type TokenResponse } from "@fontego/core";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
@@ -18,7 +18,7 @@ import { ClientError, refuseRedirect, type AuthProvider } from "./client.ts";
 import { normalizeUrl, setInstanceEmail, withLock, type Credential, type CredentialStore, type Instance } from "./config.ts";
 import { USER_AGENT } from "./version.ts";
 
-export const CLIENT_ID = "fontego-cli";
+export const CLIENT_ID = CLI_CLIENT_ID;
 
 export const sessionEnded = (alias: string) =>
   new ClientError(401, "session_ended", `Your session on ${alias} ended.`, `Sign in again: fontego login ${alias}`);

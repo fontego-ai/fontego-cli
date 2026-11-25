@@ -135,34 +135,49 @@ const SlugList = z
   .pipe(z.array(Slug).min(1).max(MAX_TOKEN_WORKSPACES, `name at most ${MAX_TOKEN_WORKSPACES} workspaces, or all of them (--all)`));
 
 /**
- * A new token, for CI and scripts: a name to know it by, which workspaces it reaches (some, by id, or `all` of its
- * person's, now and later: one or the other, so a workspace named "all" is never every one), whether it also writes
- * (by default it only reads), and how many days it lasts.
+ * What a credential with a scope reaches and how long it lasts, as its person gives it: a token they make, or an app
+ * they connect through OAuth. Which workspaces (some, by id, or `all` of the person's, now and later: one or the
+ * other, so a workspace named "all" is never every one), whether it also writes (by default it only reads), and how
+ * many days it lasts.
  */
-export const CreateTokenBody = z
-  .object({
+const ScopeFields = {
+  workspaces: SlugList.optional(),
+  all: z.literal(true, "is true for every workspace, or left out").optional(),
+  access: z.enum(["read", "write"]).optional(),
+  expiresInDays: z
+    .number()
+    .int("use whole days")
+    .min(1, "at least one day")
+    .max(TOKEN_MAX_DAYS, `at most ${TOKEN_MAX_DAYS} days: it always ends, a year after it is given at the latest`)
+    .optional(),
+};
+
+/** A scope names some workspaces or all of them: one of the two, never both. */
+const scopeRules = <T extends z.ZodType<{ workspaces?: string[]; all?: true }>>(schema: T) =>
+  schema
+    .refine((b) => b.workspaces !== undefined || b.all === true, {
+      message: "say which workspaces it reaches: some (--workspaces A,B) or all of yours (--all)",
+      path: ["workspaces"],
+    })
+    .refine((b) => !(b.workspaces !== undefined && b.all === true), { message: "either some workspaces (--workspaces) or all of them (--all), not both", path: ["all"] });
+
+/** A new token, for CI and scripts: a name to know it by, and its scope (ScopeFields). */
+export const CreateTokenBody = scopeRules(
+  z.object({
     name: z
       .string()
       .trim()
       .min(1, "give it a name, to know it in the list")
       .max(100, "use at most 100 characters")
       .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters"),
-    workspaces: SlugList.optional(),
-    all: z.literal(true, "is true for every workspace, or left out").optional(),
-    access: z.enum(["read", "write"]).optional(),
-    expiresInDays: z
-      .number()
-      .int("use whole days")
-      .min(1, "at least one day")
-      .max(TOKEN_MAX_DAYS, `at most ${TOKEN_MAX_DAYS} days: a token always ends, a year after it is made at the latest`)
-      .optional(),
-  })
-  .refine((b) => b.workspaces !== undefined || b.all === true, {
-    message: "say which workspaces it reaches: some (--workspaces A,B) or all of yours (--all)",
-    path: ["workspaces"],
-  })
-  .refine((b) => !(b.workspaces !== undefined && b.all === true), { message: "either some workspaces (--workspaces) or all of them (--all), not both", path: ["all"] });
+    ...ScopeFields,
+  }),
+);
 export type CreateTokenRequest = z.input<typeof CreateTokenBody>;
+
+/** What a person gives an app that asks to connect through OAuth (oauth/apps.ts): its scope, as a token's. */
+export const AppGrantBody = scopeRules(z.object(ScopeFields));
+export type AppGrantRequest = z.input<typeof AppGrantBody>;
 
 /** A person's name, as others see it beside what they change: never empty once it is changed. */
 const PersonName = z
@@ -244,30 +259,75 @@ export const SessionName = z
 export const RenameSessionBody = z.object({ label: SessionName });
 export type RenameSessionRequest = z.input<typeof RenameSessionBody>;
 
-// --- OAuth, for the CLI to sign in through the browser. Field names are the standard's (RFC 6749, 7636, 8628). ---
+// --- OAuth: the CLI signs in through the browser, and apps (MCP clients such as claude.ai) ask a person to connect.
+// Field names are the standard's (RFC 6749, 7636, 8628, 8707). ---
 
-/** The person's answer, from a signed-in browser, to "connect the CLI of <machine>?" */
+/** A client's `state`, given back as it came; long enough for what real clients send */
+export const MAX_OAUTH_STATE = 2000;
+
+/**
+ * An authorization request, as a client sends the browser to /oauth/authorize. Everything but the client and where to
+ * go back is optional here: what else is missing or wrong is told to the client, back where it asked to go, once
+ * that place is known to be its own.
+ */
+const AuthorizationFields = {
+  client_id: z.string().max(2000),
+  redirect_uri: z.string().max(2000),
+  response_type: z.string().max(100).optional(),
+  code_challenge: z.string().max(200).optional(),
+  code_challenge_method: z.string().max(20).optional(),
+  state: z.string().max(MAX_OAUTH_STATE).optional(),
+  scope: z.string().max(1000).optional(),
+  resource: z.string().max(2000).optional(),
+};
+
+/** GET /oauth/authorize: what the page asks before showing it to the person (oauth/operations.ts). */
+export const AuthorizeQuery = z.object(AuthorizationFields);
+
+/**
+ * The person's answer, from a signed-in browser: to "connect the CLI of <machine>?", or to an app asking to connect,
+ * with what they give it. Those fields are checked as AppGrantBody only when it is an app they approve, so a refusal
+ * always goes back, and a wrong choice says so in the page's own words.
+ */
 export const AuthorizeBody = z.object({
-  client_id: z.string(),
-  redirect_uri: z.string(),
-  code_challenge: z.string(),
-  code_challenge_method: z.string(),
-  state: z.string().max(500).optional(),
+  ...AuthorizationFields,
   machine: Line(80).optional(),
   approve: z.boolean(),
+  workspaces: z.unknown().optional(),
+  all: z.unknown().optional(),
+  access: z.unknown().optional(),
+  expiresInDays: z.unknown().optional(),
 });
 
 export const DeviceStartBody = z.object({ client_id: z.string(), machine: Line(80).optional() });
 
 export const DeviceDecisionBody = z.object({ approve: z.boolean() });
 
+/**
+ * The token endpoint, as a form or JSON. `resource` (RFC 8707) is what an app's tokens are for: this server's MCP.
+ * `scope`, on a refresh, may name what the app was given or less, never more (RFC 6749 §6).
+ */
 export const TokenBody = z.discriminatedUnion("grant_type", [
-  z.object({ grant_type: z.literal("authorization_code"), code: z.string(), code_verifier: z.string(), redirect_uri: z.string(), client_id: z.string() }),
-  z.object({ grant_type: z.literal("refresh_token"), refresh_token: z.string(), client_id: z.string().optional() }),
-  z.object({ grant_type: z.literal("urn:ietf:params:oauth:grant-type:device_code"), device_code: z.string(), client_id: z.string() }),
+  z.object({
+    grant_type: z.literal("authorization_code"),
+    code: z.string().max(500),
+    code_verifier: z.string().max(200),
+    redirect_uri: z.string().max(2000),
+    client_id: z.string().max(2000),
+    resource: z.string().max(2000).optional(),
+  }),
+  z.object({
+    grant_type: z.literal("refresh_token"),
+    refresh_token: z.string().max(500),
+    client_id: z.string().max(2000).optional(),
+    resource: z.string().max(2000).optional(),
+    scope: z.string().max(1000).optional(),
+  }),
+  z.object({ grant_type: z.literal("urn:ietf:params:oauth:grant-type:device_code"), device_code: z.string().max(500), client_id: z.string().max(2000) }),
 ]);
 
-export const RevokeBody = z.object({ token: z.string(), token_type_hint: z.string().optional() });
+/** Closes what a token proves (RFC 7009); an app, a public client, says who it is with its client_id. */
+export const RevokeBody = z.object({ token: z.string().max(500), token_type_hint: z.string().max(100).optional(), client_id: z.string().max(2000).optional() });
 
 /**
  * Opens a browser session: with email and password, or a one-time code from `fontego open`. Never with a token: a

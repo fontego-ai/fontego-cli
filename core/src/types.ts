@@ -30,7 +30,10 @@ export interface TokenScope {
  */
 export type PhotoUrl = string | null;
 
-/** How a caller proved who it is: a session (a signed-in browser or CLI) or a token (for CI and scripts). */
+/**
+ * How a caller proved who it is: a session (a signed-in browser or CLI), a token (for CI and scripts), or an app its
+ * person connected through OAuth (an MCP client, such as claude.ai), which works only on the server's MCP endpoint.
+ */
 export type Credential =
   | {
       type: "session";
@@ -47,6 +50,17 @@ export type Credential =
       /** Its name: what it is for */
       label: string;
       /** When it stops working; a token always ends */
+      expiresAt: string;
+      scope: TokenScope;
+    }
+  | {
+      type: "app";
+      id: number;
+      /** The app's name, as it gives it */
+      label: string;
+      /** Its client id: the URL of its metadata document */
+      client: string;
+      /** When it stops working; an app always ends */
       expiresAt: string;
       scope: TokenScope;
     };
@@ -105,13 +119,25 @@ export interface InstanceInfo {
   };
 }
 
-/** The answer of the token endpoint (RFC 6749 §5.1), plus when the session ends. */
+/** The answer of the token endpoint to the CLI (RFC 6749 §5.1), plus when the session ends. */
 export interface TokenResponse {
   access_token: string;
   token_type: "Bearer";
   expires_in: number;
   refresh_token: string;
   session: { id: number; expiresAt: string; email: string };
+}
+
+/**
+ * The answer of the token endpoint to an app (RFC 6749 §5.1): its access token for the MCP endpoint, a new refresh
+ * token when its metadata asks for them, and the scope it was given ("read", or "read write").
+ */
+export interface AppTokenResponse {
+  access_token: string;
+  token_type: "Bearer";
+  expires_in: number;
+  refresh_token?: string;
+  scope: string;
 }
 
 /** The answer of the device authorization endpoint (RFC 8628 §3.2). */
@@ -252,11 +278,75 @@ export interface AdminToken extends TokenInfo {
   user: PersonRef;
 }
 
+/**
+ * An app its person connected through OAuth (an MCP client: claude.ai, Claude Code...), as they or a server admin see
+ * it. Its name is the app's own word; `host` is where its client id lives, the part that was checked.
+ */
+export interface AppInfo {
+  id: number;
+  name: string;
+  /** Its client id: the URL of its metadata document */
+  client: string;
+  /** The host of its client id ("claude.ai") */
+  host: string;
+  /** Where the approval went back: a host, or null for an app on the person's computer (a loopback address) */
+  redirectHost: string | null;
+  scope: TokenScope;
+  createdAt: string;
+  /** When it stops working; an app always ends */
+  expiresAt: string;
+  lastUsedAt: string | null;
+}
+
+/** Your connected apps that still work (GET /me/apps), newest first. */
+export interface AppsResponse {
+  apps: AppInfo[];
+}
+
+/** Someone's connected app, in the lists of server admins */
+export interface AdminApp extends AppInfo {
+  user: PersonRef;
+}
+
+/** A connected app taken away: it stopped working at once. */
+export interface DisconnectedApp {
+  disconnected: number;
+}
+
+/**
+ * An app asking to connect, as the page shows it to the person before they decide (GET /oauth/authorize): who asks,
+ * where the answer goes back, what it asks for, and the workspaces the person can give it.
+ */
+export interface AuthorizationRequest {
+  client: {
+    id: string;
+    /** As the app calls itself: not checked */
+    name: string;
+    /** The host of its client id, where its metadata was read from: the part that is checked */
+    host: string;
+  };
+  redirect: {
+    uri: string;
+    /** Its host; for a loopback address, the address with its port ("localhost:53682") */
+    host: string;
+    /** It goes back to the person's own computer, where any program could ask with this name */
+    loopback: boolean;
+    /** It goes back to the same host its client id is on */
+    sameHost: boolean;
+  };
+  /** What it asks for: reading, or reading and writing (which the page offers to start with) */
+  asks: "read" | "write";
+  /** The workspaces the person can give it (theirs, not archived) */
+  workspaces: Array<{ slug: string; name: string }>;
+  /** How many days it lasts unless the person says (and at most) */
+  days: { default: number; max: number };
+}
+
 /** One API call, from the access log */
 export interface AccessEntry {
   at: string;
   user: string | null;
-  /** How they signed in: "cli joel-laptop", "web Firefox on Linux", "token CI of the website" */
+  /** How they signed in: "cli joel-laptop", "web Firefox on Linux", "token CI of the website", "app Claude (claude.ai)" */
   credential: string | null;
   agent: string | null;
   /** The client it came through: "fontego" (the CLI), "web", "mcp" or "api"; null for calls logged before 2026-11-23 */
@@ -651,8 +741,15 @@ export interface ChangeBy {
   agent: string | null;
   /** The client that sent it: fontego (the CLI), web, api... */
   client: string | null;
-  /** How the writer had signed in, with the label it has today: a session ("cli", "joel-laptop") or a token (its name) */
-  credential: { type: "session"; id: number; kind: "web" | "cli"; label: string } | { type: "token"; id: number; label: string } | null;
+  /**
+   * How the writer had signed in, with the label it has today: a session ("cli", "joel-laptop"), a token (its name) or
+   * a connected app (its name, as it gives it)
+   */
+  credential:
+    | { type: "session"; id: number; kind: "web" | "cli"; label: string }
+    | { type: "token"; id: number; label: string }
+    | { type: "app"; id: number; label: string }
+    | null;
 }
 
 /** GET /history: commits, newest first. */
