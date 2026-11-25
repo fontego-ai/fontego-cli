@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file --config=/dev/null
 // fontego: workspaces on Fontego servers, from the terminal, for people, agents and scripts.
 //
 // Two kinds of commands: built-in ones (builtins.ts), which work with this machine or a synced folder, and the ones

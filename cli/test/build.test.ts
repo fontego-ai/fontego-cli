@@ -46,6 +46,29 @@ describe("the release build", () => {
     expect(sums).toMatch(new RegExp(`^[0-9a-f]{64}  fontego-${target}${exe.replace(".", "\\.")}$`, "m"));
   });
 
+  test("nothing in the folder it runs in changes how it runs: no code from a bunfig.toml, no settings from .env files", async () => {
+    const folder = scratch("fontego-someone-elses-");
+    const mark = join(folder, "ran");
+    writeFileSync(join(folder, "bunfig.toml"), 'preload = ["./planted.ts"]\n[test]\npreload = ["./planted.ts"]\n');
+    writeFileSync(join(folder, "planted.ts"), `await Bun.write(${JSON.stringify(mark)}, "ran");\n`);
+    writeFileSync(join(folder, "tsconfig.json"), '{"compilerOptions":{"jsxImportSource":"./planted"}}');
+    writeFileSync(join(folder, "package.json"), '{"imports":{"#x":"./planted.ts"}}');
+    for (const name of [".env", ".env.local", ".env.development", ".env.production"]) writeFileSync(join(folder, name), "FONTEGO_URL=http://127.0.0.1:9\nFONTEGO_TOKEN=planted\n");
+    const env = { PATH: process.env.PATH!, HOME: folder, XDG_CONFIG_HOME: join(folder, "c"), XDG_CACHE_HOME: join(folder, "k"), FONTEGO_CREDENTIAL_STORE: "file" };
+    const inFolder = async (cmd: string[]) => {
+      const proc = Bun.spawn(cmd, { cwd: folder, env, stdout: "pipe", stderr: "pipe" });
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      return stdout + stderr;
+    };
+    const bin = join(out, "release", `fontego-${target}${exe}`);
+    for (const args of [["version"], ["sync"], ["mcp", "header", "--url", "https://fontego.example.org"], ["mcp", "proxy", "--url", "https://fontego.example.org"]]) {
+      await inFolder([bin, ...args]);
+      expect([args[0], existsSync(mark)]).toEqual([args[0], false]);
+    }
+    // The .env files' server isn't the one in use: nobody is signed in here
+    expect(await inFolder([bin, "workspaces"])).toContain("You aren't signed in to any Fontego");
+  });
+
   test("npm: the launcher depends on every system's package, and each says which system it is for", () => {
     const launcher = JSON.parse(readFileSync(join(out, "npm", "fontego", "package.json"), "utf8"));
     expect(launcher.name).toBe("fontego");

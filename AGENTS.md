@@ -134,11 +134,13 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   themselves again with the user's session bus (`/run/user/UID/bus`) when it is missing, since the keychain needs it.
   `cli/test/mcp.test.ts` does it all in a home of its own, with a stand-in `claude`.
 - **One executable per system** (`scripts/build.ts`, `bun run build`): `bun build --compile` for Linux, macOS and
-  Windows, x64 and arm64, so people need neither Bun nor Node. The same build makes the GitHub release files
-  (`fontego-<os>-<arch>`, `SHA256SUMS`, `install.sh`) and the npm packages: `fontego`, a Node launcher with no
-  dependencies and no install script (`scripts/npm-launcher.cjs`, which passes signals and the exit code), and one
-  `@fontego/cli-<os>-<arch>` per system as its optional dependencies, which npm picks by `os` and `cpu`. `install.sh`
-  (Linux and macOS, no sudo) checks the download against `SHA256SUMS`. The version is written once, in
+  Windows, x64 and arm64, so people need neither Bun nor Node. It takes nothing from the folder it runs in, whose files
+  others may write: what Bun would load by itself (`bunfig.toml`, `.env` files) is off (`OWN_FOLDER`), and from the
+  source `fontego mcp add` writes Bun's options for the same (`BUN_ALONE` in `mcp/configs.ts`). The same build makes the
+  GitHub release files (`fontego-<os>-<arch>`, `SHA256SUMS`, `install.sh`) and the npm packages: `fontego`, a Node
+  launcher with no dependencies and no install script (`scripts/npm-launcher.cjs`, which passes signals and the exit
+  code), and one `@fontego/cli-<os>-<arch>` per system as its optional dependencies, which npm picks by `os` and `cpu`.
+  `install.sh` (Linux and macOS, no sudo) checks the download against `SHA256SUMS`. The version is written once, in
   `cli/package.json` (`version.ts`).
 - **`core` is the contract.** The API types, the path rules (`normalizePath`, with the names Windows and macOS take for
   `.git` and `.fontego`; `symlinkTarget`, where a link may point) and the Git blob hash (`blobHash`) must
@@ -187,7 +189,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 bun install
 bun test                 # needs fontego-app next to this repo (../fontego-app), or FONTEGO_APP_DIR
 bun run typecheck
-bun cli/src/main.ts help
+bun --no-env-file --config=/dev/null cli/src/main.ts help   # as the executable runs: nothing of the folder it is in
 bun run build            # dist/release (executables, SHA256SUMS, install.sh) and dist/npm (the npm packages)
 bun run build --only linux-x64 --out /tmp/fontego-dist
 ```
