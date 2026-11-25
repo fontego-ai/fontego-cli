@@ -27,6 +27,7 @@ import { UsageError, usageLine, type Parsed } from "./args.ts";
 import type { ChoicesSource } from "./ask.ts";
 import type { Client } from "./client.ts";
 import { readSecret, readStdin } from "./prompt.ts";
+import { formatTable, terminalWidth } from "./table.ts";
 import { forPerson, unsafeForTerminal } from "./terminal.ts";
 
 // --- The cache: one file per server ---
@@ -283,19 +284,13 @@ function detailLines(details: CommandDetails | undefined, row: unknown, vars: Te
   return lines;
 }
 
-function table(rows: unknown[], all: CommandColumn[], details: CommandDetails | undefined, vars: TemplateVars): string {
+function table(rows: unknown[], all: CommandColumn[], details: CommandDetails | undefined, vars: TemplateVars, width: number | undefined): string {
   const rendered = rows.map((r) => all.map((c) => renderTemplate(c.value, r, vars)));
   // An optional column nobody filled is left out.
   const keep = all.map((c, i) => !c.optional || rendered.some((row) => row[i] !== ""));
-  const columns = all.filter((_, i) => keep[i]);
+  const header = all.filter((_, i) => keep[i]).map((c) => c.header);
   const cells = rendered.map((row) => row.filter((_, i) => keep[i]));
-  const widths = columns.map((c, i) => Math.max(c.header.length, ...cells.map((row) => row[i]!.length)));
-  const line = (values: string[]) =>
-    values
-      .map((v, i) => (i === values.length - 1 ? v : v.padEnd(widths[i]!)))
-      .join("  ")
-      .trimEnd();
-  return [line(columns.map((c) => c.header)), ...cells.flatMap((row, i) => [line(row), ...detailLines(details, rows[i], vars)])].join("\n");
+  return formatTable(header, cells, { width, under: (i) => detailLines(details, rows[i], vars) });
 }
 
 /** A record line (or a footer) is left out when every field in it came out empty. */
@@ -310,12 +305,15 @@ const withFooter = (text: string, footer: string[] | undefined, data: unknown, v
   return lines.length ? `${text}\n\n${lines.join("\n")}` : text;
 };
 
-/** Text for a person; with --json the answer is printed as the API sent it. */
-export function renderOutput(output: CommandOutput, data: unknown, vars: TemplateVars): string {
+/**
+ * Text for a person; with --json the answer is printed as the API sent it. `width`: the terminal's, which a table fits
+ * in (table.ts); none for a pipe or a file.
+ */
+export function renderOutput(output: CommandOutput, data: unknown, vars: TemplateVars, width?: number): string {
   switch (output.kind) {
     case "table": {
       const rows = rowsOf(data, output.rows);
-      return withFooter(rows.length ? table(rows, output.columns, output.details, vars) : (output.empty ?? "(none)"), output.footer, data, vars);
+      return withFooter(rows.length ? table(rows, output.columns, output.details, vars, width) : (output.empty ?? "(none)"), output.footer, data, vars);
     }
     case "lines": {
       const rows = rowsOf(data, output.rows);
@@ -403,5 +401,5 @@ export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Clie
   }
 
   const data: unknown = (res.headers.get("content-type") ?? "").includes("json") ? await res.json() : await res.text();
-  console.log(opts.json ? JSON.stringify(data, null, 2) : renderOutput(spec.output, data, vars));
+  console.log(opts.json ? JSON.stringify(data, null, 2) : renderOutput(spec.output, data, vars, terminalWidth()));
 }

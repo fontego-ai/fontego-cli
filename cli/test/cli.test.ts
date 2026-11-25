@@ -6,6 +6,7 @@ import type { CommandsManifest } from "@fontego/core";
 import { BUILTIN_NAMES } from "../src/builtins.ts";
 import { KEEP_IT_HERE } from "../src/commands/folders.ts";
 import { checkCommand, commandsCachePath } from "../src/declared.ts";
+import { onTerminal } from "./pty.ts";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
@@ -491,6 +492,13 @@ describe("commands the server declares", () => {
     const list = (await fontego(["admin", "settings"], env)).out;
     expect(list).toMatch(/displayName\s+Crumb & Co\.\s+set here/);
     expect(list).toMatch(/smtp\.password\s+\(not set\)\s+default/);
+    // In a terminal of 80 columns the long lists of paths wrap in their column, and every setting keeps its FROM on
+    // its line; through a pipe (above) one setting per line.
+    const narrow = await onTerminal(["admin", "settings"], { ...process.env, ...NO_AGENT, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_CREDENTIAL_STORE: "file", ...env }, { cols: 80 });
+    const rows = narrow.text.trimEnd().split("\r\n");
+    for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(80);
+    expect(rows.find((r) => r.startsWith("paths.protected"))).toMatch(/^paths\.protected\s+\*\*\/AGENTS\.md, .*\s+default$/);
+    expect(list.split("\n").find((r) => r.startsWith("paths.protected"))!.length).toBeGreaterThan(80);
     expect((await fontego(["help", "admin", "settings", "set"], env)).out).toContain("left out, it is asked for without showing it");
 
     const pw = await fontego(["admin", "settings", "set", "smtp.password"], env, "s3cret pass\n");

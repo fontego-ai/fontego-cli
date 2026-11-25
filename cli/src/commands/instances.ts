@@ -40,6 +40,7 @@ import { forgetCommands, refreshCommands } from "../declared.ts";
 import { canAsk } from "../output.ts";
 import { askText, choose, type Choice } from "../picker.ts";
 import { readSecret } from "../prompt.ts";
+import { formatTable, terminalWidth } from "../table.ts";
 import type { Builtin, RunContext } from "./command.ts";
 import { skillInstalled } from "./setup.ts";
 
@@ -277,9 +278,8 @@ export const instanceCommands: Builtin[] = [
       for (const i of listInstances()) rows.push({ ...i, default: i.alias === d, ...(await statusOf(i, store)) });
       print({ default: d, store: store.kind, instances: rows }, () => {
         if (!rows.length) return "No Fontego on this machine yet. Sign in to one with: fontego login URL";
-        const cols = [["", "ALIAS", "NAME", "ACCOUNT", "STATUS", "ENDS", "URL"], ...rows.map((r) => [r.default ? "*" : "", r.alias, r.name, r.email ?? "", r.status, r.endsAt ? when(r.endsAt) : "", r.url])];
-        const w = cols[0]!.map((_, c) => Math.max(...cols.map((row) => row[c]!.length)));
-        return cols.map((row) => row.map((v, c) => (c === row.length - 1 ? v : v.padEnd(w[c]!))).join("  ").trimEnd()).join("\n") + "\n* default";
+        const cells = rows.map((r) => [r.default ? "*" : "", r.alias, r.name, r.email ?? "", r.status, r.endsAt ? when(r.endsAt) : "", r.url]);
+        return `${formatTable(["", "ALIAS", "NAME", "ACCOUNT", "STATUS", "ENDS", "URL"], cells, { width: terminalWidth() })}\n* default`;
       });
     },
   },
