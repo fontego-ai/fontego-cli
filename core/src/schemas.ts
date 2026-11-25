@@ -399,10 +399,52 @@ export const FileDeleteBody = z.object({ baseHash: z.string().optional(), messag
 
 export const FileMoveBody = z.object({ from: z.string(), to: z.string(), baseHash: z.string().optional(), message: Text(10_000).optional() });
 
+// --- Editing one file by pieces: an exact text becomes another, without sending the whole file ---
+
+/** The most edits one call makes to a file; they are applied in order, each on what the one before left. */
+export const MAX_EDITS = 100;
+
+/** The most a file of edits read by the CLI (`fontego edit --edits FILE`) may hold. */
+export const EDITS_MAX_BYTES = 32 * 1024 * 1024;
+
+const OldText = z.string().min(1, "can't be empty: say which text to change");
+
+export const FileEditSchema = z.object({
+  /** The exact text that is there now: once, or at least once with `all` */
+  old: OldText,
+  /** What it becomes; "" deletes it */
+  new: z.string(),
+  /** Every place the old text appears, instead of exactly one */
+  all: z.boolean().optional(),
+});
+
+/**
+ * One edit (`old`, `new`, `all`) or several (`edits`), never both; the server says which is missing, in the words of
+ * the command. Without baseHash they apply to the latest version; with it, to that version, merged with what changed
+ * since, as a write with baseHash.
+ */
+export const FileEditBody = z.object({
+  old: OldText.optional(),
+  new: z.string().optional(),
+  all: z.boolean().optional(),
+  edits: z
+    // A string is what a fontego older than this command sends for --edits FILE: the file's bytes in base64
+    .array(FileEditSchema, { error: (issue) => (typeof issue.input === "string" ? "must be a list of edits, not a string (a fontego older than edit sends --edits so: update it, npm i -g fontego, or use --old and --new)" : undefined) })
+    .min(1, "send at least one edit")
+    .max(MAX_EDITS, `split them: at most ${MAX_EDITS} edits in one call`)
+    .optional(),
+  /** Hash of the version the edits were made on (fontego cat --json); left out, the latest one */
+  baseHash: z.string().optional(),
+  message: Text(10_000).optional(),
+});
+
 export type PutOp = z.infer<typeof PutOpSchema>;
 export type DeleteOp = z.infer<typeof DeleteOpSchema>;
 export type MoveOp = z.infer<typeof MoveOpSchema>;
 export type ChangeOp = z.infer<typeof ChangeOpSchema>;
+export type FileEdit = z.infer<typeof FileEditSchema>;
+/** What a client sends to edit a file by pieces */
+export type FileEditRequest = z.input<typeof FileEditBody>;
 /** What a client sends */
 export type ChangeSetRequest = z.input<typeof ChangeSetBody>;
 /** What the server works with, once validated */

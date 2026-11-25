@@ -146,11 +146,11 @@ per-workspace access.
 - Errors are printed as \`error: <message>\` plus a \`hint:\` line with the next step, usually a \`fontego\` command.
   With \`--json\` they come as \`{"error": {"code", "message", "hint"}}\` on stdout and the exit code is not 0.
 - Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict (the file changed since you
-  read it, the name is taken), 5 not allowed (your role, a token's reach, or the rules: a protected or rejected path,
-  a secret, a file too big, an archived workspace), 6 the server can't be reached or is too busy now (try again
-  later), 7 a sync that left something new undone (a file refused for the first time, something that couldn't be
-  read, changes that still wait: the output says what, with \`"complete": false\`, and the next sync tries again). A
-  file refused before, unchanged, is listed in \`setAside\` and doesn't make it 7.
+  read it, the name is taken, the text to edit isn't there exactly once), 5 not allowed (your role, a token's reach,
+  or the rules: a protected or rejected path, a secret, a file too big, an archived workspace), 6 the server can't be
+  reached or is too busy now (try again later), 7 a sync that left something new undone (a file refused for the first
+  time, something that couldn't be read, changes that still wait: the output says what, with \`"complete": false\`,
+  and the next sync tries again). A file refused before, unchanged, is listed in \`setAside\` and doesn't make it 7.
 - Nothing is ever asked of you, nor of anyone with \`--json\`: an argument left out is a usage error, which lists the
   values it can take when they are known, and a secret left out has to come on stdin. With \`--json\`, \`--help\`
   and \`fontego help\` print \`{"help": ...}\` too.
@@ -181,6 +181,21 @@ A synced folder is a normal folder with a hidden \`.fontego/\` (don't touch it).
   or rejected path (the hint names its pattern); \`fontego sync\` reports them in \`skipped\` the first time and in
   \`setAside\` after that, and keeps the file here. To keep a file here for good without sending it, list it in
   \`.fontegoignore\` (every copy) or \`.fontego/ignore\` (only this one).
+
+## Work without a synced copy
+
+You can read and change single files without a synced folder:
+
+- \`fontego cat WORKSPACE PATH --json\`: the file's \`content\` and its \`hash\`, the version you read.
+- \`fontego edit WORKSPACE PATH --old TEXT --new TEXT --base HASH --json\`: change a piece of it without sending it
+  whole. The old text must be there exactly as you give it, and once (\`--all\` changes every place it is); \`--new ""\`
+  deletes it. Several edits in one commit: \`--edits -\` with a JSON list on stdin, \`[{"old": ..., "new": ...}]\`,
+  applied in order; it is also the way to send texts exactly, line breaks included. \`--base\` makes the edits on the
+  version you read and merges them with what changed since; pass it when you have the hash.
+- \`fontego write WORKSPACE PATH --base HASH < FILE\`: the whole file (without \`--base\`, only a new one).
+  \`fontego mv\` and \`fontego rm\` take \`--base\` too.
+- The answer gives the new \`hash\` for your next change. A conflict (exit code 4: the text isn't there, is there more
+  than once, or someone changed the same lines) writes nothing: read the file again and redo your change on it.
 
 ## Others in the same workspace
 

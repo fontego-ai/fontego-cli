@@ -382,6 +382,8 @@ describe("commands the server declares", () => {
     const big = join(dir, "big.jpg");
     writeFileSync(big, Buffer.alloc(20 * 1024 * 1024 + 1));
     expect(JSON.parse((await fontego(["account", "set", "--photo", big, "--json"], as)).out).error.message).toContain("this Fontego takes at most 20 MB");
+    const bigPiped = await fontego(["account", "set", "--photo", "-", "--json"], as, new Uint8Array(20 * 1024 * 1024 + 1));
+    expect(JSON.parse(bigPiped.out).error.message).toBe("--photo: more than 20 MB came on stdin; this Fontego takes at most that.");
     // Said by the server: an SVG, with what to do
     const svg = join(dir, "me.svg");
     writeFileSync(svg, "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
@@ -631,6 +633,72 @@ describe("commands the server declares", () => {
     expect((await fontego(["write", "notes", "AGENTS.md"], token, "# Mine\n")).code).toBe(5);
     const log = (await fontego(["admin", "audit", "changes", "--workspace", "notes", "--limit", "5"], asAdmin())).out;
     expect(log).toContain("test-agent");
+  });
+
+  test("an agent edits pieces of a file without a copy: --old becomes --new, or several from a JSON file or stdin", async () => {
+    const agent = { FONTEGO_AGENT: "test-agent" };
+    await fontego(["write", "notes", "lists/todo.md"], agent, "# To do\n\n- bread\n- milk\n- eggs\n");
+    // A text that starts with "- " is an option's value, not an option
+    const one = await fontego(["edit", "notes", "lists/todo.md", "--old", "- milk", "--new", "- oat milk"], agent);
+    const hash = JSON.parse((await fontego(["cat", "notes", "lists/todo.md", "--json"])).out).hash;
+    expect([one.code, one.out.trim()]).toEqual([0, `Edited lists/todo.md. Its hash is now ${hash}`]);
+    expect((await fontego(["edit", "notes", "lists/todo.md", "--old", "- eggs\n", "--new", ""], agent)).code).toBe(0);
+    expect((await fontego(["cat", "notes", "lists/todo.md"])).out).toBe("# To do\n\n- bread\n- oat milk\n");
+
+    // What an agent reads with --json: the hash for the next edit, and what each edit replaced
+    const now = JSON.parse((await fontego(["cat", "notes", "lists/todo.md", "--json"])).out).hash;
+    const json = JSON.parse((await fontego(["edit", "notes", "lists/todo.md", "--old", "- ", "--new", "* ", "--all", "--base", now, "--json"], agent)).out);
+    expect([json.status, json.replaced, json.changes[0].merged]).toEqual(["committed", [2], undefined]);
+    // A --base from before the last edit changed those lines: a conflict, and nothing written
+    const stale = await fontego(["edit", "notes", "lists/todo.md", "--old", "- bread", "--new", "- rye", "--base", hash, "--json"], agent);
+    expect([stale.code, JSON.parse(stale.out).error.code]).toEqual([4, "conflict"]);
+
+    // Several at once, from a file or from stdin, exactly: the last line's break is kept
+    const dir = tempDir("fontego-edits-");
+    const file = join(dir, "edits.json");
+    writeFileSync(file, JSON.stringify([{ old: "* bread\n", new: "* rye bread\n" }, { old: "# To do", new: "# Shopping" }]));
+    expect((await fontego(["edit", "notes", "lists/todo.md", "--edits", file, "-m", "Shopping list"], agent)).code).toBe(0);
+    const piped = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-", "--json"], agent, JSON.stringify([{ old: "* oat milk\n", new: "* oat milk\n* honey\n" }]));
+    expect(JSON.parse(piped.out).replaced).toEqual([1]);
+    expect((await fontego(["cat", "notes", "lists/todo.md"])).out).toBe("# Shopping\n\n* rye bread\n* oat milk\n* honey\n");
+    expect((await fontego(["log", "notes", "lists/todo.md", "--limit", "2"])).out).toContain("Shopping list");
+
+    // A text that isn't there, or is there twice, is a conflict (4) that writes nothing; a protected path is not allowed (5)
+    const missing = await fontego(["edit", "notes", "lists/todo.md", "--old", "* eggs", "--new", "* 6 eggs"], agent);
+    expect([missing.code, missing.err]).toEqual([4, expect.stringContaining("hint: Read it again (fontego cat notes lists/todo.md --json")]);
+    const twice = await fontego(["edit", "notes", "lists/todo.md", "--old", "* ", "--new", "- ", "--json"], agent);
+    expect([twice.code, JSON.parse(twice.out).error.code]).toEqual([4, "edit_not_unique"]);
+    expect(JSON.parse(twice.out).error.message).toBe("The old text appears 3 times in lists/todo.md. Nothing was written.");
+    expect((await fontego(["edit", "notes", "nope.md", "--old", "x", "--new", "y"], agent)).code).toBe(3); // not there: nothing to edit
+    // A path she may not write says so first, even before it exists
+    expect((await fontego(["edit", "notes", "AGENTS.md", "--old", "x", "--new", "y"], agent)).code).toBe(5);
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/notes/files/AGENTS.md", { content: "# Rules\n" });
+    const protectedPath = await fontego(["edit", "notes", "AGENTS.md", "--old", "Rules", "--new", "Mine"], agent);
+    expect([protectedPath.code, protectedPath.err]).toEqual([5, expect.stringContaining('It matches "**/AGENTS.md"')]);
+    const log = (await fontego(["admin", "audit", "changes", "--workspace", "notes", "--limit", "3"], asAdmin())).out;
+    expect(log).toContain("test-agent");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("edit never reads stdin unless --edits - asks, and then nothing, a terminal or broken JSON is a usage error", async () => {
+    // Without --edits -, what comes on stdin is never read: only --old and --new count
+    expect((await fontego(["edit", "notes", "lists/todo.md", "--old", "* honey", "--new", "* acacia honey"], {}, '[{"old": "x", "new": "y"}]')).code).toBe(0);
+    const nothing = await fontego(["edit", "notes", "lists/todo.md"]);
+    expect([nothing.code, nothing.err]).toEqual([1, expect.stringContaining("Say what to change")]);
+    expect(nothing.err).toContain("--edits FILE (- reads stdin)");
+    const noNew = await fontego(["edit", "notes", "lists/todo.md", "--old", "* honey"]);
+    expect([noNew.code, noNew.err]).toEqual([1, expect.stringContaining('Say what the old text becomes: --new TEXT ("" deletes it)')]);
+    const empty = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-"], {}, "");
+    expect([empty.code, empty.err]).toEqual([1, expect.stringContaining("Nothing came on stdin for --edits -")]);
+    const broken = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-", "--json"], {}, '[{"old": "x"');
+    expect(JSON.parse(broken.out).error).toMatchObject({ code: "usage", message: expect.stringContaining("--edits: what came on stdin isn't JSON") });
+    const notAList = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-", "--json"], {}, '{"old": "x", "new": "y"}');
+    expect(JSON.parse(notAList.out).error.hint).toBe("fontego help edit says what --edits takes.");
+    // On a terminal, nothing is waited for
+    const tty = await onTerminal(["edit", "notes", "lists/todo.md", "--edits", "-"], { ...process.env, ...NO_AGENT, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" });
+    expect([tty.code, tty.text]).toEqual([1, expect.stringContaining("--edits - reads stdin")]);
+    expect((await fontego(["help", "edit"])).out).toMatch(/--edits FILE +Several edits instead, .* \(a JSON file on this machine, sent to this Fontego; - reads stdin\)/);
+    expect((await fontego(["cat", "notes", "lists/todo.md"])).out).toContain("* acacia honey");
   });
 
   test("usage mistakes are caught before calling the server", async () => {

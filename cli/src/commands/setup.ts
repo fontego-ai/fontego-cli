@@ -32,6 +32,8 @@ What holds even before that, and offline:
   asked.
 - A folder with a hidden \`.fontego/\` is a synced copy of a workspace. Don't touch \`.fontego/\`. Edit the files with
   your usual tools, then run \`fontego sync --json\` to send your changes and get everyone else's.
+- Without a synced copy, \`fontego cat WORKSPACE PATH --json\` gives a file and its hash, and
+  \`fontego edit WORKSPACE PATH --old TEXT --new TEXT --base HASH\` changes a piece of it without sending it whole.
 - A conflict leaves your version next to the file as \`name (conflict <who> <date>).ext\`. Merge it into the file,
   delete the copy and sync again; when it isn't clear which version should win, ask your person first.
   \`fontego conflicts --json\` lists them.

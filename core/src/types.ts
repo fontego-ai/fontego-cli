@@ -708,6 +708,12 @@ export interface ChangeSetResult {
   changes: Array<{ status: "put" | "delete"; path: string; hash?: string; merged?: boolean }>;
 }
 
+/** What editing a file by pieces answers (PATCH /workspaces/{ws}/files/{path}): the write, and what each edit did. */
+export interface FileEditResult extends ChangeSetResult {
+  /** How many times the old text of each edit was replaced, in order: 1, or more with `all` */
+  replaced: number[];
+}
+
 // --- Live: the event streams and who is in each workspace now ---
 
 /** A new commit in a workspace (GET /workspaces/{ws}/events, and GET /events for every workspace someone reads). */
