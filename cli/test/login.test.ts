@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { signInPage } from "../src/auth.ts";
 import { Client } from "../src/client.ts";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
@@ -131,7 +132,14 @@ describe("signing in through the browser", () => {
     // The browser: the person approves, and the browser goes back to the CLI.
     const approved = await fetch(`${s.url}/v1/oauth/authorize`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ ...q, approve: true }) });
     const back = await fetch(((await approved.json()) as any).redirect);
-    expect(await back.text()).toContain("Connected");
+    expect(back.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const page = await back.text();
+    // fontego's own page, with the web app's look and nothing loaded or run: its policy allows only its own style
+    expect(page).toContain("<h1>Connected</h1>");
+    expect(page).toContain("prefers-color-scheme:dark");
+    expect(page).toContain(`content="default-src 'none'; style-src 'unsafe-inline'"`);
+    expect(page).not.toContain("<script");
+    expect(page).toContain(new URL(s.url).host);
 
     const r = await finish();
     expect(r.code).toBe(0);
@@ -258,6 +266,55 @@ describe("signing in through the browser", () => {
     expect(JSON.parse((await fontego(["sessions", "--json"])).out).instances[0].email).toBe("ana@example.org");
   });
 
+  test("a machine's session takes the name given at sign-in, can be renamed, and keeps its name when it signs in again", async () => {
+    /** Signs in through the browser with these arguments, approving what the link asks; the first and last lines */
+    const signIn = async (args: string[], extra: Record<string, string> = {}) => {
+      const { first, finish } = await startWaiting(["login", "fontego", ...args, "--json"], extra);
+      const q = Object.fromEntries(new URL(first.url).searchParams);
+      const approved = await fetch(`${s.url}/v1/oauth/authorize`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ ...q, approve: true }) });
+      await fetch(((await approved.json()) as any).redirect);
+      return { asked: q.machine, last: (await finish()).last };
+    };
+    const current = async () => (JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions as any[]).find((x) => x.current);
+
+    // Named at sign-in: the browser is asked to connect that name
+    const named = await signIn(["--name", "Ana's laptop"]);
+    expect([named.asked, named.last.sessionName]).toEqual(["Ana's laptop", "Ana's laptop"]);
+    const first = await current();
+    expect(first).toMatchObject({ kind: "cli", label: "Ana's laptop" });
+
+    const renamed = await fontego(["account", "sessions", "rename", String(first.id), "Work laptop"]);
+    expect([renamed.code, renamed.out]).toEqual([0, `Session ${first.id} is now "Work laptop".\n`]);
+
+    // Signing in again (its session ended, say) is a new session, named as the one it replaces, which closes
+    const again = await signIn([]);
+    expect([again.asked, again.last.sessionName]).toEqual([hostname().split(".")[0], "Work laptop"]);
+    const second = await current();
+    expect([second.label, second.id === first.id]).toEqual(["Work laptop", false]);
+    expect((JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions as any[]).some((x) => x.id === first.id)).toBe(false);
+    // --name says otherwise
+    expect((await signIn(["--name", "Desk"])).last.sessionName).toBe("Desk");
+
+    // With a code (no browser here) too
+    const { first: code, finish } = await startWaiting(["login", "fontego", "--device", "--name", "Agent VPS", "--json"]);
+    expect(((await (await fetch(`${s.url}/v1/oauth/device/${code.user_code}`, { headers: browser(cookie) })).json()) as any).machine).toBe("Agent VPS");
+    await fetch(`${s.url}/v1/oauth/device/${code.user_code}`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ approve: true }) });
+    expect((await finish()).last.sessionName).toBe("Agent VPS");
+    expect((await current()).label).toBe("Agent VPS");
+
+    // A token isn't a session: nothing to name; and when it comes from the environment, the error says so
+    const withToken = await fontego(["login", "fontego", "--token", s.token("ana@example.org"), "--name", "CI"]);
+    expect([withToken.code, withToken.err]).toEqual([1, expect.stringContaining("a token isn't one: sign in without --token")]);
+    const fromEnv = await fontego(["login", s.url, "--name", "CI"], { env: { FONTEGO_URL: s.url, FONTEGO_TOKEN: s.token("ana@example.org") } });
+    expect([fromEnv.code, fromEnv.err]).toEqual([1, expect.stringContaining("sign in without FONTEGO_TOKEN (with FONTEGO_URL)")]);
+    // A name that can't be one is refused before anything opens
+    for (const [name, says] of [["   ", "can't be empty"], ["two\nlines", "one line"], ["x".repeat(81), "80 characters"]]) {
+      const bad = await fontego(["login", "fontego", "--name", name!]);
+      expect([bad.code, bad.err]).toEqual([1, expect.stringContaining(says!)]);
+      expect(bad.err).not.toContain("Waiting");
+    }
+  }, 30_000);
+
   test("signing out closes the session on the server too", async () => {
     const access = credentials()[s.url].accessToken;
     expect((await fontego(["logout"])).out).toContain("Signed out of fontego");
@@ -305,6 +362,37 @@ describe("several Fontegos on one machine", () => {
     expect(JSON.parse((await fontego(["sessions", "--json"])).out).default).toBe("office");
     expect((await fontego(["sessions", "forget", "office"])).code).toBe(0);
     expect(JSON.parse((await fontego(["sessions", "--json"])).out).instances.map((i: any) => i.alias)).toEqual(["fontego"]);
+  });
+
+  test("signing in again with --alias renames the Fontego this machine knows, and says so; a taken alias is refused first", async () => {
+    const own = tempDir("fontego-cli-alias-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    const { token } = await s.person("ivo@example.org");
+    expect(JSON.parse((await fontego(["login", s.url, "--token", token, "--json"], { env: here })).out)).toMatchObject({ alias: "fontego", renamed: null });
+    const again = await fontego(["login", s.url, "--token", token, "--alias", "office"], { env: here });
+    expect(again.out).toContain("Signed in to Fontego (office)");
+    expect(again.out).toContain("fontego is now office.");
+    // By alias, too, in JSON; the default follows it
+    expect(JSON.parse((await fontego(["login", "office", "--token", token, "--alias", "casa", "--json"], { env: here })).out).renamed).toEqual({ from: "office", to: "casa" });
+    const list = JSON.parse((await fontego(["sessions", "--json"], { env: here })).out);
+    expect([list.default, list.instances.map((i: any) => i.alias)]).toEqual(["casa", ["casa"]]);
+
+    // An alias another Fontego has, or one that can't be an alias, is refused before anything is sent.
+    expect((await fontego(["login", s2.url, "--token", (await s2.person("ivo@example.org")).token, "--alias", "work"], { env: here })).code).toBe(0);
+    const fake = fakeFontego();
+    try {
+      for (const [alias, says] of [["casa", '"casa" is already the alias of'], ["Mi Casa", "an alias is lowercase letters"]]) {
+        const r = await fontego(["login", "work", "--token", "t", "--alias", alias!], { env: here });
+        expect([r.code, r.err]).toEqual([1, expect.stringContaining(says!)]);
+        const other = await fontego(["login", fake.url, "--token", "t", "--alias", alias!], { env: here });
+        expect([other.code, other.err]).toEqual([1, expect.stringContaining(says!)]);
+      }
+      expect(fake.seen).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+    expect(JSON.parse((await fontego(["sessions", "--json"], { env: here })).out).instances.map((i: any) => i.alias)).toEqual(["casa", "work"]);
+    rmSync(own, { recursive: true, force: true });
   });
 
   test("the first version's login moves over by itself", async () => {
@@ -470,6 +558,29 @@ describe("tokens, and what signing out leaves open", () => {
     rmSync(own, { recursive: true, force: true });
   });
 
+  test("fontego sessions says when a token ends: learnt at sign-in, or from the server's answer when it was saved without", async () => {
+    const own = tempDir("fontego-cli-token-end-");
+    const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
+    await s.person("kai@example.org");
+    const token = s.token("kai@example.org", { days: 30 });
+    const signedIn = JSON.parse((await fontego(["login", s.url, "--token", token, "--json"], { env: here })).out);
+    const row = async () => JSON.parse((await fontego(["sessions", "--json"], { env: here })).out).instances[0];
+    expect(await row()).toMatchObject({ status: "token", credential: "token", endsAt: signedIn.expiresAt });
+    expect((await fontego(["sessions"], { env: here })).out).toMatch(new RegExp(`token\\s+${signedIn.expiresAt.slice(0, 10)}\\s+http`));
+    // Saved by an earlier fontego, without its end: the next command's answer brings it.
+    const file = join(own, "fontego", "credentials.json");
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    delete saved[s.url].expiresAt;
+    writeFileSync(file, JSON.stringify(saved));
+    expect((await row()).endsAt).toBeNull();
+    expect((await fontego(["whoami"], { env: here })).code).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))[s.url]).toEqual({ type: "token", token, expiresAt: signedIn.expiresAt });
+    // One that ended has ended, whatever kind it is.
+    writeFileSync(file, JSON.stringify({ [s.url]: { type: "token", token, expiresAt: "2026-01-01T00:00:00.000Z" } }));
+    expect(await row()).toMatchObject({ status: "ended", credential: "token" });
+    rmSync(own, { recursive: true, force: true });
+  });
+
   test("signing out while the server can't be reached says the session is still open, and how to close it", async () => {
     const own = tempDir("fontego-cli-offline-");
     const here = { XDG_CONFIG_HOME: own, XDG_CACHE_HOME: own };
@@ -511,5 +622,20 @@ describe("signing in as someone else", () => {
     // The token it replaced still works: said too
     expect(text.out).toContain("The previous token still works on the server");
     rmSync(own, { recursive: true, force: true });
+  });
+});
+
+describe("the page the browser comes back to", () => {
+  test("says how it went, names where in plain text, and a refusal reads as one", () => {
+    const refused = signInPage("refused", { name: `<img src=x onerror=alert(1)> & co`, url: "https://fontego.example.org" });
+    expect(refused).toContain("<h1>Not connected</h1>");
+    expect(refused).toContain('class="card no"');
+    expect(refused).toContain("&#60;img src=x onerror=alert(1)&#62; &#38; co");
+    expect(refused).not.toContain("<img");
+    expect(refused).toContain("fontego.example.org");
+    const wrong = signInPage("wrong");
+    expect(wrong).toContain("<h1>Not this one</h1>");
+    expect(wrong).not.toContain('class="where"');
+    expect(signInPage("connected")).toContain('class="card ok"');
   });
 });

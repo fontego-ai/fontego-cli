@@ -5,6 +5,7 @@ import type { Builtin, RunContext } from "./commands/command.ts";
 import { folderCommands } from "./commands/folders.ts";
 import { instanceCommands } from "./commands/instances.ts";
 import { liveCommands } from "./commands/live.ts";
+import { mcpCommands } from "./commands/mcp.ts";
 import { setupCommands } from "./commands/setup.ts";
 import { agentName } from "./agents.ts";
 import { listInstances } from "./config.ts";
@@ -54,6 +55,7 @@ export const BUILTINS: Builtin[] = [
     },
   },
   ...setupCommands,
+  ...mcpCommands,
   {
     name: "version",
     aliases: ["--version", "-v"],

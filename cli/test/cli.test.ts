@@ -4,7 +4,9 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CommandsManifest } from "@fontego/core";
 import { BUILTIN_NAMES } from "../src/builtins.ts";
+import { KEEP_IT_HERE } from "../src/commands/folders.ts";
 import { checkCommand, commandsCachePath } from "../src/declared.ts";
+import { onTerminal } from "./pty.ts";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
@@ -19,9 +21,9 @@ const ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42
 const NO_AGENT = { FONTEGO_AGENT: "", CLAUDECODE: "", CODEX_THREAD_ID: "", COPILOT_CLI: "", OPENCODE: "", CURSOR_AGENT: "", GEMINI_CLI: "" };
 
 /** `input`: what comes on stdin, which is then not a terminal. */
-async function fontego(args: string[], env: Record<string, string> = {}, input?: string) {
+async function fontego(args: string[], env: Record<string, string> = {}, input?: string | Uint8Array) {
   const proc = Bun.spawn(["bun", MAIN, ...args], {
-    stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+    stdin: input === undefined ? "ignore" : typeof input === "string" ? new TextEncoder().encode(input) : input,
     // Never the real keychain or browser: credentials go to a file in the test home, and links are not opened. No
     // agent either, unless a test names one: the tests may run under one, and its name would land in every commit.
     env: { ...process.env, ...NO_AGENT, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_URL: "", FONTEGO_TOKEN: "", FONTEGO_INSTANCE: "", FONTEGO_CREDENTIAL_STORE: "file", FONTEGO_BROWSER: "none", ...env },
@@ -66,6 +68,16 @@ describe("fontego CLI", () => {
     const out = JSON.parse(r.out);
     expect(out.user.email).toBe("ana@example.org");
     expect(statSync(out.config).mode & 0o777).toBe(0o600);
+  });
+
+  test("dates come in this machine's time zone and in one form, whatever its language; --json keeps the API's", async () => {
+    const madrid = { TZ: "Europe/Madrid", LANG: "es_ES.UTF-8", LC_ALL: "es_ES.UTF-8" };
+    const ends = JSON.parse((await fontego(["whoami", "--json"], madrid)).out).credential.expiresAt as string;
+    expect(ends).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/);
+    const local = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Madrid", dateStyle: "short", timeStyle: "short" }).format(new Date(ends));
+    const text = (await fontego(["whoami"], madrid)).out;
+    expect(text).toContain(`ends ${local} (in `);
+    expect(text).not.toMatch(/UTC|AM|PM|[A-Z][a-z]{2} \d/);
   });
 
   test("explores with --json", async () => {
@@ -292,7 +304,7 @@ describe("commands the server declares", () => {
     expect((await fontego(["workspace", "edit", "shared", "--description", "For everyone"], env)).out).toContain("Updated shared.");
     const made = await fontego(["admin", "tokens", "create", "bea@example.org", "Bea's CI", "--workspaces", "shared"], env);
     expect(made.out).toContain(`"Bea's CI" for bea@example.org. It shows only this once: copy it now.`);
-    expect(made.out).toMatch(/Workspaces: shared · access: read · ends \d{4}-\d\d-\d\d \d\d:\d\d UTC \(in 90 days\)/);
+    expect(made.out).toMatch(/Workspaces: shared · access: read · ends \d{4}-\d\d-\d\d \d\d:\d\d \(in 90 days\)/);
     const token = /^ {2}(fontego_pat_\S+)$/m.exec(made.out)![1]!;
     const bea = await fontego(["whoami", "--json"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: token });
     expect(JSON.parse(bea.out).credential).toMatchObject({ type: "token", label: "Bea's CI", scope: { workspaces: ["shared"], access: "read" } });
@@ -357,15 +369,21 @@ describe("commands the server declares", () => {
     const got = JSON.parse((await fontego(["people", "photo", "gil@example.org", "--json"])).out);
     expect([got.type, got.text, got.version]).toEqual(["image/webp", false, expect.stringMatching(/^[0-9a-f]{16}$/)]);
     expect(await new Bun.Image(Buffer.from(got.contentBase64, "base64")).metadata()).toEqual({ width: 256, height: 256, format: "webp" });
-    expect((await fontego(["help", "account", "set"])).out).toMatch(/--photo FILE +A PNG, JPEG or WebP .* none removes yours \(a file on this machine, sent to this Fontego\)/);
+    expect((await fontego(["help", "account", "set"])).out).toMatch(/--photo FILE +A PNG, JPEG or WebP .* none removes yours \(a file on this machine, sent to this Fontego; - reads stdin\)/);
 
     // Said before calling the server: no such file, or one too big
+    // From stdin too, the same bytes
+    await fontego(["account", "set", "--photo", "none"], as);
+    const piped = await fontego(["account", "set", "--photo", "-"], as, new Uint8Array(readFileSync(file)));
+    expect([piped.code, piped.out]).toEqual([0, `Saved your account on ${s.url}.\nname: Gil\nphoto: yes\n`]);
     const missing = await fontego(["account", "set", "--photo", join(dir, "nope.jpg"), "--json"], as);
     expect(JSON.parse(missing.out).error).toMatchObject({ code: "usage", message: expect.stringContaining("there is no file") });
     expect(JSON.parse(missing.out).error.message).toContain("--photo none");
     const big = join(dir, "big.jpg");
     writeFileSync(big, Buffer.alloc(20 * 1024 * 1024 + 1));
     expect(JSON.parse((await fontego(["account", "set", "--photo", big, "--json"], as)).out).error.message).toContain("this Fontego takes at most 20 MB");
+    const bigPiped = await fontego(["account", "set", "--photo", "-", "--json"], as, new Uint8Array(20 * 1024 * 1024 + 1));
+    expect(JSON.parse(bigPiped.out).error.message).toBe("--photo: more than 20 MB came on stdin; this Fontego takes at most that.");
     // Said by the server: an SVG, with what to do
     const svg = join(dir, "me.svg");
     writeFileSync(svg, "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
@@ -480,6 +498,13 @@ describe("commands the server declares", () => {
     const list = (await fontego(["admin", "settings"], env)).out;
     expect(list).toMatch(/displayName\s+Crumb & Co\.\s+set here/);
     expect(list).toMatch(/smtp\.password\s+\(not set\)\s+default/);
+    // In a terminal of 80 columns the long lists of paths wrap in their column, and every setting keeps its FROM on
+    // its line; through a pipe (above) one setting per line.
+    const narrow = await onTerminal(["admin", "settings"], { ...process.env, ...NO_AGENT, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_CREDENTIAL_STORE: "file", ...env }, { cols: 80 });
+    const rows = narrow.text.trimEnd().split("\r\n");
+    for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(80);
+    expect(rows.find((r) => r.startsWith("paths.protected"))).toMatch(/^paths\.protected\s+\*\*\/AGENTS\.md, .*\s+default$/);
+    expect(list.split("\n").find((r) => r.startsWith("paths.protected"))!.length).toBeGreaterThan(80);
     expect((await fontego(["help", "admin", "settings", "set"], env)).out).toContain("left out, it is asked for without showing it");
 
     const pw = await fontego(["admin", "settings", "set", "smtp.password"], env, "s3cret pass\n");
@@ -493,6 +518,9 @@ describe("commands the server declares", () => {
     const bad = await fontego(["admin", "settings", "set", "smtp.port", "lots"], env);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("smtp.port: it needs a number.");
+    // A negative number is a value, which the server judges, not an option this command doesn't have.
+    const negative = await fontego(["admin", "settings", "set", "sessions.web.idleDays", "-3", "--json"], env);
+    expect([negative.code, JSON.parse(negative.out).error.code]).toEqual([1, "invalid_value"]);
     expect((await fontego(["admin", "settings", "get", "smtp.port"], env)).out).toContain("From: the default");
     expect((await fontego(["admin", "settings", "reset", "displayName"], env)).out).toContain("displayName is back to Fontego (the default).");
   });
@@ -509,7 +537,7 @@ describe("commands the server declares", () => {
 
     await Bun.write(`${dir}/later.md`, "written while archived\n");
     const refused = await fontego(["sync", dir], env);
-    expect(refused.code).not.toBe(0);
+    expect(refused.code).toBe(5); // an archived workspace takes nothing, whatever is tried again
     expect(refused.err).toContain("archived");
     expect((await fontego(["status", dir, "--json"], env)).out).toContain("later.md");
     expect((await fontego(["admin", "workspaces", "unarchive", "old"], env)).out).toContain("Workspace old is back.");
@@ -535,16 +563,42 @@ describe("commands the server declares", () => {
     expect(r.pushed).toEqual([{ path: "fine.md", status: "put" }]);
     expect(r.skipped.map((x: any) => x.path).sort()).toEqual([".mcp.json", "AGENTS.md"]);
     expect(r.skipped.find((x: any) => x.path === "AGENTS.md").reason).toContain("protected path");
-    expect((await fontego(["status", dir])).out).toContain("skipped   AGENTS.md");
+    const status = (await fontego(["status", dir])).out;
+    expect(status).toContain("skipped   AGENTS.md");
+    expect(status).toContain(KEEP_IT_HERE);
+    // The same files again are nothing new: named in one line, and the sync is complete.
+    const again = await fontego(["sync", dir]);
+    expect([again.code, again.out.trim()]).toEqual([0, "Up to date.\nSet aside as before: .mcp.json, AGENTS.md (fontego status says why)."]);
 
     expect((await fontego(["workspace", "paths", "notes"])).out).toMatch(/protected\s+\*\*\/AGENTS\.md\s+instance default/);
     expect((await fontego(["workspace", "paths", "protect", "notes", "travel/**"], env)).out).toContain("travel/** is protected in notes.");
     expect((await fontego(["workspace", "paths", "notes"])).out).toMatch(/protected\s+travel\/\*\*\s+this workspace/);
     await Bun.write(`${dir}/travel/japan.md`, "# Japan, edited by Ana\n");
-    expect(JSON.parse((await fontego(["sync", dir, "--json"])).out).skipped.map((x: any) => x.path)).toContain("travel/japan.md");
+    // A new refusal leaves with 7, says the pattern it matches and how to keep a file here without sending it.
+    const travel = await fontego(["sync", dir]);
+    expect(travel.code).toBe(7);
+    expect(travel.out).toContain('skipped travel/japan.md: Only an admin of "notes" can write travel/japan.md: it is a protected path. It matches "travel/**"');
+    expect(travel.out).toContain(KEEP_IT_HERE);
+    expect(travel.out).toContain("Set aside as before: .mcp.json, AGENTS.md");
     const reject = await fontego(["workspace", "paths", "reject", "notes", "**/*.exe"]);
     expect(reject.code).toBe(5); // Ana is no admin
     expect((await fontego(["workspace", "paths", "reset", "notes"], env)).out).not.toContain("this workspace");
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  test("status says how to keep a file here only under what the server refused, not under what this copy set aside", async () => {
+    const parent = tempDir("fontego-cli-aside-");
+    const dir = `${parent}/notes`;
+    expect((await fontego(["clone", "notes", dir])).code).toBe(0);
+    await Bun.write(`${dir}/mine.txt`, "mine\n");
+    // Set aside here (a conflict that couldn't keep both, say): no code, since the server refused nothing
+    const statePath = join(dir, ".fontego", "state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    state.skipped["mine.txt"] = { hash: "0".repeat(40), reason: "it can't be written in this folder (EISDIR)" };
+    writeFileSync(statePath, JSON.stringify(state));
+    const out = (await fontego(["status", dir])).out;
+    expect(out).toContain("skipped   mine.txt: it can't be written in this folder (EISDIR)");
+    expect(out).not.toContain(KEEP_IT_HERE);
     rmSync(parent, { recursive: true, force: true });
   });
 
@@ -571,9 +625,80 @@ describe("commands the server declares", () => {
     const noBase = await fontego(["rm", "notes", "drafts/c.md"], agent);
     expect(noBase.err).toContain("fontego cat notes drafts/c.md --json");
     expect((await fontego(["rm", "notes", "drafts/c.md", "--base", b], agent)).out.trim()).toBe("Deleted drafts/c.md");
-    expect((await fontego(["write", "notes", "AGENTS.md"], agent, "# Mine\n")).err).toContain("protected path");
+    // A file the server won't take is not allowed (5), from an editor or a token: a protected path, a secret.
+    const protectedPath = await fontego(["write", "notes", "AGENTS.md"], agent, "# Mine\n");
+    expect([protectedPath.code, protectedPath.err]).toEqual([5, expect.stringContaining('It matches "**/AGENTS.md"')]);
+    expect((await fontego(["write", "notes", ".env", "--json"], agent, "KEY=1\n")).code).toBe(5);
+    const token = { ...agent, FONTEGO_URL: s.url, FONTEGO_TOKEN: s.token("ana@example.org", { workspaces: ["notes"] }) };
+    expect((await fontego(["write", "notes", "AGENTS.md"], token, "# Mine\n")).code).toBe(5);
     const log = (await fontego(["admin", "audit", "changes", "--workspace", "notes", "--limit", "5"], asAdmin())).out;
     expect(log).toContain("test-agent");
+  });
+
+  test("an agent edits pieces of a file without a copy: --old becomes --new, or several from a JSON file or stdin", async () => {
+    const agent = { FONTEGO_AGENT: "test-agent" };
+    await fontego(["write", "notes", "lists/todo.md"], agent, "# To do\n\n- bread\n- milk\n- eggs\n");
+    // A text that starts with "- " is an option's value, not an option
+    const one = await fontego(["edit", "notes", "lists/todo.md", "--old", "- milk", "--new", "- oat milk"], agent);
+    const hash = JSON.parse((await fontego(["cat", "notes", "lists/todo.md", "--json"])).out).hash;
+    expect([one.code, one.out.trim()]).toEqual([0, `Edited lists/todo.md. Its hash is now ${hash}`]);
+    expect((await fontego(["edit", "notes", "lists/todo.md", "--old", "- eggs\n", "--new", ""], agent)).code).toBe(0);
+    expect((await fontego(["cat", "notes", "lists/todo.md"])).out).toBe("# To do\n\n- bread\n- oat milk\n");
+
+    // What an agent reads with --json: the hash for the next edit, and what each edit replaced
+    const now = JSON.parse((await fontego(["cat", "notes", "lists/todo.md", "--json"])).out).hash;
+    const json = JSON.parse((await fontego(["edit", "notes", "lists/todo.md", "--old", "- ", "--new", "* ", "--all", "--base", now, "--json"], agent)).out);
+    expect([json.status, json.replaced, json.changes[0].merged]).toEqual(["committed", [2], undefined]);
+    // A --base from before the last edit changed those lines: a conflict, and nothing written
+    const stale = await fontego(["edit", "notes", "lists/todo.md", "--old", "- bread", "--new", "- rye", "--base", hash, "--json"], agent);
+    expect([stale.code, JSON.parse(stale.out).error.code]).toEqual([4, "conflict"]);
+
+    // Several at once, from a file or from stdin, exactly: the last line's break is kept
+    const dir = tempDir("fontego-edits-");
+    const file = join(dir, "edits.json");
+    writeFileSync(file, JSON.stringify([{ old: "* bread\n", new: "* rye bread\n" }, { old: "# To do", new: "# Shopping" }]));
+    expect((await fontego(["edit", "notes", "lists/todo.md", "--edits", file, "-m", "Shopping list"], agent)).code).toBe(0);
+    const piped = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-", "--json"], agent, JSON.stringify([{ old: "* oat milk\n", new: "* oat milk\n* honey\n" }]));
+    expect(JSON.parse(piped.out).replaced).toEqual([1]);
+    expect((await fontego(["cat", "notes", "lists/todo.md"])).out).toBe("# Shopping\n\n* rye bread\n* oat milk\n* honey\n");
+    expect((await fontego(["log", "notes", "lists/todo.md", "--limit", "2"])).out).toContain("Shopping list");
+
+    // A text that isn't there, or is there twice, is a conflict (4) that writes nothing; a protected path is not allowed (5)
+    const missing = await fontego(["edit", "notes", "lists/todo.md", "--old", "* eggs", "--new", "* 6 eggs"], agent);
+    expect([missing.code, missing.err]).toEqual([4, expect.stringContaining("hint: Read it again (fontego cat notes lists/todo.md --json")]);
+    const twice = await fontego(["edit", "notes", "lists/todo.md", "--old", "* ", "--new", "- ", "--json"], agent);
+    expect([twice.code, JSON.parse(twice.out).error.code]).toEqual([4, "edit_not_unique"]);
+    expect(JSON.parse(twice.out).error.message).toBe("The old text appears 3 times in lists/todo.md. Nothing was written.");
+    expect((await fontego(["edit", "notes", "nope.md", "--old", "x", "--new", "y"], agent)).code).toBe(3); // not there: nothing to edit
+    // A path she may not write says so first, even before it exists
+    expect((await fontego(["edit", "notes", "AGENTS.md", "--old", "x", "--new", "y"], agent)).code).toBe(5);
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/notes/files/AGENTS.md", { content: "# Rules\n" });
+    const protectedPath = await fontego(["edit", "notes", "AGENTS.md", "--old", "Rules", "--new", "Mine"], agent);
+    expect([protectedPath.code, protectedPath.err]).toEqual([5, expect.stringContaining('It matches "**/AGENTS.md"')]);
+    const log = (await fontego(["admin", "audit", "changes", "--workspace", "notes", "--limit", "3"], asAdmin())).out;
+    expect(log).toContain("test-agent");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("edit never reads stdin unless --edits - asks, and then nothing, a terminal or broken JSON is a usage error", async () => {
+    // Without --edits -, what comes on stdin is never read: only --old and --new count
+    expect((await fontego(["edit", "notes", "lists/todo.md", "--old", "* honey", "--new", "* acacia honey"], {}, '[{"old": "x", "new": "y"}]')).code).toBe(0);
+    const nothing = await fontego(["edit", "notes", "lists/todo.md"]);
+    expect([nothing.code, nothing.err]).toEqual([1, expect.stringContaining("Say what to change")]);
+    expect(nothing.err).toContain("--edits FILE (- reads stdin)");
+    const noNew = await fontego(["edit", "notes", "lists/todo.md", "--old", "* honey"]);
+    expect([noNew.code, noNew.err]).toEqual([1, expect.stringContaining('Say what the old text becomes: --new TEXT ("" deletes it)')]);
+    const empty = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-"], {}, "");
+    expect([empty.code, empty.err]).toEqual([1, expect.stringContaining("Nothing came on stdin for --edits -")]);
+    const broken = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-", "--json"], {}, '[{"old": "x"');
+    expect(JSON.parse(broken.out).error).toMatchObject({ code: "usage", message: expect.stringContaining("--edits: what came on stdin isn't JSON") });
+    const notAList = await fontego(["edit", "notes", "lists/todo.md", "--edits", "-", "--json"], {}, '{"old": "x", "new": "y"}');
+    expect(JSON.parse(notAList.out).error.hint).toBe("fontego help edit says what --edits takes.");
+    // On a terminal, nothing is waited for
+    const tty = await onTerminal(["edit", "notes", "lists/todo.md", "--edits", "-"], { ...process.env, ...NO_AGENT, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, FONTEGO_CREDENTIAL_STORE: "file" });
+    expect([tty.code, tty.text]).toEqual([1, expect.stringContaining("--edits - reads stdin")]);
+    expect((await fontego(["help", "edit"])).out).toMatch(/--edits FILE +Several edits instead, .* \(a JSON file on this machine, sent to this Fontego; - reads stdin\)/);
+    expect((await fontego(["cat", "notes", "lists/todo.md"])).out).toContain("* acacia honey");
   });
 
   test("usage mistakes are caught before calling the server", async () => {
@@ -606,6 +731,30 @@ describe("commands the server declares", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("ana@example.org");
     expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(saved.version);
+  });
+
+  test("a new subcommand under what the saved list knows as another command's alias is learned and run the first time", async () => {
+    expect((await fontego(["workspaces"])).code).toBe(0);
+    const path = commandsCachePath(s.url, { XDG_CACHE_HOME: home });
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    const stale = () => writeFileSync(path, JSON.stringify({ ...saved, version: "old", commands: saved.commands.filter((c: any) => c.name !== "account tokens") }));
+    // "account" is an alias of whoami, which takes no argument
+    expect(saved.commands.find((c: any) => c.aliases?.includes("account"))?.name).toBe("whoami");
+    expect(saved.commands.some((c: any) => c.name === "account tokens")).toBe(true);
+    stale();
+    const help = await fontego(["account", "tokens", "--help"]);
+    expect([help.code, help.out.split("\n")[0]]).toEqual([0, expect.stringContaining("fontego account tokens")]);
+    stale();
+    const r = await fontego(["account", "tokens", "--json"]);
+    expect(r.err + r.out).not.toContain("Too many arguments");
+    expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(saved.version);
+    // A list that hasn't changed leaves the error as it was, and so does a server that doesn't answer
+    const wrong = await fontego(["account", "nonsense"]);
+    expect([wrong.code, wrong.err]).toEqual([1, expect.stringContaining("Too many arguments: fontego whoami")]);
+    const offline = "http://127.0.0.1:9";
+    writeFileSync(commandsCachePath(offline, { XDG_CACHE_HOME: home }), JSON.stringify({ ...saved, url: offline }));
+    const unreachable = await fontego(["account", "nonsense"], { FONTEGO_URL: offline, FONTEGO_TOKEN: ana.token });
+    expect([unreachable.code, unreachable.err]).toEqual([1, expect.stringContaining("Too many arguments: fontego whoami")]);
   });
 
   test("offline, help still lists the saved commands and calls fail clearly", async () => {
@@ -765,29 +914,44 @@ describe("live: who is around, and what happens as it happens", () => {
     };
     const text = run(false);
     const json = run(true);
-    const t = lines(text);
-    const j = lines(json);
-    await until(t, (l) => l.includes("connected;"));
-    await until(j, (l) => l.startsWith('{"type":"ready"'));
-    await s.call(ana.token, "POST", "/v1/workspaces/notes/changes", { baseCommit: null, message: "Live from a test", ops: [{ op: "put", path: "live.md", content: "now\n", baseHash: null }] });
-    await until(t, (l) => /notes {2}Ana: Live from a test \(1 file\)$/.test(l));
-    await until(j, (l) => l.includes('"type":"commit"'));
-    const commit = JSON.parse(j.find((l) => l.includes('"type":"commit"'))!);
-    expect(commit).toMatchObject({ type: "commit", workspace: "notes", message: "Live from a test", changes: [{ status: "put", path: "live.md" }] });
-    await s.call(ana.token, "PUT", "/v1/workspaces/notes/presence", { path: "travel/" });
-    // Others may be there from earlier tests: what counts is Ana's line
-    const hereLine = (l: string) => l.includes("  notes  here now: ") || l.includes("  notes  nobody here now");
-    await until(t, (l) => hereLine(l) && l.includes("Ana, working in travel/"));
-    await until(j, (l) => l.includes('"type":"presence"'));
-    const seen = t.length;
-    await s.call(ana.token, "DELETE", "/v1/workspaces/notes/presence");
-    await until(t, (l) => t.indexOf(l) >= seen && hereLine(l) && !l.includes("working in travel/"));
-    text.kill("SIGINT");
-    json.kill("SIGINT");
-    expect(await text.exited).toBe(0);
-    expect(await json.exited).toBe(0);
-    // --json: stdout is only events
-    expect(j.every((l) => JSON.parse(l).type)).toBe(true);
+    try {
+      const t = lines(text);
+      const j = lines(json);
+      await until(t, (l) => l.includes("connected;"));
+      await until(j, (l) => l.startsWith('{"type":"ready"'));
+      await s.call(ana.token, "POST", "/v1/workspaces/notes/changes", { baseCommit: null, message: "Live from a test", ops: [{ op: "put", path: "live.md", content: "now\n", baseHash: null }] });
+      await until(t, (l) => /notes {2}Ana: Live from a test \(1 file\)$/.test(l));
+      await until(j, (l) => l.includes('"type":"commit"'));
+      const commit = JSON.parse(j.find((l) => l.includes('"type":"commit"'))!);
+      expect(commit).toMatchObject({ type: "commit", workspace: "notes", message: "Live from a test", changes: [{ status: "put", path: "live.md" }] });
+      await s.call(ana.token, "PUT", "/v1/workspaces/notes/presence", { path: "travel/" });
+      // Others may be there from earlier tests: what counts is Ana's line
+      const hereLine = (l: string) => l.includes("  notes  here now: ") || l.includes("  notes  nobody here now");
+      await until(t, (l) => hereLine(l) && l.includes("Ana, working in travel/"));
+      await until(j, (l) => l.includes('"type":"presence"'));
+      const seen = t.length;
+      await s.call(ana.token, "DELETE", "/v1/workspaces/notes/presence");
+      await until(t, (l) => t.indexOf(l) >= seen && hereLine(l) && !l.includes("working in travel/"));
+      // What only says to read something again: your preferences, and the accounts people see
+      expect((await s.call(ana.token, "PUT", "/v1/me/preferences/filesView", { value: "tree" })).status).toBe(200);
+      await until(t, (l) => l.endsWith("your preferences changed: fontego preferences"));
+      await until(j, (l) => l.startsWith('{"type":"preferences"'));
+      const name = (await s.call(ana.token, "GET", "/v1/me")).data.user.name as string;
+      await s.call(ana.token, "PATCH", "/v1/me", { name: `${name} Live` });
+      await s.call(ana.token, "PATCH", "/v1/me", { name });
+      await s.call(ana.token, "DELETE", "/v1/me/preferences/filesView");
+      await until(t, (l) => l.endsWith("an account changed (someone new, a name, an email, a photo...): fontego people"));
+      await until(j, (l) => l.startsWith('{"type":"people"'));
+      text.kill("SIGINT");
+      json.kill("SIGINT");
+      expect(await text.exited).toBe(0);
+      expect(await json.exited).toBe(0);
+      // --json: stdout is only events
+      expect(j.every((l) => JSON.parse(l).type)).toBe(true);
+    } finally {
+      // A test that fails half way leaves nothing running: they would try to connect for ever
+      for (const p of [text, json]) if (p.exitCode === null) p.kill("SIGKILL");
+    }
   }, 30_000);
 
   test("events closed for having too many streams: it stops and says why, instead of pushing another out", async () => {

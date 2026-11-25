@@ -35,6 +35,13 @@ const TARGETS: Target[] = [
   { id: "windows-x64", bun: "bun-windows-x64-baseline", os: "win32", cpu: "x64" },
 ];
 
+/**
+ * Nothing in the folder fontego runs in changes how it runs. Left to its defaults, an executable made by Bun loads that
+ * folder's bunfig.toml (whose `preload` is code it runs) and .env files (a proxy, another server, no checks of
+ * certificates), and fontego runs in folders whose files other people write.
+ */
+const OWN_FOLDER = ["--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--no-compile-autoload-tsconfig", "--no-compile-autoload-package-json"];
+
 const ROOT = resolve(import.meta.dir, "..");
 const { values } = parseArgs({ options: { only: { type: "string" }, out: { type: "string", default: "dist" } } });
 const only = values.only?.split(",");
@@ -58,7 +65,7 @@ const sums: string[] = [];
 for (const t of targets) {
   const file = `fontego-${t.id}${t.os === "win32" ? ".exe" : ""}`;
   const dest = join(release, file);
-  const build = Bun.spawnSync([process.execPath, "build", "--compile", "--minify", `--target=${t.bun}`, "cli/src/main.ts", "--outfile", dest], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
+  const build = Bun.spawnSync([process.execPath, "build", "--compile", ...OWN_FOLDER, "--minify", `--target=${t.bun}`, "cli/src/main.ts", "--outfile", dest], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
   if (build.exitCode !== 0) throw new Error(`Building ${t.id} failed:\n${build.stderr.toString()}`);
   if (t.os === "darwin") {
     const bytes = readFileSync(dest);

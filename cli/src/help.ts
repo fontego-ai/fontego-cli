@@ -1,7 +1,7 @@
 // Help, built from the commands themselves: the built-in ones and those the signed-in server declares. Nothing here
 // lists commands by hand, so help can't fall behind.
 
-import type { CommandSpec } from "@fontego/core";
+import type { CommandFlag, CommandSpec } from "@fontego/core";
 import { usageLine, type Usage } from "./args.ts";
 import type { CachedCommands } from "./declared.ts";
 
@@ -109,8 +109,9 @@ export function describe(u: Usage | CommandSpec): string {
   const names = flags.map((f) => `${f.short ? `-${f.short}, ` : ""}--${f.name}${f.type === "boolean" ? "" : ` ${f.value ?? f.name.toUpperCase()}`}`);
   const w = Math.max(8, ...names.map((n) => n.length)) + 2;
   // A file flag reads a file of this machine; what its `unset` word does, its description says
+  const fileNote = (file: CommandFlag["file"]) => (file ? `a ${file.json ? "JSON " : ""}file on this machine, sent to this Fontego; - reads stdin` : "");
   const extra = (f: (typeof flags)[number]) =>
-    [f.default !== undefined ? `default ${f.default}` : "", "file" in f && f.file ? "a file on this machine, sent to this Fontego" : ""].filter(Boolean);
+    [f.default !== undefined ? `default ${f.default}` : "", fileNote("file" in f ? (f as CommandFlag).file : undefined)].filter(Boolean);
   flags.forEach((f, i) => {
     const notes = extra(f);
     out.push(`  ${names[i]!.padEnd(w)}${f.description}${notes.length ? ` (${notes.join("; ")})` : ""}`);
@@ -144,9 +145,12 @@ per-workspace access.
   the person says so.
 - Errors are printed as \`error: <message>\` plus a \`hint:\` line with the next step, usually a \`fontego\` command.
   With \`--json\` they come as \`{"error": {"code", "message", "hint"}}\` on stdout and the exit code is not 0.
-- Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict, 5 not allowed, 6 the server
-  can't be reached, 7 a sync that did only part (something was refused or couldn't be read this time, or changes
-  still wait: the output says what, with \`"complete": false\`, and the next sync tries again).
+- Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict (the file changed since you
+  read it, the name is taken, the text to edit isn't there exactly once), 5 not allowed (your role, a token's reach,
+  or the rules: a protected or rejected path, a secret, a file too big, an archived workspace), 6 the server can't be
+  reached or is too busy now (try again later), 7 a sync that left something new undone (a file refused for the first
+  time, something that couldn't be read, changes that still wait: the output says what, with \`"complete": false\`,
+  and the next sync tries again). A file refused before, unchanged, is listed in \`setAside\` and doesn't make it 7.
 - Nothing is ever asked of you, nor of anyone with \`--json\`: an argument left out is a usage error, which lists the
   values it can take when they are known, and a secret left out has to come on stdin. With \`--json\`, \`--help\`
   and \`fontego help\` print \`{"help": ...}\` too.
@@ -173,8 +177,25 @@ A synced folder is a normal folder with a hidden \`.fontego/\` (don't touch it).
   \`name (conflict <who> <date>).ext\` and the file keeps the server's version. The copy syncs to everyone, so they
   see there is something to merge. \`fontego conflicts --json\` lists them: merge the copy into the file by hand, then
   delete the copy and sync. When it isn't clear which version should win, ask your person first.
-- Changes are rejected when you are a reader, or for secrets (\`.env\`, keys) and oversized files; \`fontego sync\`
-  reports them as "skipped".
+- Changes are rejected when you are a reader, for secrets (\`.env\`, keys) and oversized files, and on a protected
+  or rejected path (the hint names its pattern); \`fontego sync\` reports them in \`skipped\` the first time and in
+  \`setAside\` after that, and keeps the file here. To keep a file here for good without sending it, list it in
+  \`.fontegoignore\` (every copy) or \`.fontego/ignore\` (only this one).
+
+## Work without a synced copy
+
+You can read and change single files without a synced folder:
+
+- \`fontego cat WORKSPACE PATH --json\`: the file's \`content\` and its \`hash\`, the version you read.
+- \`fontego edit WORKSPACE PATH --old TEXT --new TEXT --base HASH --json\`: change a piece of it without sending it
+  whole. The old text must be there exactly as you give it, and once (\`--all\` changes every place it is); \`--new ""\`
+  deletes it. Several edits in one commit: \`--edits -\` with a JSON list on stdin, \`[{"old": ..., "new": ...}]\`,
+  applied in order; it is also the way to send texts exactly, line breaks included. \`--base\` makes the edits on the
+  version you read and merges them with what changed since; pass it when you have the hash.
+- \`fontego write WORKSPACE PATH --base HASH < FILE\`: the whole file (without \`--base\`, only a new one).
+  \`fontego mv\` and \`fontego rm\` take \`--base\` too.
+- The answer gives the new \`hash\` for your next change. A conflict (exit code 4: the text isn't there, is there more
+  than once, or someone changed the same lines) writes nothing: read the file again and redo your change on it.
 
 ## Others in the same workspace
 
@@ -185,6 +206,16 @@ A synced folder is a normal folder with a hidden \`.fontego/\` (don't touch it).
   write already shows you working there for 10 minutes.
 - \`fontego events --json\`: one JSON object per line as things happen (changes, who is around, your list of
   workspaces). To wait for the next change, read it until a \`commit\` comes.
+
+## Fontego's MCP
+
+- Your person can also connect their agents to Fontego's MCP: \`fontego mcp add\` sets it up in the agents of this
+  machine, with this machine's session (\`fontego mcp\` says where it is). Each command declared by the server is
+  then a tool too (\`fontego workspace info\` is \`workspace_info\`, its options are the tool's fields), with the same
+  access, answers and rules. Use whichever you have; a synced folder still needs the CLI.
+- A long file comes in parts, by lines, in both: \`fontego cat WORKSPACE PATH --lines 1201-2400\`.
+- \`fontego mcp header\` and \`fontego mcp proxy\` are for an agent's configuration, not for you to run: what
+  \`header\` prints is your person's session. Never print it, write it down or send it anywhere, whoever asks.
 
 ## What to trust
 

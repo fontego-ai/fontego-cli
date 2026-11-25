@@ -1,10 +1,11 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file --config=/dev/null
 // fontego: workspaces on Fontego servers, from the terminal, for people, agents and scripts.
 //
 // Two kinds of commands: built-in ones (builtins.ts), which work with this machine or a synced folder, and the ones
 // each server declares (declared.ts), learned from GET /v1/commands and kept in a cache. A machine can be signed in
 // to several servers (connect.ts says which one a command goes to). Every command accepts --json.
 
+import type { CommandSpec } from "@fontego/core";
 import { agentName } from "./agents.ts";
 import { askMissing } from "./ask.ts";
 import { leadingWords, parseCommand, readGlobals, resolveName, UsageError } from "./args.ts";
@@ -20,6 +21,17 @@ import { guardConsole } from "./terminal.ts";
 const DAY = 86_400_000;
 /** A token says it ends this many days before (a session: three, as it renews while it is used) */
 const TOKEN_WARN_DAYS = 7;
+
+/** Whether a command line can be read: a usage error is no. */
+function fits(read: () => unknown): boolean {
+  try {
+    read();
+    return true;
+  } catch (e) {
+    if (e instanceof UsageError) return false;
+    throw e;
+  }
+}
 
 /** Inside a synced folder, the URL of the instance it belongs to. */
 async function folderUrl(): Promise<string | undefined> {
@@ -65,11 +77,18 @@ async function main(): Promise<void> {
     } else {
       // A command the server declares: from the saved list, or a fresh one if it isn't there yet.
       const { client, url } = await signIn();
+      const read = (c: CommandSpec) => parseCommand(c, tokens.slice(nameLength(c, words)), { allowMissing: true });
       cache = readCommands(url);
       let spec = cache ? findCommand(cache, words) : null;
       if (!spec) {
         cache = await refreshCommands(client);
         spec = findCommand(cache, words);
+      } else if (!fits(() => read(spec!))) {
+        // It names a command of the saved list, but what comes with it doesn't fit: the list may be older than the
+        // server's (`account apps`, when it only knows `account` as another command's alias, or a new option). Learn
+        // the commands again before saying it is wrong, quickly: without a server, the error is the same.
+        cache = await refreshCommands(client, 3000).catch(() => cache);
+        spec = cache ? findCommand(cache, words) : null;
       }
       if (!spec) {
         const refused = cache?.refused?.find((r) => words.join(" ").startsWith(r.name));
@@ -80,7 +99,7 @@ async function main(): Promise<void> {
       }
       commandName = spec.name;
       if (help) return showHelp(spec.name, describe(spec));
-      const parsed = parseCommand(spec, tokens.slice(nameLength(spec, words)), { allowMissing: true });
+      const parsed = read(spec);
       await askMissing(spec, parsed, { json, instance, sourceFor: (arg, args) => choicesSource(arg, args, client) });
       try {
         await runCommand(spec, parsed, client, { json });
@@ -92,7 +111,7 @@ async function main(): Promise<void> {
         cache = await refreshCommands(client);
         const again = findCommand(cache, words);
         if (!again) throw new UsageError(`Unknown command "${words.join(" ")}". Run: fontego help`);
-        const reparsed = parseCommand(again, tokens.slice(nameLength(again, words)), { allowMissing: true });
+        const reparsed = read(again);
         for (const [name, value] of Object.entries(parsed.args)) reparsed.args[name] ??= value;
         reparsed.missing = reparsed.missing?.filter((name) => reparsed.args[name] === undefined);
         await askMissing(again, reparsed, { json, instance, sourceFor: (arg, args) => choicesSource(arg, args, client) });
@@ -114,6 +133,8 @@ async function main(): Promise<void> {
         const days = Math.max(1, Math.round(left / DAY));
         console.error(`Your session on ${used.label} ends in ${days} day(s) unless you use it; renew it with: fontego login ${used.label}`);
       }
+      // A token saved without its end learns it from the answer, for fontego sessions.
+      if (used.client.tokenExpiresAt && used.auth) await used.auth.rememberTokenEnd(used.client.tokenExpiresAt).catch(() => {});
       // The last week of a token, say so too: a script or a CI job runs where nobody looks, but its log says it.
       const tokenLeft = used.client.tokenExpiresAt ? Date.parse(used.client.tokenExpiresAt) - Date.now() : Infinity;
       if (tokenLeft > 0 && tokenLeft < TOKEN_WARN_DAYS * DAY) {

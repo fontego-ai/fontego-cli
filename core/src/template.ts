@@ -5,7 +5,7 @@
 //   {$NAME}               a value the CLI knows: an argument or flag of the command ({$WORKSPACE}), or {$url}
 //   {field|filter|...}    filters, applied left to right:
 //     short               the first 10 characters (commit ids)
-//     date, datetime      2026-11-16, 2026-11-16 21:04
+//     date, datetime      2026-11-16, 2026-11-16 21:04: in the time zone of whoever prints it (dates.ts)
 //     firstLine           the first line
 //     bytes               1234 → 1.2 KB
 //     dash                "-" when empty
@@ -14,6 +14,8 @@
 //     map:a=x,b=y         x for a, y for b, nothing for anything else
 //     join, join:FIELD    a list as one text, "a, b": its items, or that field of each ({workspaces|join:slug})
 //     relative            a date from now, by the clock of whoever prints it: "in 89 days", "3 hours ago"
+
+import { localDate, localDateTime } from "./dates.ts";
 
 export type TemplateVars = Record<string, unknown>;
 
@@ -69,9 +71,9 @@ function applyFilter(v: unknown, filter: string, data: unknown, vars: TemplateVa
     case "short":
       return text(v).slice(0, 10);
     case "date":
-      return text(v).slice(0, 10);
+      return empty(v) ? "" : localDate(text(v));
     case "datetime":
-      return text(v).slice(0, 16).replace("T", " ");
+      return empty(v) ? "" : localDateTime(text(v));
     case "firstLine":
       return text(v).split("\n")[0];
     case "bytes":

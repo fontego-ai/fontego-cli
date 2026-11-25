@@ -302,7 +302,11 @@ describe("a file that can't be here as things are never goes missing", () => {
       expect(A.state.skipped[bad]!.down).toMatchObject({ rev: server.head });
       // Rounds with nothing new on the server: still named, and nothing downloaded while it is in the way.
       server.downloads = [];
-      for (let i = 0; i < 2; i++) await A.sync();
+      for (let i = 0; i < 2; i++) {
+        // Nothing new: set aside as before, which doesn't make the round incomplete
+        const r = await A.sync();
+        expect([r.skipped, r.setAside]).toEqual([[], [{ path: bad, reason: expect.stringContaining(takes), down: true }]]);
+      }
       expect(server.downloads).toEqual([]);
       const st = await localStatus(A.root, A.state);
       expect(Object.keys(st.skipped)).toEqual([bad]);

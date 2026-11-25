@@ -6,6 +6,7 @@ import { blobHash } from "@fontego/core";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 import { Client, ClientError } from "../src/client.ts";
 import { localStatus, SyncEngine } from "../src/sync/engine.ts";
+import { incomplete } from "../src/output.ts";
 import { isConflictCopy } from "../src/sync/local.ts";
 import { loadState, newState, saveState } from "../src/sync/state.ts";
 import { acquireLock, LockedError, removeIfHeldBy, Watcher } from "../src/sync/watch.ts";
@@ -389,6 +390,65 @@ describe("a copy that couldn't send tries again once it may", () => {
     expect((await A.sync()).pushed.map((p) => p.path)).toEqual(["plans/q1.md"]);
     expect(await fileOn("allow", "plans/q1.md")).toBe("the plan\n");
     expect(A.state.skipped["plans/q1.md"]).toBeUndefined();
+  });
+
+  test("a file refused again with the same content is nothing new: it stays set aside and the round is complete", async () => {
+    await space("same-env", [["ana", "editor"]]);
+    let clock = Date.now();
+    const A0 = await copy(ana.token, "Ana", "same-env");
+    const A = new SyncEngine(A0.root, new Client(s.url, ana.token), A0.state, { now: () => clock });
+    write(A, ".env", "API_KEY=1234\n");
+    const first = await A.sync();
+    expect(first.skipped).toEqual([{ path: ".env", reason: ".env looks like an environment file with secrets.", code: "secret_file", hint: expect.stringContaining(".env.example") }]);
+    expect(incomplete(first)).toBe(true);
+    // Too soon to send it again, and then sent again and refused the same way: set aside as before, nothing new.
+    write(A, "notes.md", "a note\n");
+    const soon = await A.sync();
+    expect([soon.skipped, soon.setAside.map((x) => x.path), soon.pushed.map((x) => x.path), incomplete(soon)]).toEqual([[], [".env"], ["notes.md"], false]);
+    clock += 5 * 60_000 + 1000;
+    const later = await A.sync();
+    expect(A.state.skipped[".env"]!.tries).toBe(2); // it did go again
+    expect(later.skipped).toEqual([]);
+    expect(later.setAside).toEqual([{ path: ".env", reason: ".env looks like an environment file with secrets.", code: "secret_file", hint: expect.any(String), retryAt: A.state.skipped[".env"]!.retryAt }]);
+    expect(incomplete(later)).toBe(false);
+    // Changed, it is new: refused again, and the round is incomplete.
+    write(A, ".env", "API_KEY=5678\n");
+    const changed = await A.sync();
+    expect([changed.skipped.map((x) => x.path), changed.setAside, incomplete(changed)]).toEqual([[".env"], [], true]);
+  });
+
+  test("a refusal for another reason is new, and a state from an earlier fontego (no code) still tells the same one", async () => {
+    await space("reason", [["ana", "editor"]]);
+    let clock = Date.now();
+    const A0 = await copy(ana.token, "Ana", "reason");
+    const A = new SyncEngine(A0.root, new Client(s.url, ana.token), A0.state, { now: () => clock });
+    write(A, "plans/a.md", "the plan\n");
+    // Set aside by an earlier fontego, with the server's words and no code: the same refusal again is nothing new.
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/reason/paths/protected/plans/**");
+    const reason = 'Only an admin of "reason" can write plans/a.md: it is a protected path.';
+    A.state.skipped["plans/a.md"] = { hash: blobHash(new TextEncoder().encode("the plan\n")), reason, retryAt: new Date(clock - 1).toISOString(), tries: 1 };
+    const old = await A.sync();
+    expect([old.skipped, old.setAside.map((x) => x.code)]).toEqual([[], ["path_protected"]]);
+    // Now rejected instead of protected: a new refusal, which names the pattern it matches.
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/reason/paths/rejected/plans/**");
+    clock = Date.parse(A.state.skipped["plans/a.md"]!.retryAt!) + 1;
+    const other = await A.sync();
+    expect(other.skipped).toEqual([{ path: "plans/a.md", reason: expect.stringContaining("can't be written"), code: "path_rejected", hint: expect.stringContaining('It matches "plans/**"') }]);
+  });
+
+  test("a refused file deleted or ignored since is forgotten: neither sync nor status names it any more", async () => {
+    await space("forget", [["ana", "editor"]]);
+    await s.call(s.adminToken, "PUT", "/v1/workspaces/forget/paths/protected/locked/**");
+    const A = await copy(ana.token, "Ana", "forget");
+    write(A, ".env", "API_KEY=1234\n");
+    write(A, "locked/a.md", "mine\n");
+    expect((await A.sync()).skipped.map((x) => x.path).sort()).toEqual([".env", "locked/a.md"]);
+    rmSync(join(A.root, "locked/a.md"));
+    write(A, ".fontego/ignore", ".env\n");
+    expect(Object.keys((await localStatus(A.root, A.state)).skipped)).toEqual([]);
+    const r = await A.sync();
+    expect([r.skipped, r.setAside]).toEqual([[], []]);
+    expect(Object.keys(A.state.skipped)).toEqual([]);
   });
 
   test("a refusal that keeps coming waits longer each time", async () => {

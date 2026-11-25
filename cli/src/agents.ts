@@ -97,10 +97,17 @@ export function skillsFolders(env: Env = process.env, home = homeOf(env)): Skill
 
 export const homeOf = (env: Env = process.env) => env.HOME || env.USERPROFILE || homedir();
 
-function onPath(cmd: string, env: Env): boolean {
+/** Where a command is on the PATH, or null. */
+export function findOnPath(cmd: string, env: Env = process.env): string | null {
   const exts = process.platform === "win32" ? (env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
-  return (env.PATH || "").split(delimiter).some((d) => d && exts.some((x) => existsSync(join(d, cmd + x))));
+  for (const d of (env.PATH || "").split(delimiter)) {
+    if (!d) continue;
+    for (const x of exts) if (existsSync(join(d, cmd + x))) return join(d, cmd + x);
+  }
+  return null;
 }
+
+const onPath = (cmd: string, env: Env) => findOnPath(cmd, env) !== null;
 
 /** Whether an agent is installed on this machine: one of its folders, or its command on the PATH. */
 export function installed(a: Agent, env: Env = process.env, home = homeOf(env)): boolean {

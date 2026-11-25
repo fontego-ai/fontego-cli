@@ -3,19 +3,20 @@
 // answer with the description's templates.
 
 import {
+  buildRequest as requestOf,
   checkChoices,
   checkTemplate,
+  CommandInputError,
+  isUnset,
   outputTemplates,
   textContent,
   pathParams,
+  renderOutput,
   renderTemplate,
-  splitTarget,
+  rowsOf,
   templateVars,
   type CommandArg,
-  type CommandColumn,
-  type CommandDetails,
   type CommandFlag,
-  type CommandOutput,
   type CommandSpec,
   type CommandsManifest,
   type TemplateVars,
@@ -26,7 +27,8 @@ import { dirname, join } from "node:path";
 import { UsageError, usageLine, type Parsed } from "./args.ts";
 import type { ChoicesSource } from "./ask.ts";
 import type { Client } from "./client.ts";
-import { readSecret, readStdin } from "./prompt.ts";
+import { readSecret, readStdin, readStdinBytes, sizeText } from "./prompt.ts";
+import { terminalWidth } from "./table.ts";
 import { forPerson, unsafeForTerminal } from "./terminal.ts";
 
 // --- The cache: one file per server ---
@@ -122,11 +124,20 @@ const ARG_NAME = /^[A-Z][A-Z0-9_]*$/;
 const FLAG_NAME = /^[a-z][a-z0-9-]*$/;
 /** The word that sends null: --photo none (NONE too) */
 const UNSET_WORD = /^[a-z][a-z0-9-]{0,19}$/;
+/**
+ * What a flag that reads a file of this machine may be called: a name that says it is one. A path is also a text people
+ * and agents pass (`fontego edit WS PATH --new TEXT`), so a server that declared --new as a file would get the file
+ * that text happens to name.
+ */
+const FILE_FLAG_NAME = /^(photo|edits|file|[a-z][a-z0-9-]*-file)$/;
+/**
+ * The commands that read stdin for a value left out. What is on stdin isn't always for fontego (the rest of a script
+ * run with `bash -s`, the list a `while read` goes through), so which commands take it is not the server's to say: a
+ * value any other command leaves out has to be given.
+ */
+const READS_STDIN = new Set(["write", "admin settings set"]);
 /** The most a declared command may send of one file, whatever the server says */
 const MAX_FILE_FLAG = 64 * 1024 * 1024;
-/** Whether a flag's value is its word for null, in any capitals: --photo none, --photo NONE */
-const isUnset = (f: CommandFlag, v: unknown) =>
-  f.unset !== undefined && typeof v === "string" && v.toLowerCase() === f.unset;
 const COMMAND_NAME = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$/;
 /** What a command says about itself is shown in help: one line each, so it can't pose as more lines of it */
 const ONE_LINE = /^[^\u0000-\u001f\u007f-\u009f]*$/;
@@ -157,6 +168,7 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
   const said = [spec.summary, spec.group, ...args.map((a) => a.description), ...flags.map((f) => f.description)];
   if (said.some((t) => t !== undefined && (typeof t !== "string" || !ONE_LINE.test(t)))) out.push(`${at}: its summary, group and descriptions must be one line each`);
   for (const a of args) if (a.secret && !a.optional) out.push(`${at}: ${a.name} is a secret, so it must be optional (left out, it is asked for)`);
+  if (args.some((a) => a.secret || a.stdin) && spec.aliases?.length) out.push(`${at}: it may read stdin, so it can't have other names`);
   for (const a of args) if (a.stdin && !a.optional) out.push(`${at}: ${a.name} comes from stdin when left out, so it must be optional`);
   args.forEach((a, i) => {
     if (a.choices) out.push(...checkChoices(a.choices, args.slice(0, i)).map((p) => `${at}: ${a.name}: ${p}`));
@@ -168,6 +180,11 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
     if (f.file !== undefined && (f.type !== "string" || !f.to.startsWith("body.") || f.value !== "FILE" || !(f.file.maxBytes > 0) || f.file.maxBytes > MAX_FILE_FLAG)) {
       out.push(`${at}: --${f.name} names a file, so it must be a string into the body shown as FILE, of at most ${MAX_FILE_FLAG / 1024 / 1024} MB`);
     }
+    // ...and only under a name that nobody passes a text with, by its long name
+    if (f.file !== undefined && (!FILE_FLAG_NAME.test(f.name) || f.short !== undefined)) {
+      out.push(`${at}: --${f.name} names a file, so it must be called photo, edits, file or something-file, with no short name`);
+    }
+    if (f.file !== undefined && f.file.json !== undefined && typeof f.file.json !== "boolean") out.push(`${at}: --${f.name}: file.json is true or false`);
     // Which file of this machine is read is the person's to say, never the server's
     if (f.file !== undefined && f.default !== undefined) out.push(`${at}: --${f.name} names a file, so it can't have a default`);
     if (f.unset !== undefined && (typeof f.unset !== "string" || !UNSET_WORD.test(f.unset) || f.type !== "string" || !f.to.startsWith("body."))) {
@@ -190,57 +207,24 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
 
 // --- Running one ---
 
-/** A value for {PARAM}, or {+PARAM} (a path, which keeps its slashes). An empty, "." or ".." part is refused: the URL
- * would resolve it, and the command would reach another route (`rm WS ../members/ana@…`). */
-function encodeParam(name: string, value: string, spans: boolean): string {
-  const parts = spans ? value.split("/") : [value];
-  if (parts.some((p) => p === "" || p === "." || p === "..")) {
-    throw new UsageError(`${name} can't be empty or have an empty, "." or ".." part: "${value}"`);
-  }
-  return parts.map(encodeURIComponent).join("/");
-}
+export { renderOutput };
 
-/** The request a command makes with these arguments and flags; `files` holds what file flags read (readFileFlags). */
-export function buildRequest(
-  spec: CommandSpec,
-  parsed: Parsed,
-  files: Record<string, string> = {},
-): { method: string; path: string; query: URLSearchParams; body?: unknown } {
-  const pathValues: Record<string, string> = {};
-  const query = new URLSearchParams();
-  const body: Record<string, unknown> = {};
-  let hasBody = false;
-
-  const put = (to: string, value: string | number | boolean, set?: string | number | boolean) => {
-    const { where, key } = splitTarget(to as never);
-    if (where === "path") pathValues[key] = String(value);
-    else if (where === "query") query.set(key, value === true ? String(set ?? "1") : String(value));
-    else body[key] = value === true && set !== undefined ? set : value;
-  };
-
-  for (const a of spec.args ?? []) {
-    if (a.to.startsWith("body.")) hasBody = true;
-    const v = parsed.args[a.name];
-    if (v !== undefined) put(a.to, v);
-  }
+/**
+ * The request a command makes with these arguments and flags (core's buildRequest, which the server's MCP uses too);
+ * `files` holds what file flags read (readFileFlags), and a file flag given here always goes as what was read from
+ * its file, never as the name typed. What can't go in is a usage error.
+ */
+export function buildRequest(spec: CommandSpec, parsed: Parsed, files: Record<string, unknown> = {}) {
   for (const f of spec.flags ?? []) {
-    if (f.to.startsWith("body.")) hasBody = true;
-    const v = parsed.flags[f.name] ?? f.default;
-    if (v === undefined) continue;
-    if (isUnset(f, v)) body[splitTarget(f.to).key] = null;
-    else if (f.file) {
-      const content = files[f.name];
-      if (content === undefined) throw new Error(`--${f.name}: the file wasn't read`);
-      body[splitTarget(f.to).key] = content;
-    } else put(f.to, v, f.set);
+    const v = parsed.flags[f.name];
+    if (f.file && v !== undefined && !isUnset(f, v) && !(f.name in files)) throw new Error(`--${f.name}: the file wasn't read`);
   }
-
-  const path = spec.request.path.replace(/\{(\+?)([A-Za-z0-9_]+)\}/g, (_, plus: string, key: string) => {
-    const v = pathValues[key];
-    if (v === undefined) throw new UsageError(usageLine(spec));
-    return encodeParam(spec.args?.find((a) => a.to === `path.${key}`)?.name ?? key, v, plus === "+");
-  });
-  return { method: spec.request.method, path, query, ...(hasBody ? { body } : {}) };
+  try {
+    return requestOf(spec, parsed, files);
+  } catch (e) {
+    if (e instanceof CommandInputError) throw new UsageError(e.missing ? usageLine(spec) : e.message);
+    throw e;
+  }
 }
 
 /**
@@ -268,86 +252,42 @@ export function choicesSource(arg: CommandArg, args: Record<string, string>, cli
   };
 }
 
-function rowsOf(data: unknown, field: string | undefined): unknown[] {
-  const v = field ? (data as Record<string, unknown> | null)?.[field] : data;
-  return Array.isArray(v) ? v : [];
+/**
+ * What a command was given that would read stdin: a `stdin` argument left out, a secret left out when stdin isn't a
+ * terminal (readSecret), a file flag given `-`.
+ */
+function stdinReaders(spec: CommandSpec, parsed: Parsed): string[] {
+  const fromStdin = (a: CommandArg) => a.stdin || (a.secret && !process.stdin.isTTY);
+  const args = (spec.args ?? []).filter((a) => fromStdin(a) && parsed.args[a.name] === undefined).map((a) => a.name);
+  const flags = (spec.flags ?? []).filter((f) => f.file && parsed.flags[f.name] === "-").map((f) => `--${f.name} -`);
+  return [...args, ...flags];
 }
 
-/** The lines under one row: one per item of its list, then how many more there are when the list was cut. */
-function detailLines(details: CommandDetails | undefined, row: unknown, vars: TemplateVars): string[] {
-  if (!details) return [];
-  const items = rowsOf(row, details.rows);
-  const lines = items.map((item) => `  ${renderTemplate(details.line, item, vars)}`);
-  const total = details.total !== undefined ? Number((row as Record<string, unknown> | null)?.[details.total]) : NaN;
-  if (Number.isFinite(total) && total > items.length) lines.push(`  … ${total - items.length} more`);
-  return lines;
-}
-
-function table(rows: unknown[], all: CommandColumn[], details: CommandDetails | undefined, vars: TemplateVars): string {
-  const rendered = rows.map((r) => all.map((c) => renderTemplate(c.value, r, vars)));
-  // An optional column nobody filled is left out.
-  const keep = all.map((c, i) => !c.optional || rendered.some((row) => row[i] !== ""));
-  const columns = all.filter((_, i) => keep[i]);
-  const cells = rendered.map((row) => row.filter((_, i) => keep[i]));
-  const widths = columns.map((c, i) => Math.max(c.header.length, ...cells.map((row) => row[i]!.length)));
-  const line = (values: string[]) =>
-    values
-      .map((v, i) => (i === values.length - 1 ? v : v.padEnd(widths[i]!)))
-      .join("  ")
-      .trimEnd();
-  return [line(columns.map((c) => c.header)), ...cells.flatMap((row, i) => [line(row), ...detailLines(details, rows[i], vars)])].join("\n");
-}
-
-/** A record line (or a footer) is left out when every field in it came out empty. */
-function recordLine(template: string, data: unknown, vars: TemplateVars): string | null {
-  const fields = template.match(/\{[^{}]*\}/g) ?? [];
-  if (fields.length && fields.every((f) => renderTemplate(f, data, vars) === "")) return null;
-  return renderTemplate(template, data, vars);
-}
-
-const withFooter = (text: string, footer: string[] | undefined, data: unknown, vars: TemplateVars) => {
-  const lines = (footer ?? []).map((f) => recordLine(f, data, vars)).filter((l): l is string => l !== null);
-  return lines.length ? `${text}\n\n${lines.join("\n")}` : text;
-};
-
-/** Text for a person; with --json the answer is printed as the API sent it. */
-export function renderOutput(output: CommandOutput, data: unknown, vars: TemplateVars): string {
-  switch (output.kind) {
-    case "table": {
-      const rows = rowsOf(data, output.rows);
-      return withFooter(rows.length ? table(rows, output.columns, output.details, vars) : (output.empty ?? "(none)"), output.footer, data, vars);
-    }
-    case "lines": {
-      const rows = rowsOf(data, output.rows);
-      const text = rows.length
-        ? rows.flatMap((r) => [renderTemplate(output.line, r, vars), ...detailLines(output.details, r, vars)]).join("\n")
-        : (output.empty ?? "(none)");
-      return withFooter(text, output.footer, data, vars);
-    }
-    case "record": {
-      const lines = output.lines.map((l) => recordLine(l, data, vars)).filter((l): l is string => l !== null);
-      const items = output.list ? rowsOf(data, output.list.rows) : [];
-      if (output.list && items.length) {
-        lines.push("", renderTemplate(output.list.title, data, vars), ...items.map((r) => `  ${renderTemplate(output.list!.line, r, vars)}`.trimEnd()));
-      }
-      return lines.join("\n");
-    }
-    case "message":
-      return renderTemplate(output.text, data, vars);
-    case "raw":
-      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
+/** A file flag's bytes as the request carries them: base64, or with `json` the JSON they hold. */
+function fileValue(f: CommandFlag, from: string, bytes: Uint8Array): unknown {
+  if (!f.file?.json) return Buffer.from(bytes).toString("base64");
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (e) {
+    throw new UsageError(`--${f.name}: ${from} isn't JSON (${(e as Error).message}).`);
   }
 }
 
 /**
- * Reads the files that file flags name (`--photo me.jpg`), as base64, each checked against its size before it is read.
- * The word that sends null (`--photo none`, in any capitals) reads nothing; a file called that way is `./none`.
+ * Reads the files that file flags name (`--photo me.jpg`), as base64 or, for a `json` one, the JSON they hold, each
+ * checked against its size before it is read. `-` reads stdin, and nothing on it is an error. The word that sends
+ * null (`--photo none`, in any capitals) reads nothing; a file called that way is `./none`, and one called `-` is `./-`.
  */
-export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
+export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
   for (const f of spec.flags ?? []) {
     const v = parsed.flags[f.name];
     if (!f.file || typeof v !== "string" || isUnset(f, v)) continue;
+    if (v === "-") {
+      const usage = [`fontego ${spec.name}`, ...(spec.args ?? []).filter((a) => !a.optional).map((a) => a.name), `--${f.name} -`].join(" ");
+      out[f.name] = fileValue(f, "what came on stdin", await readStdinBytes(`--${f.name}`, usage, f.file.maxBytes));
+      continue;
+    }
     const file = Bun.file(v);
     let size: number;
     try {
@@ -361,14 +301,19 @@ export async function readFileFlags(spec: CommandSpec, parsed: Parsed): Promise<
     if (size > f.file.maxBytes) {
       throw new UsageError(`--${f.name}: ${v} is ${sizeText(size)}; this Fontego takes at most ${sizeText(f.file.maxBytes)}. Make it smaller first.`);
     }
-    out[f.name] = Buffer.from(await file.arrayBuffer()).toString("base64");
+    out[f.name] = fileValue(f, v, new Uint8Array(await file.arrayBuffer()));
   }
   return out;
 }
 
-const sizeText = (n: number) => (n < 1024 * 1024 ? `${Math.ceil(n / 1024)} KB` : `${(n / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`);
-
 export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Client, opts: { json: boolean }): Promise<void> {
+  // stdin can be read once: two values that would both come from it is a mistake, said before reading either.
+  const readers = stdinReaders(spec, parsed);
+  if (!READS_STDIN.has(spec.name)) {
+    const left = (spec.args ?? []).find((a) => readers.includes(a.name));
+    if (left) throw new UsageError(`${left.name} is missing, and this fontego reads stdin only for ${[...READS_STDIN].map((n) => `fontego ${n}`).join(" and ")}: ${usageLine(spec)}`);
+  }
+  if (readers.length > 1) throw new UsageError(`Only one value can come from stdin, and ${readers.join(" and ")} would: give the others here. ${usageLine(spec)}`);
   // A secret left out is asked for; it lands in parsed, so trying the command again doesn't ask twice.
   for (const a of spec.args ?? []) {
     if (parsed.args[a.name] !== undefined) continue;
@@ -403,5 +348,5 @@ export async function runCommand(spec: CommandSpec, parsed: Parsed, client: Clie
   }
 
   const data: unknown = (res.headers.get("content-type") ?? "").includes("json") ? await res.json() : await res.text();
-  console.log(opts.json ? JSON.stringify(data, null, 2) : renderOutput(spec.output, data, vars));
+  console.log(opts.json ? JSON.stringify(data, null, 2) : renderOutput(spec.output, data, vars, terminalWidth()));
 }

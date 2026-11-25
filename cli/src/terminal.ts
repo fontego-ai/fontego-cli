@@ -4,6 +4,8 @@
 // the bidi controls reorder what is shown. For a person they become a visible �. JSON escapes most of them already;
 // the ones it leaves alone (C1 and the bidi controls) are escaped too, as \u…, which is the same JSON.
 
+import { writeSync } from "node:fs";
+
 /** Control characters but tab and newline, a carriage return that doesn't end a line, and the bidi controls. */
 const UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]|\r(?!\n)/g;
 
@@ -17,15 +19,37 @@ export const forJson = (text: string) => text.replace(UNSAFE, (c) => `\\u${c.cha
 export const unsafeForTerminal = (text: string) => new RegExp(UNSAFE.source).test(text);
 
 /**
+ * Whether what goes to a terminal may carry colours: it is one, NO_COLOR isn't set (https://no-color.org) and its
+ * TERM draws them. Colour only ever marks a failure (output.ts) and the picker's choice, never a notice.
+ */
+export const colorful = (isTerminal: boolean, env: Record<string, string | undefined> = process.env) =>
+  isTerminal && !env.NO_COLOR && env.TERM !== "dumb";
+
+/**
  * Makes every console.log and console.error of this process go through the filter: for a person, or as JSON while
- * `json()` says so (it can change once the command line is read).
+ * `json()` says so (it can change once the command line is read). console.error and console.warn are written to
+ * stderr as they are: Bun paints them red on a terminal, and most of what goes there is a notice ("Waiting…", "Your
+ * session ends in 2 days"), not a failure. They are written at once (writeSync): a failure printed right before
+ * process.exit arrives whole, also through a pipe.
  */
 export function guardConsole(json: () => boolean) {
-  for (const name of ["log", "error", "warn", "info"] as const) {
+  const clean = (args: unknown[]) => args.map((a) => (json() ? forJson : forPerson)(typeof a === "string" ? a : Bun.inspect(a))).join(" ");
+  for (const name of ["log", "info"] as const) {
     const original = console[name].bind(console);
-    console[name] = (...args: unknown[]) => {
-      const clean = json() ? forJson : forPerson;
-      original(...args.map((a) => clean(typeof a === "string" ? a : Bun.inspect(a))));
-    };
+    console[name] = (...args: unknown[]) => original(clean(args));
+  }
+  for (const name of ["error", "warn"] as const) console[name] = (...args: unknown[]) => writeStderr(`${clean(args)}\n`);
+}
+
+/**
+ * Writes to stderr at once, so a failure printed right before process.exit arrives whole, and never throws: a stderr
+ * nobody reads any more (EPIPE: `fontego sync 2>&1 | head -1`) drops the text, and one that can't take it now
+ * (EAGAIN: a non-blocking pipe that is full) hands it to the stream, which writes it when it can.
+ */
+export function writeStderr(text: string) {
+  try {
+    writeSync(2, text);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EAGAIN") process.stderr.write(text);
   }
 }

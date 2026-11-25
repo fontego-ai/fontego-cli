@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { normalizeTags } from "./tags.ts";
 import { MAX_TOKEN_WORKSPACES, TOKEN_MAX_DAYS } from "./tokens.ts";
+import { MAX_SESSION_NAME } from "./sessions.ts";
 
 export const ROLES = ["reader", "editor", "admin"] as const;
 export const RoleSchema = z.enum(ROLES);
@@ -134,34 +135,49 @@ const SlugList = z
   .pipe(z.array(Slug).min(1).max(MAX_TOKEN_WORKSPACES, `name at most ${MAX_TOKEN_WORKSPACES} workspaces, or all of them (--all)`));
 
 /**
- * A new token, for CI and scripts: a name to know it by, which workspaces it reaches (some, by id, or `all` of its
- * person's, now and later: one or the other, so a workspace named "all" is never every one), whether it also writes
- * (by default it only reads), and how many days it lasts.
+ * What a credential with a scope reaches and how long it lasts, as its person gives it: a token they make, or an app
+ * they connect through OAuth. Which workspaces (some, by id, or `all` of the person's, now and later: one or the
+ * other, so a workspace named "all" is never every one), whether it also writes (by default it only reads), and how
+ * many days it lasts.
  */
-export const CreateTokenBody = z
-  .object({
+const ScopeFields = {
+  workspaces: SlugList.optional(),
+  all: z.literal(true, "is true for every workspace, or left out").optional(),
+  access: z.enum(["read", "write"]).optional(),
+  expiresInDays: z
+    .number()
+    .int("use whole days")
+    .min(1, "at least one day")
+    .max(TOKEN_MAX_DAYS, `at most ${TOKEN_MAX_DAYS} days: it always ends, a year after it is given at the latest`)
+    .optional(),
+};
+
+/** A scope names some workspaces or all of them: one of the two, never both. */
+const scopeRules = <T extends z.ZodType<{ workspaces?: string[]; all?: true }>>(schema: T) =>
+  schema
+    .refine((b) => b.workspaces !== undefined || b.all === true, {
+      message: "say which workspaces it reaches: some (--workspaces A,B) or all of yours (--all)",
+      path: ["workspaces"],
+    })
+    .refine((b) => !(b.workspaces !== undefined && b.all === true), { message: "either some workspaces (--workspaces) or all of them (--all), not both", path: ["all"] });
+
+/** A new token, for CI and scripts: a name to know it by, and its scope (ScopeFields). */
+export const CreateTokenBody = scopeRules(
+  z.object({
     name: z
       .string()
       .trim()
       .min(1, "give it a name, to know it in the list")
       .max(100, "use at most 100 characters")
       .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters"),
-    workspaces: SlugList.optional(),
-    all: z.literal(true, "is true for every workspace, or left out").optional(),
-    access: z.enum(["read", "write"]).optional(),
-    expiresInDays: z
-      .number()
-      .int("use whole days")
-      .min(1, "at least one day")
-      .max(TOKEN_MAX_DAYS, `at most ${TOKEN_MAX_DAYS} days: a token always ends, a year after it is made at the latest`)
-      .optional(),
-  })
-  .refine((b) => b.workspaces !== undefined || b.all === true, {
-    message: "say which workspaces it reaches: some (--workspaces A,B) or all of yours (--all)",
-    path: ["workspaces"],
-  })
-  .refine((b) => !(b.workspaces !== undefined && b.all === true), { message: "either some workspaces (--workspaces) or all of them (--all), not both", path: ["all"] });
+    ...ScopeFields,
+  }),
+);
 export type CreateTokenRequest = z.input<typeof CreateTokenBody>;
+
+/** What a person gives an app that asks to connect through OAuth (oauth/apps.ts): its scope, as a token's. */
+export const AppGrantBody = scopeRules(z.object(ScopeFields));
+export type AppGrantRequest = z.input<typeof AppGrantBody>;
 
 /** A person's name, as others see it beside what they change: never empty once it is changed. */
 const PersonName = z
@@ -229,30 +245,89 @@ export const MailTestBody = z.object({ to: Email });
 /** A new value for one of your preferences: its type in JSON, or text (a list as names split on commas). */
 export const PreferenceValueBody = z.object({ value: z.union([z.string(), z.array(z.string())], "a value is required") });
 
-// --- OAuth, for the CLI to sign in through the browser. Field names are the standard's (RFC 6749, 7636, 8628). ---
+// --- Your sessions ---
 
-/** The person's answer, from a signed-in browser, to "connect the CLI of <machine>?" */
+/** The name of a session: one line, never empty, as it is given at sign-in (fontego login --name) or later. */
+export const SessionName = z
+  .string()
+  .trim()
+  .min(1, "can't be empty")
+  .max(MAX_SESSION_NAME, `use at most ${MAX_SESSION_NAME} characters`)
+  .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters");
+
+/** Another name for one of your sessions (PATCH /me/sessions/{id}), so two machines named alike can be told apart. */
+export const RenameSessionBody = z.object({ label: SessionName });
+export type RenameSessionRequest = z.input<typeof RenameSessionBody>;
+
+// --- OAuth: the CLI signs in through the browser, and apps (MCP clients such as claude.ai) ask a person to connect.
+// Field names are the standard's (RFC 6749, 7636, 8628, 8707). ---
+
+/** A client's `state`, given back as it came; long enough for what real clients send */
+export const MAX_OAUTH_STATE = 2000;
+
+/**
+ * An authorization request, as a client sends the browser to /oauth/authorize. Everything but the client and where to
+ * go back is optional here: what else is missing or wrong is told to the client, back where it asked to go, once
+ * that place is known to be its own.
+ */
+const AuthorizationFields = {
+  client_id: z.string().max(2000),
+  redirect_uri: z.string().max(2000),
+  response_type: z.string().max(100).optional(),
+  code_challenge: z.string().max(200).optional(),
+  code_challenge_method: z.string().max(20).optional(),
+  state: z.string().max(MAX_OAUTH_STATE).optional(),
+  scope: z.string().max(1000).optional(),
+  resource: z.string().max(2000).optional(),
+};
+
+/** GET /oauth/authorize: what the page asks before showing it to the person (oauth/operations.ts). */
+export const AuthorizeQuery = z.object(AuthorizationFields);
+
+/**
+ * The person's answer, from a signed-in browser: to "connect the CLI of <machine>?", or to an app asking to connect,
+ * with what they give it. Those fields are checked as AppGrantBody only when it is an app they approve, so a refusal
+ * always goes back, and a wrong choice says so in the page's own words.
+ */
 export const AuthorizeBody = z.object({
-  client_id: z.string(),
-  redirect_uri: z.string(),
-  code_challenge: z.string(),
-  code_challenge_method: z.string(),
-  state: z.string().max(500).optional(),
+  ...AuthorizationFields,
   machine: Line(80).optional(),
   approve: z.boolean(),
+  workspaces: z.unknown().optional(),
+  all: z.unknown().optional(),
+  access: z.unknown().optional(),
+  expiresInDays: z.unknown().optional(),
 });
 
 export const DeviceStartBody = z.object({ client_id: z.string(), machine: Line(80).optional() });
 
 export const DeviceDecisionBody = z.object({ approve: z.boolean() });
 
+/**
+ * The token endpoint, as a form or JSON. `resource` (RFC 8707) is what an app's tokens are for: this server's MCP.
+ * `scope`, on a refresh, may name what the app was given or less, never more (RFC 6749 §6).
+ */
 export const TokenBody = z.discriminatedUnion("grant_type", [
-  z.object({ grant_type: z.literal("authorization_code"), code: z.string(), code_verifier: z.string(), redirect_uri: z.string(), client_id: z.string() }),
-  z.object({ grant_type: z.literal("refresh_token"), refresh_token: z.string(), client_id: z.string().optional() }),
-  z.object({ grant_type: z.literal("urn:ietf:params:oauth:grant-type:device_code"), device_code: z.string(), client_id: z.string() }),
+  z.object({
+    grant_type: z.literal("authorization_code"),
+    code: z.string().max(500),
+    code_verifier: z.string().max(200),
+    redirect_uri: z.string().max(2000),
+    client_id: z.string().max(2000),
+    resource: z.string().max(2000).optional(),
+  }),
+  z.object({
+    grant_type: z.literal("refresh_token"),
+    refresh_token: z.string().max(500),
+    client_id: z.string().max(2000).optional(),
+    resource: z.string().max(2000).optional(),
+    scope: z.string().max(1000).optional(),
+  }),
+  z.object({ grant_type: z.literal("urn:ietf:params:oauth:grant-type:device_code"), device_code: z.string().max(500), client_id: z.string().max(2000) }),
 ]);
 
-export const RevokeBody = z.object({ token: z.string(), token_type_hint: z.string().optional() });
+/** Closes what a token proves (RFC 7009); an app, a public client, says who it is with its client_id. */
+export const RevokeBody = z.object({ token: z.string().max(500), token_type_hint: z.string().max(100).optional(), client_id: z.string().max(2000).optional() });
 
 /**
  * Opens a browser session: with email and password, or a one-time code from `fontego open`. Never with a token: a
@@ -270,7 +345,10 @@ const Opt = z.string().optional();
 export const WorkspacesQuery = z.object({ category: Opt, tag: TagList.optional() });
 /** last=1: each entry's last change (TreeEntry.last) */
 export const TreeQuery = z.object({ path: Opt, rev: Opt, recursive: Flag, last: Flag });
-export const FileQuery = z.object({ rev: Opt, meta: Flag, download: Flag });
+/** Some lines of a text file, counted from 1: "120-200", "120-" (to the end) or "120" (that one) */
+export const LineRange = z.string().regex(/^[1-9][0-9]{0,9}(-([1-9][0-9]{0,9})?)?$/, "lines go like 120-200, 120- (to the end) or 120");
+/** lines: only those lines of a text file (the answer says which in x-lines, and how many it has in x-total-lines) */
+export const FileQuery = z.object({ rev: Opt, meta: Flag, download: Flag, lines: LineRange.optional() });
 /** files=1: each commit's files (Commit.files) */
 export const HistoryQuery = z.object({ path: Opt, rev: Opt, limit: Opt, files: Flag });
 
@@ -384,10 +462,52 @@ export const FileDeleteBody = z.object({ baseHash: z.string().optional(), messag
 
 export const FileMoveBody = z.object({ from: z.string(), to: z.string(), baseHash: z.string().optional(), message: Text(10_000).optional() });
 
+// --- Editing one file by pieces: an exact text becomes another, without sending the whole file ---
+
+/** The most edits one call makes to a file; they are applied in order, each on what the one before left. */
+export const MAX_EDITS = 100;
+
+/** The most a file of edits read by the CLI (`fontego edit --edits FILE`) may hold. */
+export const EDITS_MAX_BYTES = 32 * 1024 * 1024;
+
+const OldText = z.string().min(1, "can't be empty: say which text to change");
+
+export const FileEditSchema = z.object({
+  /** The exact text that is there now: once, or at least once with `all` */
+  old: OldText,
+  /** What it becomes; "" deletes it */
+  new: z.string(),
+  /** Every place the old text appears, instead of exactly one */
+  all: z.boolean().optional(),
+});
+
+/**
+ * One edit (`old`, `new`, `all`) or several (`edits`), never both; the server says which is missing, in the words of
+ * the command. Without baseHash they apply to the latest version; with it, to that version, merged with what changed
+ * since, as a write with baseHash.
+ */
+export const FileEditBody = z.object({
+  old: OldText.optional(),
+  new: z.string().optional(),
+  all: z.boolean().optional(),
+  edits: z
+    // A string is what a fontego older than this command sends for --edits FILE: the file's bytes in base64
+    .array(FileEditSchema, { error: (issue) => (typeof issue.input === "string" ? "must be a list of edits, not a string (a fontego older than edit sends --edits so: update it, npm i -g fontego, or use --old and --new)" : undefined) })
+    .min(1, "send at least one edit")
+    .max(MAX_EDITS, `split them: at most ${MAX_EDITS} edits in one call`)
+    .optional(),
+  /** Hash of the version the edits were made on (fontego cat --json); left out, the latest one */
+  baseHash: z.string().optional(),
+  message: Text(10_000).optional(),
+});
+
 export type PutOp = z.infer<typeof PutOpSchema>;
 export type DeleteOp = z.infer<typeof DeleteOpSchema>;
 export type MoveOp = z.infer<typeof MoveOpSchema>;
 export type ChangeOp = z.infer<typeof ChangeOpSchema>;
+export type FileEdit = z.infer<typeof FileEditSchema>;
+/** What a client sends to edit a file by pieces */
+export type FileEditRequest = z.input<typeof FileEditBody>;
 /** What a client sends */
 export type ChangeSetRequest = z.input<typeof ChangeSetBody>;
 /** What the server works with, once validated */

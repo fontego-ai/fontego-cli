@@ -8,6 +8,7 @@ import { ClientError } from "./client.ts";
 import type { SyncReport } from "./sync/engine.ts";
 import { StateError } from "./sync/state.ts";
 import { LockedError } from "./sync/watch.ts";
+import { colorful, forPerson, writeStderr } from "./terminal.ts";
 
 export const EXIT = {
   ok: 0,
@@ -16,14 +17,43 @@ export const EXIT = {
   signedOut: 2,
   notFound: 3,
   conflict: 4,
+  /** Not allowed: a role, a token's reach, or the rules of the workspace or the server (exitOf) */
   forbidden: 5,
-  /** The server can't be reached */
+  /** The server can't be reached, or is too busy to answer now */
   unreachable: 6,
-  /** A sync that did only part: something was refused or couldn't be read this time, or changes still wait */
+  /**
+   * A sync that left something new undone: a file refused for the first time, something that couldn't be read, or
+   * changes that still wait. A file refused before, unchanged, is set aside as before (SyncReport.setAside), not this.
+   */
   partial: 7,
 } as const;
 
-const BY_STATUS: Record<number, number> = { 0: EXIT.unreachable, 401: EXIT.signedOut, 403: EXIT.forbidden, 404: EXIT.notFound, 409: EXIT.conflict };
+const BY_STATUS: Record<number, number> = {
+  0: EXIT.unreachable,
+  401: EXIT.signedOut,
+  403: EXIT.forbidden,
+  404: EXIT.notFound,
+  409: EXIT.conflict,
+  // More than this server takes (a photo too big)
+  413: EXIT.forbidden,
+  // A proxy that can't reach the server, or a server too busy to answer now: try again later
+  502: EXIT.unreachable,
+  503: EXIT.unreachable,
+  504: EXIT.unreachable,
+};
+
+/**
+ * The exit code of an error answer. By its status, except two that read the answer: a 422 that names a file
+ * (details.path) is the server refusing that file (a protected or rejected path, a secret, a file too big, a symlink
+ * that leads out), the same answer sync reads as "set this file aside", so it is not allowed (5), like a 403; and an
+ * archived workspace, which takes no change whatever is tried again (409 archived), is not allowed either. Any other
+ * 422 is a value the server can't take, like a 400: an error (1), whose hint says what to send.
+ */
+export function exitOf(status: number, code: string, details?: unknown): number {
+  if (status === 422 && typeof (details as { path?: unknown } | null | undefined)?.path === "string") return EXIT.forbidden;
+  if (status === 409 && code === "archived") return EXIT.forbidden;
+  return BY_STATUS[status] ?? EXIT.error;
+}
 
 export interface Ttys {
   stdin: boolean;
@@ -52,7 +82,10 @@ export function whyNotAsked(json: boolean, env: NodeJS.ProcessEnv = process.env,
 /** Whether fontego may ask the person something (whyNotAsked says why not). */
 export const canAsk = (json: boolean, env: NodeJS.ProcessEnv = process.env, tty: Ttys = ttys()) => whyNotAsked(json, env, tty) === null;
 
-/** Whether a sync round left something undone, which the next one tries again (the report says what). */
+/**
+ * Whether a sync round left something new undone, which the next one tries again (the report says what). What stays
+ * set aside as before doesn't count: a script or CI can tell "a new file couldn't go up" from "the same .env is there".
+ */
 export const incomplete = (r: SyncReport) => r.pending > 0 || r.skipped.length > 0 || r.unreadable.length > 0;
 
 export interface Failure {
@@ -74,7 +107,7 @@ export function failureOf(e: unknown, usageHint: string): Failure {
   if (e instanceof LockedError) return { code: "locked", message: e.message, hint: "Run it again once the other one is done.", exit: EXIT.error, label: "error" };
   if (e instanceof StateError) return { code: "bad_state", message: e.message, hint: e.hint, exit: EXIT.error, label: "error" };
   if (e instanceof ClientError) {
-    return { code: e.code, message: e.message, hint: e.hint, details: e.details, exit: BY_STATUS[e.status] ?? EXIT.error, label: "error" };
+    return { code: e.code, message: e.message, hint: e.hint, details: e.details, exit: exitOf(e.status, e.code, e.details), label: "error" };
   }
   const message = e instanceof Error ? e.message : String(e);
   return {
@@ -86,13 +119,21 @@ export function failureOf(e: unknown, usageHint: string): Failure {
   };
 }
 
-/** Prints a failure: on stdout as JSON with --json, else on stderr as text. */
-export function printFailure(f: Failure, json: boolean) {
+/**
+ * Prints a failure: on stdout as JSON with --json, else on stderr as text, where only its label is red (on a terminal
+ * that shows colour), so that a failure looks like one and a notice doesn't.
+ */
+export function printFailure(f: Failure, json: boolean, stderrIsTerminal = !!process.stderr.isTTY) {
   if (json) {
     const { code, message, hint, details } = f;
     console.log(JSON.stringify({ error: { code, message, ...(hint ? { hint } : {}), ...(details !== undefined ? { details } : {}) } }, null, 2));
     return;
   }
-  console.error(`${f.label}: ${f.message}`);
-  if (f.hint) console.error(`hint: ${f.hint}`);
+  writeStderr(failureText(f, colorful(stderrIsTerminal)));
+}
+
+/** A failure as text: "error: …" (the label red with colour), then "hint: …". The server's words carry no controls. */
+export function failureText(f: Failure, color: boolean): string {
+  const label = color ? `\x1b[31m${f.label}:\x1b[39m` : `${f.label}:`;
+  return `${label} ${forPerson(f.message)}\n${f.hint ? `hint: ${forPerson(f.hint)}\n` : ""}`;
 }

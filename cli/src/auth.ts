@@ -8,7 +8,7 @@
 // CLI renews it by itself, under a lock, because two processes renewing with the same refresh token would make the
 // server close the session.
 
-import type { DeviceAuthorization, InstanceInfo, TokenResponse } from "@fontego/core";
+import { CLI_CLIENT_ID, type DeviceAuthorization, type InstanceInfo, type TokenResponse } from "@fontego/core";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
@@ -18,7 +18,7 @@ import { ClientError, refuseRedirect, type AuthProvider } from "./client.ts";
 import { normalizeUrl, setInstanceEmail, withLock, type Credential, type CredentialStore, type Instance } from "./config.ts";
 import { USER_AGENT } from "./version.ts";
 
-export const CLIENT_ID = "fontego-cli";
+export const CLIENT_ID = CLI_CLIENT_ID;
 
 export const sessionEnded = (alias: string) =>
   new ClientError(401, "session_ended", `Your session on ${alias} ended.`, `Sign in again: fontego login ${alias}`);
@@ -42,7 +42,9 @@ export const lockName = (url: string) => `session-${createHash("sha256").update(
 /** How long a renewal waits for the server: well under how long another process waits for the lock (config.ts) */
 const REFRESH_TIMEOUT_MS = 15_000;
 
-const same = (a: Credential | null, b: Credential | null) => JSON.stringify(a) === JSON.stringify(b);
+/** The same credential: a token by its secret (what is noted with it, such as its end, may be added), a session whole. */
+const same = (a: Credential | null, b: Credential | null) =>
+  a?.type === "token" && b?.type === "token" ? a.token === b.token : JSON.stringify(a) === JSON.stringify(b);
 
 /** The credential stored for an instance: a session that renews itself, or a token. */
 export class StoredAuth implements AuthProvider {
@@ -58,9 +60,13 @@ export class StoredAuth implements AuthProvider {
     return this.cred.type === "session" ? this.cred.expiresAt : null;
   }
 
-  async token(): Promise<string> {
+  /**
+   * The secret to send: a token as it is, or the session's access token, renewed first when it has ended, or when it
+   * has less than `minLeftMs` left (fontego mcp header, whose answer an agent keeps for a while).
+   */
+  async token(minLeftMs = 0): Promise<string> {
     if (this.cred.type === "token") return this.cred.token;
-    if (Date.parse(this.cred.accessExpiresAt) <= Date.now()) await this.renew();
+    if (Date.parse(this.cred.accessExpiresAt) - minLeftMs <= Date.now()) await this.renew(minLeftMs);
     return (this.cred as Extract<Credential, { type: "session" }>).accessToken;
   }
 
@@ -68,8 +74,28 @@ export class StoredAuth implements AuthProvider {
     return this.renew();
   }
 
-  /** Renews a session, or picks up a credential another process saved. Throws session_ended when there is none. */
-  private renew(): Promise<void> {
+  /**
+   * A token saved without its end (by an earlier fontego), or with another one, takes the one the server just said
+   * (the fontego-token-expires header), so `fontego sessions` can show it. Under the lock, and only if the same token
+   * is still the one saved.
+   */
+  async rememberTokenEnd(expiresAt: string): Promise<void> {
+    const mine = this.cred;
+    if (mine.type !== "token" || mine.expiresAt === expiresAt) return;
+    const url = this.instance.url;
+    await withLock(lockName(url), async () => {
+      const latest = await this.store.get(url);
+      if (latest?.type !== "token" || latest.token !== mine.token) return;
+      this.cred = { ...latest, expiresAt };
+      await this.store.set(url, this.cred);
+    });
+  }
+
+  /**
+   * Renews a session, or picks up a credential another process saved that has `minLeftMs` left. Throws session_ended
+   * when there is none.
+   */
+  private renew(minLeftMs = 0): Promise<void> {
     const url = this.instance.url;
     return withLock(lockName(url), async () => {
       const latest = await this.store.get(url);
@@ -77,7 +103,7 @@ export class StoredAuth implements AuthProvider {
       if (!same(latest, this.cred)) {
         // Signed in again, or renewed by another fontego: use that.
         this.cred = latest;
-        if (latest.type === "token" || Date.parse(latest.accessExpiresAt) > Date.now()) return;
+        if (latest.type === "token" || Date.parse(latest.accessExpiresAt) - minLeftMs > Date.now()) return;
       } else if (latest.type === "token") {
         const alias = this.instance.alias;
         throw new ClientError(401, "token_refused", `The token saved for ${alias} was refused.`, `Sign in again: fontego login ${alias}`);
@@ -187,6 +213,7 @@ export async function fetchInstance(url: string): Promise<InstanceInfo> {
   return info;
 }
 
+/** What a machine's session is called when nobody names it (fontego login --name): the computer's name. */
 export const machineName = () => hostname().split(".")[0] || "a computer";
 
 /**
@@ -349,22 +376,77 @@ export function instanceLink(link: string, instanceUrl: string): string {
   const web = webLink(link);
   if (web && new URL(web).origin === new URL(instanceUrl).origin) return web;
   const where = web ? new URL(web).origin : "something that isn't a web address";
+  // An answer fontego won't use (500: an error), not a server it couldn't reach (502, 503, 504 leave with 6)
   throw new ClientError(
-    502,
+    500,
     "foreign_link",
     `${instanceUrl} gave a link to ${where}, not to itself, so fontego won't open it.`,
     `If this is your server, its public address (FONTEGO_PUBLIC_URL) should be ${instanceUrl}; else tell its admin.`,
   );
 }
 
-const PAGE = (title: string, text: string) =>
-  `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:16px system-ui;margin:4em auto;max-width:32em;padding:0 1em"><h1>${title}</h1><p>${text}</p>`;
+/** Where a sign-in goes, as the page that ends it names it */
+export interface SignInPlace {
+  name: string;
+  url: string;
+}
+
+const PAGES = {
+  connected: { title: "Connected", ok: true, text: "fontego is signed in. You can close this tab and go back to the terminal." },
+  refused: { title: "Not connected", ok: false, text: "The sign-in was refused, so fontego isn't signed in. You can close this tab." },
+  wrong: { title: "Not this one", ok: false, text: "This link isn't the one the terminal is waiting for. Go back to the terminal and open the link it shows." },
+} as const;
+
+/**
+ * The page the browser shows when it comes back to fontego from signing in. It is fontego's own (the server's web app
+ * can't be shown from here), so it carries the web app's look itself: its palette, light and dark as the system says,
+ * and the same kind of mark. Nothing on it is loaded from anywhere and it runs no script; its policy says so.
+ */
+export function signInPage(kind: keyof typeof PAGES, place?: SignInPlace): string {
+  const { title, ok, text } = PAGES[kind];
+  const mark = ok
+    ? `<path d="M4.5 12.5l5 5L19.5 7"/>`
+    : `<path d="M6 6l12 12M18 6L6 18"/>`;
+  const where = place
+    ? `<p class="where">${escapeHtml(place.name)} <span>${escapeHtml(new URL(place.url).host)}</span></p>`
+    : "";
+  return (
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">` +
+    `<meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light dark"><title>${title}</title>` +
+    `<style>${PAGE_STYLE}</style>` +
+    `<main class="card ${ok ? "ok" : "no"}">` +
+    `<svg class="mark" viewBox="0 0 24 24" aria-hidden="true">${mark}</svg>` +
+    `<h1>${title}</h1><p>${text}</p>${where}</main>`
+  );
+}
+
+/** The web app's palette (its app.css tokens) and a card, for signInPage */
+const PAGE_STYLE =
+  `:root{--bg:#f4f4f2;--card:#fff;--line:#dad9d5;--text:#1d1c1b;--soft:#5e5c58;--ok:#2f6b2a;--ok-soft:#dcebd5;` +
+  `--no:#a8321c;--no-soft:#f6e1db;--shadow:0 1px 2px rgb(16 24 40/6%);` +
+  `--font:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;` +
+  `--mono:ui-monospace,"JetBrains Mono","SFMono-Regular",Menlo,Consolas,monospace}` +
+  `@media (prefers-color-scheme:dark){:root{--bg:#1d1c1b;--card:#252423;--line:#363533;--text:#fff;--soft:#b3b1ae;` +
+  `--ok:#9cc98f;--ok-soft:#1f2a1c;--no:#f0907a;--no-soft:#3a221c;--shadow:none}}` +
+  `*{box-sizing:border-box}html,body{margin:0;min-height:100%}` +
+  `body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px 16px;background:var(--bg);` +
+  `color:var(--text);font:15px/1.5 var(--font);-webkit-text-size-adjust:100%}` +
+  `.card{width:100%;max-width:420px;padding:28px;background:var(--card);border:1px solid var(--line);border-radius:10px;` +
+  `box-shadow:var(--shadow)}` +
+  `.mark{width:44px;height:44px;padding:10px;border-radius:50%;fill:none;stroke-width:2.4;stroke-linecap:round;` +
+  `stroke-linejoin:round}.ok .mark{color:var(--ok);background:var(--ok-soft);stroke:currentColor}` +
+  `.no .mark{color:var(--no);background:var(--no-soft);stroke:currentColor}` +
+  `h1{margin:16px 0 6px;font-size:22px;line-height:1.25;font-weight:650}p{margin:0;color:var(--soft)}` +
+  `.where{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);color:var(--text);font-size:13.5px}` +
+  `.where span{margin-left:6px;color:var(--soft);font-family:var(--mono);font-size:12.5px}`;
 
 /**
  * The browser way: opens the instance's page, waits on 127.0.0.1 for the browser to come back with a code, and swaps
- * it for a session. `waiting` is told the link, for whoever has to open it.
+ * it for a session. `waiting` is told the link, for whoever has to open it. `machine`: the name the new session goes
+ * by (machineName() unless given), which the page that approves it shows.
  */
-export async function browserLogin(url: string, opts: { waiting: (link: string) => void; timeoutMs?: number }): Promise<TokenResponse> {
+export async function browserLogin(url: string, opts: { waiting: (link: string) => void; timeoutMs?: number; machine?: string; name?: string }): Promise<TokenResponse> {
   const base = normalizeUrl(url);
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -377,18 +459,17 @@ export async function browserLogin(url: string, opts: { waiting: (link: string) 
     fetch(req) {
       const u = new URL(req.url);
       if (u.pathname !== "/callback") return new Response("Not found", { status: 404 });
-      if (u.searchParams.get("state") !== state) return new Response(PAGE("Not this one", "This link isn't the one the terminal is waiting for."), { status: 400, headers: { "content-type": "text/html" } });
+      const html = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
+      if (u.searchParams.get("state") !== state) return new Response(signInPage("wrong"), { status: 400, headers: html });
       const error = u.searchParams.get("error");
       settle({ code: u.searchParams.get("code") ?? undefined, error: error ?? undefined });
-      return new Response(error ? PAGE("Not connected", "The CLI was told no. You can close this tab.") : PAGE("Connected", "You can close this tab and go back to the terminal."), {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      return new Response(signInPage(error ? "refused" : "connected", { name: opts.name ?? new URL(base).host, url: base }), { headers: html });
     },
   });
   const redirectUri = `http://127.0.0.1:${server.port}/callback`;
   const link =
     `${base}/oauth/authorize?` +
-    new URLSearchParams({ response_type: "code", client_id: CLIENT_ID, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state, machine: machineName() });
+    new URLSearchParams({ response_type: "code", client_id: CLIENT_ID, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state, machine: opts.machine ?? machineName() });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     opts.waiting(link);
@@ -404,12 +485,12 @@ export async function browserLogin(url: string, opts: { waiting: (link: string) 
 }
 
 /** The device way: a code to type in a browser anywhere, and asking until it is approved. */
-export async function deviceLogin(url: string, opts: { waiting: (d: DeviceAuthorization) => void }): Promise<TokenResponse> {
+export async function deviceLogin(url: string, opts: { waiting: (d: DeviceAuthorization) => void; machine?: string }): Promise<TokenResponse> {
   const base = normalizeUrl(url);
   const res = await fetch(`${base}/v1/oauth/device`, {
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": USER_AGENT },
-    body: JSON.stringify({ client_id: CLIENT_ID, machine: machineName() }),
+    body: JSON.stringify({ client_id: CLIENT_ID, machine: opts.machine ?? machineName() }),
     redirect: "manual",
   });
   refuseRedirect(res, url);

@@ -50,6 +50,7 @@ describe("icons", () => {
     expect((await fontego("workspace", "edit", "legal", "--icon", "scales")).out.trim()).toBe("Updated legal.");
     expect((await fontego("info", "legal")).out).toContain("icon: scales · tags: -");
     const wrong = await fontego("workspace", "edit", "legal", "--icon", "contracts", "--json");
+    expect(wrong.code).toBe(1); // a 422 that names no file: a value the server doesn't take, not a refusal
     expect(wrong.code).not.toBe(0);
     expect(JSON.parse(wrong.out).error).toMatchObject({ code: "invalid_icon", hint: expect.stringContaining("For contracts: scales.") });
     expect((await fontego("workspace", "edit", "bakery", "--icon", "store")).code).toBe(0);

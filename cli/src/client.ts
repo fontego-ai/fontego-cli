@@ -10,6 +10,9 @@ import {
   type CommandsManifest,
   type ErrorBody,
   type Me,
+  type MySessionsResponse,
+  type RenameSessionRequest,
+  type SessionInfo,
   type SyncResponse,
   type WorkspaceInfo,
   type WorkspacesResponse,
@@ -156,6 +159,16 @@ export class Client {
 
   me() {
     return this.json<Me>("GET", "/v1/me");
+  }
+
+  /** Where this person is signed in: their open sessions, newest first, the one of this call marked current. */
+  mySessions() {
+    return this.json<MySessionsResponse>("GET", "/v1/me/sessions");
+  }
+
+  /** Gives one of this person's sessions another name. */
+  renameSession(id: number, label: string) {
+    return this.json<SessionInfo>("PATCH", `/v1/me/sessions/${id}`, { label } satisfies RenameSessionRequest);
   }
 
   /** A one-time link that opens the web app already signed in (valid two minutes). */

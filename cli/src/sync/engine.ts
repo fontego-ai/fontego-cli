@@ -7,7 +7,7 @@
 //
 // A real conflict keeps both: the server's version stays in place and ours is saved next to it as a conflict copy.
 
-import { blobHash, MAX_OPS, roleAtLeast, symlinkProblem, textContent, type ChangeOp, type Conflict, type FileMode, type Role } from "@fontego/core";
+import { blobHash, localDateTime, MAX_OPS, roleAtLeast, symlinkProblem, textContent, type ChangeOp, type Conflict, type FileMode, type Role } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
 import { loadIgnoreRules } from "./ignore.ts";
@@ -35,7 +35,18 @@ export interface SyncReport {
   pulled: Array<{ path: string; status: "put" | "delete" }>;
   pushed: Array<{ path: string; status: "put" | "delete"; merged?: boolean }>;
   conflicts: Array<{ path: string; reason: Conflict["reason"]; copy?: string; message: string }>;
-  skipped: Array<{ path: string; reason: string }>;
+  /**
+   * What this round left out that wasn't left out before: a file the server refused for the first time (with its
+   * `code` and the server's `hint`, which for a protected or rejected path names the pattern), or one of the server's
+   * that couldn't be written here. These make a round incomplete.
+   */
+  skipped: SkippedNow[];
+  /**
+   * What stays set aside as before: files refused earlier with this same content and for the same reason (sent again
+   * now and then, and once they change), and files of the server's that still can't be here (`down`). They don't make
+   * a round incomplete: nothing new failed. `fontego status` says the same.
+   */
+  setAside: Array<{ path: string; reason: string; code?: string; hint?: string; retryAt?: string; down?: true }>;
   invalid: string[];
   /**
    * Folders and files here that couldn't be read. Nothing under them is sent or deleted, and the server's changes to
@@ -78,7 +89,7 @@ export function whatItTakes(k: Skipped): string {
   if (!d) return "";
   if (d.blocker) return `It comes down once ${d.blocker.path} is no longer a ${d.blocker.is} here.`;
   if (d.never) return "It stays on the server, and comes down only once it changes there (renamed, say).";
-  return `It is tried again${k.retryAt ? ` after ${new Date(k.retryAt).toLocaleString()}` : ""}.`;
+  return `It is tried again${k.retryAt ? ` after ${localDateTime(k.retryAt)}` : ""}.`;
 }
 
 /** Why one path failed, in words: our own errors say it; a file system's has its code. */
@@ -112,9 +123,48 @@ function clearingFirst<T>(changes: Map<string, T | null>): Array<[string, T | nu
   return [...first, ...all.filter(([path, r]) => r || !inTheWay(path))];
 }
 
+/** One path left out of a round. `again`: the same as the last time it was left out (only while the round runs). */
+export interface SkippedNow {
+  path: string;
+  reason: string;
+  code?: string;
+  hint?: string;
+  again?: boolean;
+}
+
+/** Why the server refused a file: its message, code and hint. */
+interface Refusal {
+  reason: string;
+  code?: string;
+  hint?: string;
+}
+
 /** Notes one path left out of this round, once, however many times the round goes past it. */
-function noteSkipped(report: SyncReport, path: string, reason: string) {
-  if (!report.skipped.some((s) => s.path === path && s.reason === reason)) report.skipped.push({ path, reason });
+function noteSkipped(report: SyncReport, path: string, why: Refusal, again = false) {
+  if (report.skipped.some((s) => s.path === path && s.reason === why.reason)) return;
+  report.skipped.push({ path, ...why, ...(again ? { again } : {}) });
+}
+
+/** Whether a refusal says what an earlier one said: its code, or, from a state written before codes were kept, its words. */
+const sameRefusal = (before: Skipped, now: Refusal) => (before.code && now.code ? before.code === now.code : before.reason === now.reason);
+
+/**
+ * At the end of a round: what was left out again, as before, moves from `skipped` to `setAside`, with everything else
+ * the state keeps aside, so `skipped` holds only what is new.
+ */
+function settle(report: SyncReport, skipped: Record<string, Skipped>) {
+  const fresh = report.skipped.filter((s) => !s.again);
+  report.skipped = fresh.map(({ again: _, ...s }) => s);
+  report.setAside = Object.entries(skipped)
+    .filter(([path]) => !fresh.some((s) => s.path === path))
+    .map(([path, k]) => ({
+      path,
+      reason: k.down ? `${k.reason} ${whatItTakes(k)}` : k.reason,
+      ...(k.code ? { code: k.code } : {}),
+      ...(k.hint ? { hint: k.hint } : {}),
+      ...(k.retryAt ? { retryAt: k.retryAt } : {}),
+      ...(k.down ? { down: true as const } : {}),
+    }));
 }
 
 /**
@@ -135,6 +185,15 @@ export interface EngineOptions {
   now?: () => number;
 }
 
+/**
+ * Whether a file set aside still is: one of the server's that can't be here, or a refused one of ours that is still a
+ * change to send. Not one deleted here (and not in the workspace), ignored now, or back to what the workspace has.
+ */
+function stillAside(path: string, k: Skipped, scanned: Awaited<ReturnType<typeof scan>>, files: SyncState["files"]): boolean {
+  if (k.down || insideUnreadable(scanned.unreadable, path) || scanned.unsentLinks.some((u) => u.path === path)) return true;
+  return !same(scanned.files.get(path), own(files, path));
+}
+
 /** One local change waiting to go up; its bytes are read only when its batch is made. */
 interface Outgoing {
   path: string;
@@ -145,7 +204,7 @@ interface Outgoing {
 }
 
 function emptyReport(): SyncReport {
-  return { head: null, pulled: [], pushed: [], conflicts: [], skipped: [], invalid: [], unreadable: [], unsentLinks: [], pending: 0, readOnly: false };
+  return { head: null, pulled: [], pushed: [], conflicts: [], skipped: [], setAside: [], invalid: [], unreadable: [], unsentLinks: [], pending: 0, readOnly: false };
 }
 
 export class SyncEngine {
@@ -168,12 +227,17 @@ export class SyncEngine {
     this.now = opts.now ?? Date.now;
   }
 
-  /** Sets a file aside after a refusal of this content, with when to try it again. */
-  private skip(path: string, hash: string, reason: string) {
+  /**
+   * Sets a file aside after a refusal of this content, with when to try it again. Says whether it is the same refusal
+   * as before (this content, for the same reason), which is nothing new.
+   */
+  private skip(path: string, hash: string, why: Refusal): boolean {
     const before = own(this.state.skipped, path);
-    const tries = before && before.hash === hash ? (before.tries ?? 0) + 1 : 1;
-    const entry: Skipped = { hash, reason, retryAt: new Date(this.now() + retryDelay(tries)).toISOString(), tries };
+    const sameContent = !!before && !before.down && before.hash === hash;
+    const tries = sameContent ? (before.tries ?? 0) + 1 : 1;
+    const entry: Skipped = { hash, ...why, retryAt: new Date(this.now() + retryDelay(tries)).toISOString(), tries };
     this.state.skipped[path] = entry;
+    return sameContent && sameRefusal(before, why);
   }
 
   /**
@@ -234,6 +298,7 @@ export class SyncEngine {
       idle = progress() > before ? 0 : idle + 1;
     }
     if (report.pushed.length) await this.pull(report);
+    settle(report, this.state.skipped);
     report.head = this.state.head;
     report.readOnly = !!this.state.readOnly;
     await saveState(this.root, this.state);
@@ -289,7 +354,8 @@ export class SyncEngine {
         continue;
       }
       // Listed again: what was set aside for it is superseded by what happens now.
-      if (own(this.state.skipped, path)?.down) delete this.state.skipped[path];
+      const setAside = own(this.state.skipped, path);
+      if (setAside?.down) delete this.state.skipped[path];
       try {
         await this.pullOne(report, path, r, local, rules, res.head);
       } catch (e) {
@@ -298,13 +364,13 @@ export class SyncEngine {
         // with what it takes (notHere); one that failed this once waits, like a folder that can't be read.
         if (e instanceof ClientError) throw e;
         if (!lasting(e)) {
-          noteSkipped(report, path, whyNot(e));
+          noteSkipped(report, path, { reason: whyNot(e) });
           waiting = true;
           continue;
         }
         delete this.state.files[path];
-        if (r) this.notHere(report, path, r, res.head, e);
-        else noteSkipped(report, path, whyNot(e));
+        if (r) this.notHere(report, path, r, res.head, e, setAside?.down ? setAside : undefined);
+        else noteSkipped(report, path, { reason: whyNot(e) });
       }
     }
     // A change that had to wait keeps the copy at its last full step, so the server sends it again next round. What
@@ -318,17 +384,18 @@ export class SyncEngine {
    * keeps naming it and a later round brings it down: once what is in its way is gone (bringDown looks every round),
    * or, when that isn't known, after a growing wait. A path that can't be here at all waits until it changes there.
    */
-  private notHere(report: SyncReport, path: string, r: { hash: string; mode: string }, rev: string, e: unknown) {
+  private notHere(report: SyncReport, path: string, r: { hash: string; mode: string }, rev: string, e: unknown, before = own(this.state.skipped, path)) {
     const blocker = e instanceof UnsafePathError ? e.blocker : undefined;
     const never = !blocker && (e instanceof UnsafePathError || BAD_NAME.includes((e as NodeJS.ErrnoException)?.code ?? ""));
     const k: Skipped = { hash: r.hash, reason: whyNot(e), down: { mode: r.mode, rev, ...(blocker ? { blocker } : never ? { never: true } : {}) } };
+    const sameAsBefore = !!before?.down && before.hash === r.hash;
     if (!blocker && !never) {
-      const before = own(this.state.skipped, path);
-      k.tries = before?.down && before.hash === r.hash ? (before.tries ?? 0) + 1 : 1;
+      k.tries = sameAsBefore ? (before!.tries ?? 0) + 1 : 1;
       k.retryAt = new Date(this.now() + retryDelay(k.tries)).toISOString();
     }
     this.state.skipped[path] = k;
-    noteSkipped(report, path, `${k.reason} ${whatItTakes(k)}`);
+    // The same version, failing the same way it did: nothing new.
+    noteSkipped(report, path, { reason: `${k.reason} ${whatItTakes(k)}` }, sameAsBefore && before!.reason === k.reason);
   }
 
   /**
@@ -352,10 +419,10 @@ export class SyncEngine {
           this.state.skipped[path] = k;
           throw e;
         }
-        if (lasting(e)) this.notHere(report, path, { hash: k.hash, mode: d.mode }, d.rev, e);
+        if (lasting(e)) this.notHere(report, path, { hash: k.hash, mode: d.mode }, d.rev, e, k);
         else {
           this.state.skipped[path] = k;
-          noteSkipped(report, path, whyNot(e));
+          noteSkipped(report, path, { reason: whyNot(e) });
         }
       }
     }
@@ -408,6 +475,9 @@ export class SyncEngine {
     report.unsentLinks = scanned.unsentLinks;
     const local = scanned.files;
     const unsent = new Set(scanned.unsentLinks.map((u) => u.path));
+
+    // A file set aside that is no longer anything to send is forgotten: status and sync would name it for ever.
+    for (const [path, k] of Object.entries(this.state.skipped)) if (!stillAside(path, k, scanned, this.state.files)) delete this.state.skipped[path];
 
     const todo: Outgoing[] = [];
     const paths = new Set([...local.keys(), ...Object.keys(this.state.files)]);
@@ -513,7 +583,7 @@ export class SyncEngine {
       return;
     }
     // Can't be resolved by keeping both (e.g. a file where a folder is): leave it out until it changes.
-    this.skip(c.path, l?.hash ?? "deleted", c.message);
+    this.skip(c.path, l?.hash ?? "deleted", { reason: c.message });
     report.conflicts.push({ path: c.path, reason: c.reason, message: c.message });
   }
 
@@ -547,8 +617,9 @@ export class SyncEngine {
         // rest, and try it again once it changes here. A refused delete is set aside too: the file stays there.
         const path = (e.details as { path?: string } | undefined)?.path;
         if (!path || !ops.some((o) => o.op !== "move" && o.path === path)) throw e;
-        this.skip(path, local.get(path)?.hash ?? "deleted", e.message);
-        report.skipped.push({ path, reason: e.message });
+        const why: Refusal = { reason: e.message, code: e.code, ...(e.hint ? { hint: e.hint } : {}) };
+        const again = this.skip(path, local.get(path)?.hash ?? "deleted", why);
+        report.skipped.push({ path, ...why, ...(again ? { again } : {}) });
         return "retry";
       }
       if (e.code === "conflict") {
@@ -560,8 +631,8 @@ export class SyncEngine {
             // A conflict that can't be settled here (its copy or the server's version can't be written) waits like a
             // refused file; the rest goes on.
             if (err instanceof ClientError) throw err;
-            this.skip(c.path, local.get(c.path)?.hash ?? "deleted", whyNot(err));
-            noteSkipped(report, c.path, whyNot(err));
+            const why = { reason: whyNot(err) };
+            noteSkipped(report, c.path, why, this.skip(c.path, local.get(c.path)?.hash ?? "deleted", why));
           }
         }
         return "retry";
@@ -586,7 +657,7 @@ export class SyncEngine {
           await this.writeIfUnchanged(path, l, result.commit, change.hash);
         } catch (e) {
           if (e instanceof ClientError) throw e;
-          noteSkipped(report, path, whyNot(e));
+          noteSkipped(report, path, { reason: whyNot(e) });
         }
         report.pushed.push({ path, status: "put", merged: true });
         continue;
@@ -615,6 +686,9 @@ export async function localStatus(root: string, state: SyncState) {
   for (const path of Object.keys(state.files)) {
     if (!scanned.files.has(path) && !insideUnreadable(scanned.unreadable, path) && !unsent.has(path)) deleted.push(path);
   }
+  // What is still set aside: a refused file deleted or ignored since, which the next sync forgets, isn't named.
+  const skipped: SyncState["skipped"] = Object.create(null);
+  for (const [path, k] of Object.entries(state.skipped)) if (stillAside(path, k, scanned, state.files)) skipped[path] = k;
   return {
     added: added.sort(),
     modified: modified.sort(),
@@ -624,7 +698,7 @@ export async function localStatus(root: string, state: SyncState) {
     unreadable: scanned.unreadable,
     /** Symlinks here that could point outside the folder: never sent */
     unsentLinks: scanned.unsentLinks,
-    skipped: state.skipped,
+    skipped,
     /** New files and folders the ignore rules keep here */
     ignored: scanned.ignored,
     /** Files in the workspace that the rules match: they keep syncing */
