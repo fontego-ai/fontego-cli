@@ -349,8 +349,9 @@ export function instanceLink(link: string, instanceUrl: string): string {
   const web = webLink(link);
   if (web && new URL(web).origin === new URL(instanceUrl).origin) return web;
   const where = web ? new URL(web).origin : "something that isn't a web address";
+  // An answer fontego won't use (500: an error), not a server it couldn't reach (502, 503, 504 leave with 6)
   throw new ClientError(
-    502,
+    500,
     "foreign_link",
     `${instanceUrl} gave a link to ${where}, not to itself, so fontego won't open it.`,
     `If this is your server, its public address (FONTEGO_PUBLIC_URL) should be ${instanceUrl}; else tell its admin.`,

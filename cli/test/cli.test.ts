@@ -522,7 +522,7 @@ describe("commands the server declares", () => {
 
     await Bun.write(`${dir}/later.md`, "written while archived\n");
     const refused = await fontego(["sync", dir], env);
-    expect(refused.code).not.toBe(0);
+    expect(refused.code).toBe(5); // an archived workspace takes nothing, whatever is tried again
     expect(refused.err).toContain("archived");
     expect((await fontego(["status", dir, "--json"], env)).out).toContain("later.md");
     expect((await fontego(["admin", "workspaces", "unarchive", "old"], env)).out).toContain("Workspace old is back.");
@@ -584,7 +584,12 @@ describe("commands the server declares", () => {
     const noBase = await fontego(["rm", "notes", "drafts/c.md"], agent);
     expect(noBase.err).toContain("fontego cat notes drafts/c.md --json");
     expect((await fontego(["rm", "notes", "drafts/c.md", "--base", b], agent)).out.trim()).toBe("Deleted drafts/c.md");
-    expect((await fontego(["write", "notes", "AGENTS.md"], agent, "# Mine\n")).err).toContain("protected path");
+    // A file the server won't take is not allowed (5), from an editor or a token: a protected path, a secret.
+    const protectedPath = await fontego(["write", "notes", "AGENTS.md"], agent, "# Mine\n");
+    expect([protectedPath.code, protectedPath.err]).toEqual([5, expect.stringContaining('It matches "**/AGENTS.md"')]);
+    expect((await fontego(["write", "notes", ".env", "--json"], agent, "KEY=1\n")).code).toBe(5);
+    const token = { ...agent, FONTEGO_URL: s.url, FONTEGO_TOKEN: s.token("ana@example.org", { workspaces: ["notes"] }) };
+    expect((await fontego(["write", "notes", "AGENTS.md"], token, "# Mine\n")).code).toBe(5);
     const log = (await fontego(["admin", "audit", "changes", "--workspace", "notes", "--limit", "5"], asAdmin())).out;
     expect(log).toContain("test-agent");
   });

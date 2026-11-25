@@ -8,9 +8,11 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 
 ## Principles
 
-- **Everything goes through the API** (`/v1`). Every command accepts `--json`, and errors say what to do (`hint`).
-  With `--json` nothing is ever asked, help and errors are JSON too, and the exit codes mean the same everywhere
-  (`cli/src/output.ts`, written also in the agents' guide, `AGENT_INTRO` in `help.ts`: change both together).
+- **Everything goes through the API** (`/v1`). Every command accepts `--json`, and errors say what to do (`hint`). With
+  `--json` nothing is ever asked, help and errors are JSON too, and the exit codes mean the same everywhere
+  (`cli/src/output.ts`, written also in the agents' guide, `AGENT_INTRO` in `help.ts`: change both together). An error
+  answer's code comes from its status (`exitOf`), except a 422 that names a file (the server refusing it) and an
+  archived workspace, both 5 (not allowed); 502, 503 and 504 are 6 (try again later).
 - **What a person reads is one way everywhere.** Dates and times are in the time zone of the machine that prints them,
   written the same way in every language (`core/src/dates.ts`: 2026-11-22, 2026-11-22 17:55, 17:55:12), used by the
   templates' `date` and `datetime` and by the built-in commands; `--json` keeps the API's ISO 8601 in UTC. Colour only
@@ -120,7 +122,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 |---|---|
 | `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), what a person's photo may be (`photo.ts`, without Zod, so the web app can read it), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), the closed list of icons a workspace can have, named by what they show, with the themes each suits (`icons.ts`), how a workspace's tags are written (`tags.ts`: `normalizeTag`, with no dependencies so the web app uses it too; `TagList` in `schemas.ts` wraps it), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; a table or lines may print a list under each row, such as a commit's files, with how many more the API cut (`details`), lines after them all that are left out when empty, such as the next page's cursor (`footer`), and columns left out when nobody filled them (`optional`); `outputTemplates` finds every template in one; an argument's `choices`, the list a person picks it from, checked by `checkChoices`) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the rules of a token's life (`tokens.ts`, with no dependencies, so the web app takes them too), how a date is written for a person (`dates.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Reads the command line and runs a built-in or a declared command |
-| `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`, and `whyNotAsked`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`: 6 the server can't be reached, 7 a sync that did only part) |
+| `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`, and `whyNotAsked`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`, `exitOf`: 5 not allowed, 6 the server can't be reached, 7 a sync that did only part) |
 | `cli/src/args.ts` | Command words, arguments and flags, and usage lines |
 | `cli/src/ask.ts` | The arguments a command was given without: asked for when a person can be asked, else the usage error with the values known here; and the command written back |
 | `cli/src/picker.ts` | Asking at a terminal: picking from a list (arrows, filter by text or number, Enter, Esc) and typing a line, also a secret without echo; a numbered list where the terminal can't redraw (`TERM=dumb`) |

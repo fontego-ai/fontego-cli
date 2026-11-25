@@ -144,8 +144,10 @@ per-workspace access.
   the person says so.
 - Errors are printed as \`error: <message>\` plus a \`hint:\` line with the next step, usually a \`fontego\` command.
   With \`--json\` they come as \`{"error": {"code", "message", "hint"}}\` on stdout and the exit code is not 0.
-- Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict, 5 not allowed, 6 the server
-  can't be reached, 7 a sync that did only part (something was refused or couldn't be read this time, or changes
+- Exit codes: 0 ok, 1 error, 2 not logged in or token rejected, 3 not found, 4 conflict (the file changed since you
+  read it, the name is taken), 5 not allowed (your role, a token's reach, or the rules: a protected or rejected path,
+  a secret, a file too big, an archived workspace), 6 the server can't be reached or is too busy now (try again
+  later), 7 a sync that did only part (something was refused or couldn't be read this time, or changes
   still wait: the output says what, with \`"complete": false\`, and the next sync tries again).
 - Nothing is ever asked of you, nor of anyone with \`--json\`: an argument left out is a usage error, which lists the
   values it can take when they are known, and a secret left out has to come on stdin. With \`--json\`, \`--help\`
