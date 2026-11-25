@@ -27,21 +27,22 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `fontego-server` and use it from the outside.
 - **Most commands come from the server.** Built-in commands (`builtins.ts`) work with this machine or a synced folder:
   login, logout, sessions (rename, forget), use, open, help, version, clone, link, status, sync, watch, conflicts,
-  check-ignore, and events (the person's live stream, `commands/live.ts`). Everything else is declared by the server
-  (`GET /v1/commands`): a description of one API call, never code, run by `declared.ts` and cached per server in
-  `$XDG_CACHE_HOME/fontego/commands/`. Every answer carries the version of the server's commands (`fontego-commands`
-  header); a different one refreshes the cache. With `--json`, a declared command prints exactly what the API answered.
-  `cli/test/cli.test.ts` fails if the server declares something this CLI can't run. An argument marked `secret` (a
-  password) is asked for without echo when left out, or read from stdin when that isn't a terminal (`prompt.ts`), and
-  never printed. One marked `stdin` (a file's content, for `fontego write`) is read whole from stdin when left out;
-  nothing on stdin is an error, so a forgotten `< file` never writes an empty file. A flag marked `file` names a file of
-  this machine: the CLI checks its size against the declaration before reading it and sends its bytes in base64
-  (`fontego account set --photo me.jpg`), or, marked `json`, the JSON it holds (`fontego edit --edits edits.json`; a
-  file that isn't JSON is a usage error). `-` reads it from stdin instead (`--edits - < edits.json`), counted against
-  the same size as it comes, and nothing on stdin is an error; only one value of a command reads stdin, said before
-  reading any. So that no server can turn an innocent flag into one that uploads a file, a file flag must show FILE in
-  its usage, can't have a default, and can't ask for more than 64 MB (`checkCommand`). One with `unset` sends null for
-  that word, in any capitals (`--photo none`), and a file of that name is `./none` (one called `-`, `./-`).
+  check-ignore, events (the person's live stream, `commands/live.ts`), setup and mcp (below). Everything else is
+  declared by the server (`GET /v1/commands`): a description of one API call, never code, run by `declared.ts` and
+  cached per server in `$XDG_CACHE_HOME/fontego/commands/`. Every answer carries the version of the server's commands
+  (`fontego-commands` header); a different one refreshes the cache. With `--json`, a declared command prints exactly
+  what the API answered. `cli/test/cli.test.ts` fails if the server declares something this CLI can't run. An argument
+  marked `secret` (a password) is asked for without echo when left out, or read from stdin when that isn't a terminal
+  (`prompt.ts`), and never printed. One marked `stdin` (a file's content, for `fontego write`) is read whole from stdin
+  when left out; nothing on stdin is an error, so a forgotten `< file` never writes an empty file. A flag marked `file`
+  names a file of this machine: the CLI checks its size against the declaration before reading it and sends its bytes in
+  base64 (`fontego account set --photo me.jpg`), or, marked `json`, the JSON it holds (`fontego edit --edits
+  edits.json`; a file that isn't JSON is a usage error). `-` reads it from stdin instead (`--edits - < edits.json`),
+  counted against the same size as it comes, and nothing on stdin is an error; only one value of a command reads stdin,
+  said before reading any. So that no server can turn an innocent flag into one that uploads a file, a file flag must
+  show FILE in its usage, can't have a default, and can't ask for more than 64 MB (`checkCommand`). One with `unset`
+  sends null for that word, in any capitals (`--photo none`), and a file of that name is `./none` (one called `-`,
+  `./-`).
 - **A person who leaves an argument out is asked for it; nobody else ever is.** At a terminal, a required argument
   left out is picked from its list (`choices` in a declaration, from `core`: fixed values or a GET to the same
   server; `pick` in a built-in) or typed, and then the whole command goes to stderr (`Same as: fontego ...`), so it
@@ -105,6 +106,29 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   fontego and to run that guide. It marks what it writes, never touches a `fontego` skill it didn't write, and runs
   only when the person asks: nothing is written at install time. The docs publish the guide and the skill
   (`fontego-app/docs`, page "For agents", and llms.txt).
+- **Fontego's MCP, for the agents of this machine** (`commands/mcp.ts`, `mcp/`): the server's `/mcp` makes every
+  operation a tool; `fontego mcp add [AGENT...] [--project]` sets it up in each agent's own place with this machine's
+  session, never with a secret (`mcp/configs.ts`, checked against each agent's docs). Claude Code (`claude mcp add-json
+  -s user`, since it rewrites `~/.claude.json` itself while it runs: an http server with a `headersHelper`) and Codex
+  (`config.toml`, a table between two comments that mark it as fontego's, with `http_headers_helper`) run `fontego mcp
+  header` for their headers when they connect and again after a 401: it prints the session's access token as JSON,
+  renewed when under five minutes are left. Copilot, OpenCode, Cursor and Gemini CLI can't run a program for their
+  headers, so they run `fontego mcp proxy`, a local MCP server over stdio that forwards each JSON-RPC message to `/mcp`
+  with the session renewed and the HTTP headers each era of the protocol asks for (no SDK: `mcp/proxy.ts`). A project
+  (`--project`) gets one portable entry per file, `fontego mcp proxy --url URL` with fontego from the PATH, so it works
+  for each person with their own sign-in; `.mcp.json` is both Claude Code's and Copilot's. It never touches an entry of
+  that name it didn't write, nor one of that name for another Fontego, nor a JSON file with comments (it prints the
+  entry to add by hand, as `--print` does), and writes a config kept as a link where the link leads, except in a
+  project, where a file or folder that is a link out of it is left alone (`leadsOut`: what is there may come from
+  someone else). The agents' guide tells them never to run `header` nor show what it prints. The command it writes is
+  the absolute path of the `fontego` on the PATH when that one knows `mcp` (asked with `--help`, no network), else this
+  one. `fontego mcp remove` takes out only its own and needs no sign-in (`--url`, `--instance` or the default instance),
+  and `fontego mcp` says where it is set up. With `--url`, `mcp header` and `proxy` ignore `FONTEGO_INSTANCE` and
+  `FONTEGO_URL`/`FONTEGO_TOKEN` in the agent's environment; the proxy answers every request, also one the server's
+  answer left without a result. Codex runs its helper with almost no environment (HOME, PATH): the helper carries
+  `XDG_CONFIG_HOME` and `FONTEGO_CREDENTIAL_STORE` when they are set, and on Linux `fontego mcp header` and `proxy` run
+  themselves again with the user's session bus (`/run/user/UID/bus`) when it is missing, since the keychain needs it.
+  `cli/test/mcp.test.ts` does it all in a home of its own, with a stand-in `claude`.
 - **One executable per system** (`scripts/build.ts`, `bun run build`): `bun build --compile` for Linux, macOS and
   Windows, x64 and arm64, so people need neither Bun nor Node. The same build makes the GitHub release files
   (`fontego-<os>-<arch>`, `SHA256SUMS`, `install.sh`) and the npm packages: `fontego`, a Node launcher with no
@@ -141,6 +165,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 | `cli/src/help.ts` | `fontego help`, `fontego help COMMAND` and `fontego help --agent`, built from the commands themselves |
 | `cli/src/agents.ts` | The coding agents fontego knows: the variables that tell one runs it, how to see one is installed, and the folders each reads user-level skills from |
 | `cli/src/commands/setup.ts` | `fontego setup`: the skill and writing or removing it |
+| `cli/src/commands/mcp.ts`, `cli/src/mcp/` | `fontego mcp`, `mcp add`, `mcp remove`, `mcp header` and `mcp proxy`: where each agent keeps its MCP servers and the entry for Fontego (`configs.ts`), and the stdio proxy (`proxy.ts`) |
 | `cli/src/version.ts` | The CLI's version, read from `cli/package.json` |
 | `scripts/build.ts`, `scripts/macho.ts`, `scripts/npm-launcher.cjs`, `scripts/npm-readme.md`, `install.sh` | The release: executables (`macho.ts`: the signature of the macOS ones), npm packages and the install script (see above) |
 | `Dockerfile`, `.github/workflows/image.yml` | The command's container image and the workflow that publishes it (see How to work) |

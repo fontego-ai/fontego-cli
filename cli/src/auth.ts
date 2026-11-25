@@ -60,9 +60,13 @@ export class StoredAuth implements AuthProvider {
     return this.cred.type === "session" ? this.cred.expiresAt : null;
   }
 
-  async token(): Promise<string> {
+  /**
+   * The secret to send: a token as it is, or the session's access token, renewed first when it has ended, or when it
+   * has less than `minLeftMs` left (fontego mcp header, whose answer an agent keeps for a while).
+   */
+  async token(minLeftMs = 0): Promise<string> {
     if (this.cred.type === "token") return this.cred.token;
-    if (Date.parse(this.cred.accessExpiresAt) <= Date.now()) await this.renew();
+    if (Date.parse(this.cred.accessExpiresAt) - minLeftMs <= Date.now()) await this.renew(minLeftMs);
     return (this.cred as Extract<Credential, { type: "session" }>).accessToken;
   }
 
@@ -87,8 +91,11 @@ export class StoredAuth implements AuthProvider {
     });
   }
 
-  /** Renews a session, or picks up a credential another process saved. Throws session_ended when there is none. */
-  private renew(): Promise<void> {
+  /**
+   * Renews a session, or picks up a credential another process saved that has `minLeftMs` left. Throws session_ended
+   * when there is none.
+   */
+  private renew(minLeftMs = 0): Promise<void> {
     const url = this.instance.url;
     return withLock(lockName(url), async () => {
       const latest = await this.store.get(url);
@@ -96,7 +103,7 @@ export class StoredAuth implements AuthProvider {
       if (!same(latest, this.cred)) {
         // Signed in again, or renewed by another fontego: use that.
         this.cred = latest;
-        if (latest.type === "token" || Date.parse(latest.accessExpiresAt) > Date.now()) return;
+        if (latest.type === "token" || Date.parse(latest.accessExpiresAt) - minLeftMs > Date.now()) return;
       } else if (latest.type === "token") {
         const alias = this.instance.alias;
         throw new ClientError(401, "token_refused", `The token saved for ${alias} was refused.`, `Sign in again: fontego login ${alias}`);
