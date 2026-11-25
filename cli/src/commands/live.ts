@@ -37,6 +37,9 @@ export function describeEvent(type: string, data: unknown): string | null {
     const w = data as WorkspacesEvent;
     return `your workspaces changed${w.workspace ? ` (${w.workspace})` : ""}: fontego workspaces`;
   }
+  // These two say only what to read again
+  if (type === "preferences") return "your preferences changed: fontego preferences";
+  if (type === "people") return "an account changed (someone new, a name, an email, a photo...): fontego people";
   if (type === "closed") return (data as Omit<ClosedEvent, "type">).message;
   return null;
 }

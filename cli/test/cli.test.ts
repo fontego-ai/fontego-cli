@@ -765,29 +765,44 @@ describe("live: who is around, and what happens as it happens", () => {
     };
     const text = run(false);
     const json = run(true);
-    const t = lines(text);
-    const j = lines(json);
-    await until(t, (l) => l.includes("connected;"));
-    await until(j, (l) => l.startsWith('{"type":"ready"'));
-    await s.call(ana.token, "POST", "/v1/workspaces/notes/changes", { baseCommit: null, message: "Live from a test", ops: [{ op: "put", path: "live.md", content: "now\n", baseHash: null }] });
-    await until(t, (l) => /notes {2}Ana: Live from a test \(1 file\)$/.test(l));
-    await until(j, (l) => l.includes('"type":"commit"'));
-    const commit = JSON.parse(j.find((l) => l.includes('"type":"commit"'))!);
-    expect(commit).toMatchObject({ type: "commit", workspace: "notes", message: "Live from a test", changes: [{ status: "put", path: "live.md" }] });
-    await s.call(ana.token, "PUT", "/v1/workspaces/notes/presence", { path: "travel/" });
-    // Others may be there from earlier tests: what counts is Ana's line
-    const hereLine = (l: string) => l.includes("  notes  here now: ") || l.includes("  notes  nobody here now");
-    await until(t, (l) => hereLine(l) && l.includes("Ana, working in travel/"));
-    await until(j, (l) => l.includes('"type":"presence"'));
-    const seen = t.length;
-    await s.call(ana.token, "DELETE", "/v1/workspaces/notes/presence");
-    await until(t, (l) => t.indexOf(l) >= seen && hereLine(l) && !l.includes("working in travel/"));
-    text.kill("SIGINT");
-    json.kill("SIGINT");
-    expect(await text.exited).toBe(0);
-    expect(await json.exited).toBe(0);
-    // --json: stdout is only events
-    expect(j.every((l) => JSON.parse(l).type)).toBe(true);
+    try {
+      const t = lines(text);
+      const j = lines(json);
+      await until(t, (l) => l.includes("connected;"));
+      await until(j, (l) => l.startsWith('{"type":"ready"'));
+      await s.call(ana.token, "POST", "/v1/workspaces/notes/changes", { baseCommit: null, message: "Live from a test", ops: [{ op: "put", path: "live.md", content: "now\n", baseHash: null }] });
+      await until(t, (l) => /notes {2}Ana: Live from a test \(1 file\)$/.test(l));
+      await until(j, (l) => l.includes('"type":"commit"'));
+      const commit = JSON.parse(j.find((l) => l.includes('"type":"commit"'))!);
+      expect(commit).toMatchObject({ type: "commit", workspace: "notes", message: "Live from a test", changes: [{ status: "put", path: "live.md" }] });
+      await s.call(ana.token, "PUT", "/v1/workspaces/notes/presence", { path: "travel/" });
+      // Others may be there from earlier tests: what counts is Ana's line
+      const hereLine = (l: string) => l.includes("  notes  here now: ") || l.includes("  notes  nobody here now");
+      await until(t, (l) => hereLine(l) && l.includes("Ana, working in travel/"));
+      await until(j, (l) => l.includes('"type":"presence"'));
+      const seen = t.length;
+      await s.call(ana.token, "DELETE", "/v1/workspaces/notes/presence");
+      await until(t, (l) => t.indexOf(l) >= seen && hereLine(l) && !l.includes("working in travel/"));
+      // What only says to read something again: your preferences, and the accounts people see
+      expect((await s.call(ana.token, "PUT", "/v1/me/preferences/filesView", { value: "tree" })).status).toBe(200);
+      await until(t, (l) => l.endsWith("your preferences changed: fontego preferences"));
+      await until(j, (l) => l.startsWith('{"type":"preferences"'));
+      const name = (await s.call(ana.token, "GET", "/v1/me")).data.user.name as string;
+      await s.call(ana.token, "PATCH", "/v1/me", { name: `${name} Live` });
+      await s.call(ana.token, "PATCH", "/v1/me", { name });
+      await s.call(ana.token, "DELETE", "/v1/me/preferences/filesView");
+      await until(t, (l) => l.endsWith("an account changed (someone new, a name, an email, a photo...): fontego people"));
+      await until(j, (l) => l.startsWith('{"type":"people"'));
+      text.kill("SIGINT");
+      json.kill("SIGINT");
+      expect(await text.exited).toBe(0);
+      expect(await json.exited).toBe(0);
+      // --json: stdout is only events
+      expect(j.every((l) => JSON.parse(l).type)).toBe(true);
+    } finally {
+      // A test that fails half way leaves nothing running: they would try to connect for ever
+      for (const p of [text, json]) if (p.exitCode === null) p.kill("SIGKILL");
+    }
   }, 30_000);
 
   test("events closed for having too many streams: it stops and says why, instead of pushing another out", async () => {

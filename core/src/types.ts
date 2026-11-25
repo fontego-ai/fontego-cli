@@ -790,8 +790,25 @@ export interface WorkspacesEvent {
   workspace: string | null;
 }
 
+/**
+ * Your own preferences changed (in another tab or browser, or with the CLI: a pin, grid or tree): read them again
+ * (GET /me/preferences). Only to your sessions, which are what reads them; it says nothing else.
+ */
+export interface PreferencesEvent {
+  type: "preferences";
+}
+
+/**
+ * An account people see changed: someone new or invited, a name, an email or a photo, a server admin made or no
+ * longer one, an account disabled, enabled or removed, a password set. Read GET /people (or the person) again if you
+ * show them; it says nothing else, so it goes to everyone.
+ */
+export interface PeopleEvent {
+  type: "people";
+}
+
 /** What GET /events sends after ready */
-export type LiveEvent = CommitEvent | PresenceEvent | WorkspacesEvent;
+export type LiveEvent = CommitEvent | PresenceEvent | WorkspacesEvent | PreferencesEvent | PeopleEvent;
 
 /**
  * The last event of a stream the server closes on purpose: this person opened more streams than they may keep, and
