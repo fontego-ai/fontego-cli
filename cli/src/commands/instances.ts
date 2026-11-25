@@ -1,4 +1,4 @@
-import { localDate, type Me, type TokenResponse, type TokenScope } from "@fontego/core";
+import { localDate, SessionName, type Me, type TokenResponse, type TokenScope } from "@fontego/core";
 import type { Credential as SavedCredential } from "../config.ts";
 import { AGENTS, installed } from "../agents.ts";
 import { UsageError, type UsageArg } from "../args.ts";
@@ -9,6 +9,7 @@ import {
   fromTokenResponse,
   hasBrowser,
   instanceLink,
+  machineName,
   openInBrowser,
   openPrivately,
   removeCredential,
@@ -121,6 +122,24 @@ function leftOpen(alias: string, open: StillOpen, previous = false) {
   return { alias, ...open, message };
 }
 
+/**
+ * A new sign-in replaces the session this machine had there, and when that one is still open the new one takes its
+ * name, whatever it was (given at sign-in, renamed in Your account or with fontego account sessions rename, or the
+ * computer's name then): it is the same machine. So the computer's name only names a machine's first session, and
+ * --name or a rename changes it. Asked with the new session, before the old one closes; nothing happens if it can't be.
+ */
+async function keepSessionName(url: string, now: Extract<SavedCredential, { type: "session" }>, previous: SavedCredential | null, sent: string): Promise<string | null> {
+  if (previous?.type !== "session") return null;
+  try {
+    const client = new Client(url, now.accessToken);
+    const old = (await client.mySessions()).sessions.find((x) => x.id === previous.sessionId);
+    if (!old || old.label === sent) return null;
+    return (await client.renameSession(now.sessionId, old.label)).label;
+  } catch {
+    return null;
+  }
+}
+
 async function signOut(instance: Instance, store: CredentialStore) {
   const open = await removeCredential(instance.url, store);
   forgetCommands(instance.url);
@@ -144,6 +163,12 @@ export const instanceCommands: Builtin[] = [
         description: "Sign in with a token instead, for scripts and CI; --token - reads it from stdin, out of ps and the shell's history (FONTEGO_TOKEN counts only when FONTEGO_URL is this Fontego)",
       },
       { name: "alias", type: "string", value: "ALIAS", description: "The short name to use for this Fontego (default: from its name); one this machine knows takes it as its new alias" },
+      {
+        name: "name",
+        type: "string",
+        value: "NAME",
+        description: "What this machine's session is called in Your account (default: the computer's name, or the name its last session there had)",
+      },
       { name: "allow-http", type: "boolean", description: "Accept a plain http:// address on another machine, remembered for it: passwords and tokens go unencrypted" },
     ],
     async run(rc) {
@@ -166,6 +191,11 @@ export const instanceCommands: Builtin[] = [
         const owner = instanceByAlias(wanted);
         if (owner && owner.url !== url) throw new UsageError(`"${wanted}" is already the alias of ${owner.url}.`);
       }
+      // The session's name, checked before anything opens too
+      const named = rc.parsed.flags.name as string | undefined;
+      const nameCheck = named === undefined ? null : SessionName.safeParse(named);
+      if (nameCheck && !nameCheck.success) throw new UsageError(`--name ${nameCheck.error.issues[0]?.message ?? "isn't a name"}.`);
+      const machine = nameCheck?.data ?? machineName();
       const info = await fetchInstance(url);
       // A Fontego this machine knows under another alias takes the one asked for, once signed in.
       const renamed = known && wanted && wanted !== known.alias ? { from: known.alias, to: wanted } : null;
@@ -175,9 +205,15 @@ export const instanceCommands: Builtin[] = [
 
       let cred: SavedCredential;
       let email: string;
+      /** What the session is called, for a sign-in through the browser or with a code */
+      let sessionName: string | null = null;
       let tokenCredential: Extract<Me["credential"], { type: "token" }> | null = null;
       const given = rc.parsed.flags.token as string | undefined;
       const token = given === "-" ? await readSecret("TOKEN", rc.json) : (given ?? envToken(url));
+      if (token && named !== undefined) {
+        const from = given === undefined ? "FONTEGO_TOKEN (with FONTEGO_URL)" : "--token";
+        throw new UsageError(`--name names this machine's session, and a token isn't one: sign in without ${from} to name it.`);
+      }
       if (token) {
         const me = await new Client(url, token).me();
         email = me.user.email;
@@ -186,6 +222,7 @@ export const instanceCommands: Builtin[] = [
       } else {
         const viaCode = () =>
           deviceLogin(url, {
+            machine,
             waiting: (d) =>
               say(
                 { status: "waiting", verification_uri: d.verification_uri, user_code: d.user_code, verification_uri_complete: d.verification_uri_complete },
@@ -197,6 +234,7 @@ export const instanceCommands: Builtin[] = [
         else {
           try {
             t = await browserLogin(url, {
+              machine,
               waiting: (link) => {
                 const opened = openInBrowser(link);
                 // Nothing here opens it (no browser program): its link would only work on this machine, so a code
@@ -213,8 +251,10 @@ export const instanceCommands: Builtin[] = [
             t = await viaCode();
           }
         }
-        cred = fromTokenResponse(t);
+        const session = fromTokenResponse(t);
+        cred = session;
         email = t.session.email;
+        sessionName = (named === undefined ? await keepSessionName(url, session, await store.get(url), machine) : null) ?? machine;
       }
 
       // Someone else than before: say so. It may be what the person wanted, or another user of this machine who got
@@ -244,11 +284,12 @@ export const instanceCommands: Builtin[] = [
         stillOpen,
         accountChanged,
         renamed,
+        ...(sessionName !== null ? { sessionName } : {}),
       };
       if (rc.json) return console.log(JSON.stringify(result));
       console.log(
         cred.type === "session"
-          ? `Signed in to ${info.name} (${alias}) as ${email}. The session ends on ${when(cred.expiresAt)} unless you use it before.`
+          ? `Signed in to ${info.name} (${alias}) as ${email}, on "${sessionName}". The session ends on ${when(cred.expiresAt)} unless you use it before.`
           : `Signed in to ${info.name} (${alias}) as ${email}, with a token${tokenCredential ? `: it ${reach(tokenCredential.scope)} until ${when(tokenCredential.expiresAt)}` : ""}.`,
       );
       if (renamed) console.log(`${renamed.from} is now ${renamed.to}.`);

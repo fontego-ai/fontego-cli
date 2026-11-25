@@ -258,6 +258,55 @@ describe("signing in through the browser", () => {
     expect(JSON.parse((await fontego(["sessions", "--json"])).out).instances[0].email).toBe("ana@example.org");
   });
 
+  test("a machine's session takes the name given at sign-in, can be renamed, and keeps its name when it signs in again", async () => {
+    /** Signs in through the browser with these arguments, approving what the link asks; the first and last lines */
+    const signIn = async (args: string[], extra: Record<string, string> = {}) => {
+      const { first, finish } = await startWaiting(["login", "fontego", ...args, "--json"], extra);
+      const q = Object.fromEntries(new URL(first.url).searchParams);
+      const approved = await fetch(`${s.url}/v1/oauth/authorize`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ ...q, approve: true }) });
+      await fetch(((await approved.json()) as any).redirect);
+      return { asked: q.machine, last: (await finish()).last };
+    };
+    const current = async () => (JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions as any[]).find((x) => x.current);
+
+    // Named at sign-in: the browser is asked to connect that name
+    const named = await signIn(["--name", "Ana's laptop"]);
+    expect([named.asked, named.last.sessionName]).toEqual(["Ana's laptop", "Ana's laptop"]);
+    const first = await current();
+    expect(first).toMatchObject({ kind: "cli", label: "Ana's laptop" });
+
+    const renamed = await fontego(["account", "sessions", "rename", String(first.id), "Work laptop"]);
+    expect([renamed.code, renamed.out]).toEqual([0, `Session ${first.id} is now "Work laptop".\n`]);
+
+    // Signing in again (its session ended, say) is a new session, named as the one it replaces, which closes
+    const again = await signIn([]);
+    expect([again.asked, again.last.sessionName]).toEqual([hostname().split(".")[0], "Work laptop"]);
+    const second = await current();
+    expect([second.label, second.id === first.id]).toEqual(["Work laptop", false]);
+    expect((JSON.parse((await fontego(["account", "sessions", "--json"])).out).sessions as any[]).some((x) => x.id === first.id)).toBe(false);
+    // --name says otherwise
+    expect((await signIn(["--name", "Desk"])).last.sessionName).toBe("Desk");
+
+    // With a code (no browser here) too
+    const { first: code, finish } = await startWaiting(["login", "fontego", "--device", "--name", "Agent VPS", "--json"]);
+    expect(((await (await fetch(`${s.url}/v1/oauth/device/${code.user_code}`, { headers: browser(cookie) })).json()) as any).machine).toBe("Agent VPS");
+    await fetch(`${s.url}/v1/oauth/device/${code.user_code}`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ approve: true }) });
+    expect((await finish()).last.sessionName).toBe("Agent VPS");
+    expect((await current()).label).toBe("Agent VPS");
+
+    // A token isn't a session: nothing to name; and when it comes from the environment, the error says so
+    const withToken = await fontego(["login", "fontego", "--token", s.token("ana@example.org"), "--name", "CI"]);
+    expect([withToken.code, withToken.err]).toEqual([1, expect.stringContaining("a token isn't one: sign in without --token")]);
+    const fromEnv = await fontego(["login", s.url, "--name", "CI"], { env: { FONTEGO_URL: s.url, FONTEGO_TOKEN: s.token("ana@example.org") } });
+    expect([fromEnv.code, fromEnv.err]).toEqual([1, expect.stringContaining("sign in without FONTEGO_TOKEN (with FONTEGO_URL)")]);
+    // A name that can't be one is refused before anything opens
+    for (const [name, says] of [["   ", "can't be empty"], ["two\nlines", "one line"], ["x".repeat(81), "80 characters"]]) {
+      const bad = await fontego(["login", "fontego", "--name", name!]);
+      expect([bad.code, bad.err]).toEqual([1, expect.stringContaining(says!)]);
+      expect(bad.err).not.toContain("Waiting");
+    }
+  }, 30_000);
+
   test("signing out closes the session on the server too", async () => {
     const access = credentials()[s.url].accessToken;
     expect((await fontego(["logout"])).out).toContain("Signed out of fontego");

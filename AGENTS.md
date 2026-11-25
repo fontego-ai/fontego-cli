@@ -56,13 +56,16 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
   `fontego-token-expires` header, and one that ended isn't renewed: the server's hint comes through) (`--token -` reads
   it from stdin, out of `ps` and the shell's history; `FONTEGO_TOKEN` counts for login only when `FONTEGO_URL` is that
   same Fontego; a token's end is saved with it, for `fontego sessions`). `--alias` names a Fontego, or renames one this
-  machine knows. `config.json` lists the instances under short aliases and holds no secrets; credentials go to the
-  system keychain (`Bun.secrets`), or to `credentials.json` (0600, in a 0700 folder, written under a random name) where
-  there is none. Each command goes to `--instance`, `FONTEGO_INSTANCE`, the synced folder's instance, or the default
-  (`connect.ts`). Sessions renew by themselves under a lock: two processes swapping the same refresh token would make
-  the server close the session. The lock is never taken from a process that still runs, and login and logout swap the
-  credential under it too. Signing in as another account than before says so (`accountChanged`), and signing out says
-  what stays open on the server (`stillOpen`: a token, or a session the server didn't close).
+  machine knows; `--name` names this machine's session (checked against core's `SessionName` before anything opens), and
+  a new sign-in takes the name of the session it replaces while that one is still open, so the computer's name only
+  names a machine's first session. `config.json` lists the instances under short aliases and holds no secrets;
+  credentials go to the system keychain (`Bun.secrets`), or to `credentials.json` (0600, in a 0700 folder, written under
+  a random name) where there is none. Each command goes to `--instance`, `FONTEGO_INSTANCE`, the synced folder's
+  instance, or the default (`connect.ts`). Sessions renew by themselves under a lock: two processes swapping the same
+  refresh token would make the server close the session. The lock is never taken from a process that still runs, and
+  login and logout swap the credential under it too. Signing in as another account than before says so
+  (`accountChanged`), and signing out says what stays open on the server (`stillOpen`: a token, or a session the server
+  didn't close).
 - **Credentials go only where the person said.** An instance's address is https, or plain http only to this machine
   (loopback) unless accepted: `fontego login --allow-http`, remembered for that instance, or `FONTEGO_ALLOW_HTTP=1`
   for `FONTEGO_URL`; never with a user name, query or fragment (`instanceUrl`, `config.ts`). No redirect is followed
@@ -124,7 +127,7 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 
 | Path | What |
 |---|---|
-| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), what a person's photo may be (`photo.ts`, without Zod, so the web app can read it), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), the closed list of icons a workspace can have, named by what they show, with the themes each suits (`icons.ts`), how a workspace's tags are written (`tags.ts`: `normalizeTag`, with no dependencies so the web app uses it too; `TagList` in `schemas.ts` wraps it), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; a table or lines may print a list under each row, such as a commit's files, with how many more the API cut (`details`), lines after them all that are left out when empty, such as the next page's cursor (`footer`), and columns left out when nobody filled them (`optional`); `outputTemplates` finds every template in one; an argument's `choices`, the list a person picks it from, checked by `checkChoices`) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the rules of a token's life (`tokens.ts`, with no dependencies, so the web app takes them too), how a date is written for a person (`dates.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
+| `core/` | `@fontego/core`: request schemas in Zod (`schemas.ts`), answer types (`types.ts`), what a person's photo may be (`photo.ts`, without Zod, so the web app can read it), the closed list of each person's preferences with their schemas and defaults (`preferences.ts`), the closed list of icons a workspace can have, named by what they show, with the themes each suits (`icons.ts`), how a workspace's tags are written (`tags.ts`: `normalizeTag`, with no dependencies so the web app uses it too; `TagList` in `schemas.ts` wraps it), what a declared command looks like (`commands.ts`: a table, lines, a record that may end in a list, a message or raw bytes; a table or lines may print a list under each row, such as a commit's files, with how many more the API cut (`details`), lines after them all that are left out when empty, such as the next page's cursor (`footer`), and columns left out when nobody filled them (`optional`); `outputTemplates` finds every template in one; an argument's `choices`, the list a person picks it from, checked by `checkChoices`) and its output templates (`template.ts`), path rules and the path patterns workspaces protect or reject (`paths.ts`), the rules of a token's life (`tokens.ts`, with no dependencies, so the web app takes them too), the longest name a session takes (`sessions.ts`, the same), how a date is written for a person (`dates.ts`), the ignore rules (`ignore.ts`, which read their files through a function) and the Git blob hash (`hash.ts`). It also re-exports `z`, so everyone shares one copy of Zod. `fontego-app` uses it through its `core` link |
 | `cli/src/main.ts` | Reads the command line and runs a built-in or a declared command |
 | `cli/src/output.ts` | What fontego promises the program that runs it: when it may ask (`canAsk`, and `whyNotAsked`), how an error comes out (`failureOf`, `printFailure`) and the exit codes (`EXIT`, `exitOf`: 5 not allowed, 6 the server can't be reached, 7 a sync that left something new undone) |
 | `cli/src/table.ts` | Tables as wide as they need, or fitted to the terminal (none through a pipe) |

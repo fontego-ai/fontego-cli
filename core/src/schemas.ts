@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { normalizeTags } from "./tags.ts";
 import { MAX_TOKEN_WORKSPACES, TOKEN_MAX_DAYS } from "./tokens.ts";
+import { MAX_SESSION_NAME } from "./sessions.ts";
 
 export const ROLES = ["reader", "editor", "admin"] as const;
 export const RoleSchema = z.enum(ROLES);
@@ -228,6 +229,20 @@ export const MailTestBody = z.object({ to: Email });
 
 /** A new value for one of your preferences: its type in JSON, or text (a list as names split on commas). */
 export const PreferenceValueBody = z.object({ value: z.union([z.string(), z.array(z.string())], "a value is required") });
+
+// --- Your sessions ---
+
+/** The name of a session: one line, never empty, as it is given at sign-in (fontego login --name) or later. */
+export const SessionName = z
+  .string()
+  .trim()
+  .min(1, "can't be empty")
+  .max(MAX_SESSION_NAME, `use at most ${MAX_SESSION_NAME} characters`)
+  .refine((s) => !CONTROL_TEXT.test(s) && !/[\t\r\n]/.test(s), "must be one line, without control characters");
+
+/** Another name for one of your sessions (PATCH /me/sessions/{id}), so two machines named alike can be told apart. */
+export const RenameSessionBody = z.object({ label: SessionName });
+export type RenameSessionRequest = z.input<typeof RenameSessionBody>;
 
 // --- OAuth, for the CLI to sign in through the browser. Field names are the standard's (RFC 6749, 7636, 8628). ---
 

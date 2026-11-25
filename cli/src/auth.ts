@@ -206,6 +206,7 @@ export async function fetchInstance(url: string): Promise<InstanceInfo> {
   return info;
 }
 
+/** What a machine's session is called when nobody names it (fontego login --name): the computer's name. */
 export const machineName = () => hostname().split(".")[0] || "a computer";
 
 /**
@@ -382,9 +383,10 @@ const PAGE = (title: string, text: string) =>
 
 /**
  * The browser way: opens the instance's page, waits on 127.0.0.1 for the browser to come back with a code, and swaps
- * it for a session. `waiting` is told the link, for whoever has to open it.
+ * it for a session. `waiting` is told the link, for whoever has to open it. `machine`: the name the new session goes
+ * by (machineName() unless given), which the page that approves it shows.
  */
-export async function browserLogin(url: string, opts: { waiting: (link: string) => void; timeoutMs?: number }): Promise<TokenResponse> {
+export async function browserLogin(url: string, opts: { waiting: (link: string) => void; timeoutMs?: number; machine?: string }): Promise<TokenResponse> {
   const base = normalizeUrl(url);
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -408,7 +410,7 @@ export async function browserLogin(url: string, opts: { waiting: (link: string) 
   const redirectUri = `http://127.0.0.1:${server.port}/callback`;
   const link =
     `${base}/oauth/authorize?` +
-    new URLSearchParams({ response_type: "code", client_id: CLIENT_ID, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state, machine: machineName() });
+    new URLSearchParams({ response_type: "code", client_id: CLIENT_ID, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state, machine: opts.machine ?? machineName() });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     opts.waiting(link);
@@ -424,12 +426,12 @@ export async function browserLogin(url: string, opts: { waiting: (link: string) 
 }
 
 /** The device way: a code to type in a browser anywhere, and asking until it is approved. */
-export async function deviceLogin(url: string, opts: { waiting: (d: DeviceAuthorization) => void }): Promise<TokenResponse> {
+export async function deviceLogin(url: string, opts: { waiting: (d: DeviceAuthorization) => void; machine?: string }): Promise<TokenResponse> {
   const base = normalizeUrl(url);
   const res = await fetch(`${base}/v1/oauth/device`, {
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": USER_AGENT },
-    body: JSON.stringify({ client_id: CLIENT_ID, machine: machineName() }),
+    body: JSON.stringify({ client_id: CLIENT_ID, machine: opts.machine ?? machineName() }),
     redirect: "manual",
   });
   refuseRedirect(res, url);
