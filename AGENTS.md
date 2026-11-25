@@ -8,16 +8,16 @@ and scripts explore workspaces and keep a local folder in sync. The server and t
 
 ## Principles
 
-- **Everything goes through the API** (`/v1`). Every command accepts `--json`, and errors say what to do (`hint`). With
-  `--json` nothing is ever asked, help and errors are JSON too, and the exit codes mean the same everywhere
-  (`cli/src/output.ts`, written also in the agents' guide, `AGENT_INTRO` in `help.ts`: change both together). An error
-  answer's code comes from its status (`exitOf`), except a 422 that names a file (the server refusing it) and an
+- **Everything goes through the API** (`/v1`). Every command accepts `--json`, and errors say what to do (`hint`).
+  With `--json` nothing is ever asked, help and errors are JSON too, and the exit codes mean the same everywhere
+  (`cli/src/output.ts`, written also in the agents' guide, `AGENT_INTRO` in `help.ts`: change both together). An
+  error answer's code comes from its status (`exitOf`), except a 422 that names a file (the server refusing it) and an
   archived workspace, both 5 (not allowed); 502, 503 and 504 are 6 (try again later). A sync leaves with 7 only for
   something new left undone: a file refused again as it was is set aside as before (`setAside`), and doesn't count.
-- **What a person reads is one way everywhere.** Dates and times are in the time zone of the machine that prints them,
-  written the same way in every language (`core/src/dates.ts`: 2026-11-22, 2026-11-22 17:55, 17:55:12), used by the
-  templates' `date` and `datetime` and by the built-in commands; `--json` keeps the API's ISO 8601 in UTC. Tables fit
-  the terminal they are printed on, wrapping their widest columns in place, and never wrap through a pipe
+- **What a person reads is one way everywhere.** Dates and times are in the time zone of the machine that prints
+  them, written the same way in every language (`core/src/dates.ts`: 2026-11-22, 2026-11-22 17:55, 17:55:12), used by
+  the templates' `date` and `datetime` and by the built-in commands; `--json` keeps the API's ISO 8601 in UTC. Tables
+  fit the terminal they are printed on, wrapping their widest columns in place, and never wrap through a pipe
   (`cli/src/table.ts`). Colour only marks a failure's `error:` (or `usage:`) on a terminal that shows it, never with
   `NO_COLOR` or `TERM=dumb` (`colorful` in `terminal.ts`): notices on stderr are plain, since Bun would paint every
   `console.error` red.
@@ -194,12 +194,18 @@ bun run build            # dist/release (executables, SHA256SUMS, install.sh) an
 bun run build --only linux-x64 --out /tmp/fontego-dist
 ```
 
-- **Releasing** isn't automated yet, and nothing is published until the repos are public. A release is: bump
-  `cli/package.json`, `bun run build`, upload `dist/release/*` to a GitHub release `vX.Y.Z`, then `npm publish` each
-  folder of `dist/npm` (the `@fontego/cli-*` ones first, `fontego` last, with `--access public`). macOS: Bun signs
-  the arm64 executable ad hoc, as an arm64 Mac requires; the x64 one would keep the Bun runtime's own signature, which
-  no longer matches the file (a Mac kills such a program), so the build takes it out (`scripts/macho.ts`): an Intel Mac
-  or Rosetta runs it unsigned. Neither is notarized, which takes a Mac and Apple's tools.
+- **Releasing** isn't automated yet. A release is: bump `cli/package.json` and get it into `main` in the organization,
+  by a pull request from a branch `release/X.Y.Z` there, its commits grouped by subject and merged with a merge commit;
+  from that `main`, `bun run build --out` a temporary folder; `gh release create vX.Y.Z --target main` with every file
+  of its `release/` (the five executables, `SHA256SUMS` and `install.sh`), which also makes the tag that publishes the
+  container image (below); then `npm publish --access public` from each folder of its `npm/`, the five `@fontego/cli-*`
+  first and `fontego` last, so it never names a package that isn't there yet (each publish takes the maintainer's
+  two-factor approval, which waits about five minutes; a new version is staged for a few minutes before `npm view` shows
+  it, and publishing it again then fails with 409). 0.1.0 went out so on 2026-11-22; `fontego@0.0.0`, which only held
+  the name, is deprecated. `https://fontego.ai/install.sh` redirects to the latest release's `install.sh`. macOS: Bun
+  signs the arm64 executable ad hoc, as an arm64 Mac requires; the x64 one would keep the Bun runtime's own signature,
+  which no longer matches the file (a Mac kills such a program), so the build takes it out (`scripts/macho.ts`): an
+  Intel Mac or Rosetta runs it unsigned. Neither is notarized, which takes a Mac and Apple's tools.
 - **The container image** (`Dockerfile`): the same executable as a release (`scripts/build.ts`), on Debian slim with
   a shell for CI systems, as the user `fontego` (1000) in `/work`, with `FONTEGO_CREDENTIAL_STORE=file`. Bun
   cross-compiles and the last stage only copies files, so building it for another architecture needs no emulation.
