@@ -285,7 +285,10 @@ const Opt = z.string().optional();
 export const WorkspacesQuery = z.object({ category: Opt, tag: TagList.optional() });
 /** last=1: each entry's last change (TreeEntry.last) */
 export const TreeQuery = z.object({ path: Opt, rev: Opt, recursive: Flag, last: Flag });
-export const FileQuery = z.object({ rev: Opt, meta: Flag, download: Flag });
+/** Some lines of a text file, counted from 1: "120-200", "120-" (to the end) or "120" (that one) */
+export const LineRange = z.string().regex(/^[1-9][0-9]{0,9}(-([1-9][0-9]{0,9})?)?$/, "lines go like 120-200, 120- (to the end) or 120");
+/** lines: only those lines of a text file (the answer says which in x-lines, and how many it has in x-total-lines) */
+export const FileQuery = z.object({ rev: Opt, meta: Flag, download: Flag, lines: LineRange.optional() });
 /** files=1: each commit's files (Commit.files) */
 export const HistoryQuery = z.object({ path: Opt, rev: Opt, limit: Opt, files: Flag });
 

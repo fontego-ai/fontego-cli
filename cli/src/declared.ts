@@ -3,19 +3,20 @@
 // answer with the description's templates.
 
 import {
+  buildRequest as requestOf,
   checkChoices,
   checkTemplate,
+  CommandInputError,
+  isUnset,
   outputTemplates,
   textContent,
   pathParams,
+  renderOutput,
   renderTemplate,
-  splitTarget,
+  rowsOf,
   templateVars,
   type CommandArg,
-  type CommandColumn,
-  type CommandDetails,
   type CommandFlag,
-  type CommandOutput,
   type CommandSpec,
   type CommandsManifest,
   type TemplateVars,
@@ -27,7 +28,7 @@ import { UsageError, usageLine, type Parsed } from "./args.ts";
 import type { ChoicesSource } from "./ask.ts";
 import type { Client } from "./client.ts";
 import { readSecret, readStdin, readStdinBytes, sizeText } from "./prompt.ts";
-import { formatTable, terminalWidth } from "./table.ts";
+import { terminalWidth } from "./table.ts";
 import { forPerson, unsafeForTerminal } from "./terminal.ts";
 
 // --- The cache: one file per server ---
@@ -125,9 +126,6 @@ const FLAG_NAME = /^[a-z][a-z0-9-]*$/;
 const UNSET_WORD = /^[a-z][a-z0-9-]{0,19}$/;
 /** The most a declared command may send of one file, whatever the server says */
 const MAX_FILE_FLAG = 64 * 1024 * 1024;
-/** Whether a flag's value is its word for null, in any capitals: --photo none, --photo NONE */
-const isUnset = (f: CommandFlag, v: unknown) =>
-  f.unset !== undefined && typeof v === "string" && v.toLowerCase() === f.unset;
 const COMMAND_NAME = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$/;
 /** What a command says about itself is shown in help: one line each, so it can't pose as more lines of it */
 const ONE_LINE = /^[^\u0000-\u001f\u007f-\u009f]*$/;
@@ -192,57 +190,24 @@ export function checkCommand(spec: CommandSpec, builtins: Iterable<string>): str
 
 // --- Running one ---
 
-/** A value for {PARAM}, or {+PARAM} (a path, which keeps its slashes). An empty, "." or ".." part is refused: the URL
- * would resolve it, and the command would reach another route (`rm WS ../members/ana@…`). */
-function encodeParam(name: string, value: string, spans: boolean): string {
-  const parts = spans ? value.split("/") : [value];
-  if (parts.some((p) => p === "" || p === "." || p === "..")) {
-    throw new UsageError(`${name} can't be empty or have an empty, "." or ".." part: "${value}"`);
-  }
-  return parts.map(encodeURIComponent).join("/");
-}
+export { renderOutput };
 
-/** The request a command makes with these arguments and flags; `files` holds what file flags read (readFileFlags). */
-export function buildRequest(
-  spec: CommandSpec,
-  parsed: Parsed,
-  files: Record<string, unknown> = {},
-): { method: string; path: string; query: URLSearchParams; body?: unknown } {
-  const pathValues: Record<string, string> = {};
-  const query = new URLSearchParams();
-  const body: Record<string, unknown> = {};
-  let hasBody = false;
-
-  const put = (to: string, value: string | number | boolean, set?: string | number | boolean) => {
-    const { where, key } = splitTarget(to as never);
-    if (where === "path") pathValues[key] = String(value);
-    else if (where === "query") query.set(key, value === true ? String(set ?? "1") : String(value));
-    else body[key] = value === true && set !== undefined ? set : value;
-  };
-
-  for (const a of spec.args ?? []) {
-    if (a.to.startsWith("body.")) hasBody = true;
-    const v = parsed.args[a.name];
-    if (v !== undefined) put(a.to, v);
-  }
+/**
+ * The request a command makes with these arguments and flags (core's buildRequest, which the server's MCP uses too);
+ * `files` holds what file flags read (readFileFlags), and a file flag given here always goes as what was read from
+ * its file, never as the name typed. What can't go in is a usage error.
+ */
+export function buildRequest(spec: CommandSpec, parsed: Parsed, files: Record<string, unknown> = {}) {
   for (const f of spec.flags ?? []) {
-    if (f.to.startsWith("body.")) hasBody = true;
-    const v = parsed.flags[f.name] ?? f.default;
-    if (v === undefined) continue;
-    if (isUnset(f, v)) body[splitTarget(f.to).key] = null;
-    else if (f.file) {
-      const content = files[f.name];
-      if (content === undefined) throw new Error(`--${f.name}: the file wasn't read`);
-      body[splitTarget(f.to).key] = content;
-    } else put(f.to, v, f.set);
+    const v = parsed.flags[f.name];
+    if (f.file && v !== undefined && !isUnset(f, v) && !(f.name in files)) throw new Error(`--${f.name}: the file wasn't read`);
   }
-
-  const path = spec.request.path.replace(/\{(\+?)([A-Za-z0-9_]+)\}/g, (_, plus: string, key: string) => {
-    const v = pathValues[key];
-    if (v === undefined) throw new UsageError(usageLine(spec));
-    return encodeParam(spec.args?.find((a) => a.to === `path.${key}`)?.name ?? key, v, plus === "+");
-  });
-  return { method: spec.request.method, path, query, ...(hasBody ? { body } : {}) };
+  try {
+    return requestOf(spec, parsed, files);
+  } catch (e) {
+    if (e instanceof CommandInputError) throw new UsageError(e.missing ? usageLine(spec) : e.message);
+    throw e;
+  }
 }
 
 /**
@@ -268,74 +233,6 @@ export function choicesSource(arg: CommandArg, args: Record<string, string>, cli
       });
     },
   };
-}
-
-function rowsOf(data: unknown, field: string | undefined): unknown[] {
-  const v = field ? (data as Record<string, unknown> | null)?.[field] : data;
-  return Array.isArray(v) ? v : [];
-}
-
-/** The lines under one row: one per item of its list, then how many more there are when the list was cut. */
-function detailLines(details: CommandDetails | undefined, row: unknown, vars: TemplateVars): string[] {
-  if (!details) return [];
-  const items = rowsOf(row, details.rows);
-  const lines = items.map((item) => `  ${renderTemplate(details.line, item, vars)}`);
-  const total = details.total !== undefined ? Number((row as Record<string, unknown> | null)?.[details.total]) : NaN;
-  if (Number.isFinite(total) && total > items.length) lines.push(`  … ${total - items.length} more`);
-  return lines;
-}
-
-function table(rows: unknown[], all: CommandColumn[], details: CommandDetails | undefined, vars: TemplateVars, width: number | undefined): string {
-  const rendered = rows.map((r) => all.map((c) => renderTemplate(c.value, r, vars)));
-  // An optional column nobody filled is left out.
-  const keep = all.map((c, i) => !c.optional || rendered.some((row) => row[i] !== ""));
-  const header = all.filter((_, i) => keep[i]).map((c) => c.header);
-  const cells = rendered.map((row) => row.filter((_, i) => keep[i]));
-  return formatTable(header, cells, { width, under: (i) => detailLines(details, rows[i], vars) });
-}
-
-/** A record line (or a footer) is left out when every field in it came out empty. */
-function recordLine(template: string, data: unknown, vars: TemplateVars): string | null {
-  const fields = template.match(/\{[^{}]*\}/g) ?? [];
-  if (fields.length && fields.every((f) => renderTemplate(f, data, vars) === "")) return null;
-  return renderTemplate(template, data, vars);
-}
-
-const withFooter = (text: string, footer: string[] | undefined, data: unknown, vars: TemplateVars) => {
-  const lines = (footer ?? []).map((f) => recordLine(f, data, vars)).filter((l): l is string => l !== null);
-  return lines.length ? `${text}\n\n${lines.join("\n")}` : text;
-};
-
-/**
- * Text for a person; with --json the answer is printed as the API sent it. `width`: the terminal's, which a table fits
- * in (table.ts); none for a pipe or a file.
- */
-export function renderOutput(output: CommandOutput, data: unknown, vars: TemplateVars, width?: number): string {
-  switch (output.kind) {
-    case "table": {
-      const rows = rowsOf(data, output.rows);
-      return withFooter(rows.length ? table(rows, output.columns, output.details, vars, width) : (output.empty ?? "(none)"), output.footer, data, vars);
-    }
-    case "lines": {
-      const rows = rowsOf(data, output.rows);
-      const text = rows.length
-        ? rows.flatMap((r) => [renderTemplate(output.line, r, vars), ...detailLines(output.details, r, vars)]).join("\n")
-        : (output.empty ?? "(none)");
-      return withFooter(text, output.footer, data, vars);
-    }
-    case "record": {
-      const lines = output.lines.map((l) => recordLine(l, data, vars)).filter((l): l is string => l !== null);
-      const items = output.list ? rowsOf(data, output.list.rows) : [];
-      if (output.list && items.length) {
-        lines.push("", renderTemplate(output.list.title, data, vars), ...items.map((r) => `  ${renderTemplate(output.list!.line, r, vars)}`.trimEnd()));
-      }
-      return lines.join("\n");
-    }
-    case "message":
-      return renderTemplate(output.text, data, vars);
-    case "raw":
-      return typeof data === "string" ? data : JSON.stringify(data, null, 2);
-  }
 }
 
 /**

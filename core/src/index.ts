@@ -10,6 +10,9 @@ export * from "./types.ts";
 export * from "./hash.ts";
 export * from "./commands.ts";
 export * from "./template.ts";
+export * from "./table.ts";
+export * from "./render.ts";
+export * from "./request.ts";
 export * from "./dates.ts";
 export * from "./ignore.ts";
 

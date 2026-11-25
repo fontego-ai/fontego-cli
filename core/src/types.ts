@@ -259,6 +259,8 @@ export interface AccessEntry {
   /** How they signed in: "cli joel-laptop", "web Firefox on Linux", "token CI of the website" */
   credential: string | null;
   agent: string | null;
+  /** The client it came through: "fontego" (the CLI), "web", "mcp" or "api"; null for calls logged before 2026-11-23 */
+  client: string | null;
   method: string;
   route: string;
   workspace: string | null;
