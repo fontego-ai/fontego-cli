@@ -2,11 +2,9 @@
 // /v1/events): commits, who is in each workspace when that changes, and changes in the workspaces you see. It
 // connects again by itself when the line drops; a script or an agent can wait on it for the next change.
 
-import type { ClosedEvent, CommitEvent, PresenceEntry, PresenceEvent, ReadyEvent, WorkspacesEvent } from "@fontego/core";
+import { localTime, type ClosedEvent, type CommitEvent, type PresenceEntry, type PresenceEvent, type ReadyEvent, type WorkspacesEvent } from "@fontego/core";
 import { ClientError } from "../client.ts";
 import type { Builtin } from "./command.ts";
-
-const time = () => new Date().toLocaleTimeString();
 
 const who = (e: { user: { name: string; email: string }; agent: string | null }) => {
   const name = e.user.name || e.user.email;
@@ -62,7 +60,7 @@ export const liveCommands: Builtin[] = [
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
       // With --json, stdout carries only events, one JSON object per line; what fontego itself says goes to stderr.
-      const say = (line: string) => (rc.json ? console.error(line) : console.log(`${time()}  ${line}`));
+      const say = (line: string) => (rc.json ? console.error(line) : console.log(`${localTime()}  ${line}`));
       if (!rc.json) say(`listening on ${conn.label}; Ctrl+C to stop`);
       let backoff = 1000;
       for (;;) {

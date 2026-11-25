@@ -1,4 +1,4 @@
-import type { Me, TokenResponse, TokenScope } from "@fontego/core";
+import { localDate, type Me, type TokenResponse, type TokenScope } from "@fontego/core";
 import type { Credential as SavedCredential } from "../config.ts";
 import { AGENTS, installed } from "../agents.ts";
 import { UsageError, type UsageArg } from "../args.ts";
@@ -44,7 +44,7 @@ import type { Builtin, RunContext } from "./command.ts";
 import { skillInstalled } from "./setup.ts";
 
 const DAY = 86_400_000;
-const when = (iso: string) => new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+const when = localDate;
 
 /** The browser can't be opened here: sign in with a code instead. */
 class NoBrowserHere extends Error {}

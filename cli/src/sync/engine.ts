@@ -7,7 +7,7 @@
 //
 // A real conflict keeps both: the server's version stays in place and ours is saved next to it as a conflict copy.
 
-import { blobHash, MAX_OPS, roleAtLeast, symlinkProblem, textContent, type ChangeOp, type Conflict, type FileMode, type Role } from "@fontego/core";
+import { blobHash, localDateTime, MAX_OPS, roleAtLeast, symlinkProblem, textContent, type ChangeOp, type Conflict, type FileMode, type Role } from "@fontego/core";
 import { hostname } from "node:os";
 import { Client, ClientError } from "../client.ts";
 import { loadIgnoreRules } from "./ignore.ts";
@@ -78,7 +78,7 @@ export function whatItTakes(k: Skipped): string {
   if (!d) return "";
   if (d.blocker) return `It comes down once ${d.blocker.path} is no longer a ${d.blocker.is} here.`;
   if (d.never) return "It stays on the server, and comes down only once it changes there (renamed, say).";
-  return `It is tried again${k.retryAt ? ` after ${new Date(k.retryAt).toLocaleString()}` : ""}.`;
+  return `It is tried again${k.retryAt ? ` after ${localDateTime(k.retryAt)}` : ""}.`;
 }
 
 /** Why one path failed, in words: our own errors say it; a file system's has its code. */

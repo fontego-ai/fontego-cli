@@ -68,6 +68,16 @@ describe("fontego CLI", () => {
     expect(statSync(out.config).mode & 0o777).toBe(0o600);
   });
 
+  test("dates come in this machine's time zone and in one form, whatever its language; --json keeps the API's", async () => {
+    const madrid = { TZ: "Europe/Madrid", LANG: "es_ES.UTF-8", LC_ALL: "es_ES.UTF-8" };
+    const ends = JSON.parse((await fontego(["whoami", "--json"], madrid)).out).credential.expiresAt as string;
+    expect(ends).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/);
+    const local = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Madrid", dateStyle: "short", timeStyle: "short" }).format(new Date(ends));
+    const text = (await fontego(["whoami"], madrid)).out;
+    expect(text).toContain(`ends ${local} (in `);
+    expect(text).not.toMatch(/UTC|AM|PM|[A-Z][a-z]{2} \d/);
+  });
+
   test("explores with --json", async () => {
     const list = JSON.parse((await fontego(["workspaces", "--json"])).out);
     expect(list.workspaces.map((w: any) => [w.slug, w.role, w.category])).toEqual([["notes", "editor", "personal"]]);
@@ -292,7 +302,7 @@ describe("commands the server declares", () => {
     expect((await fontego(["workspace", "edit", "shared", "--description", "For everyone"], env)).out).toContain("Updated shared.");
     const made = await fontego(["admin", "tokens", "create", "bea@example.org", "Bea's CI", "--workspaces", "shared"], env);
     expect(made.out).toContain(`"Bea's CI" for bea@example.org. It shows only this once: copy it now.`);
-    expect(made.out).toMatch(/Workspaces: shared · access: read · ends \d{4}-\d\d-\d\d \d\d:\d\d UTC \(in 90 days\)/);
+    expect(made.out).toMatch(/Workspaces: shared · access: read · ends \d{4}-\d\d-\d\d \d\d:\d\d \(in 90 days\)/);
     const token = /^ {2}(fontego_pat_\S+)$/m.exec(made.out)![1]!;
     const bea = await fontego(["whoami", "--json"], { FONTEGO_URL: s.url, FONTEGO_TOKEN: token });
     expect(JSON.parse(bea.out).credential).toMatchObject({ type: "token", label: "Bea's CI", scope: { workspaces: ["shared"], access: "read" } });

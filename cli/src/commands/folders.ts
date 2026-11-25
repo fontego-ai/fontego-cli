@@ -1,3 +1,4 @@
+import { localDateTime, localTime } from "@fontego/core";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
@@ -167,7 +168,7 @@ export const folderCommands: Builtin[] = [
           ...Object.entries(st.skipped).map(([p, s]) =>
             s.down
               ? `skipped   ${p}: ${s.reason} ${whatItTakes(s)}`
-              : `skipped   ${p}: ${s.reason}${s.retryAt ? ` (sent again after ${new Date(s.retryAt).toLocaleString()}, or once it changes)` : ""}`,
+              : `skipped   ${p}: ${s.reason}${s.retryAt ? ` (sent again after ${localDateTime(s.retryAt)}, or once it changes)` : ""}`,
           ),
           ...(rc.parsed.flags.ignored ? st.ignored.map((p) => `ignored   ${p}`) : []),
         ];
@@ -240,7 +241,7 @@ export const folderCommands: Builtin[] = [
     async run(rc) {
       const { root, state, engine, client, conn, release } = await lockedFolder(rc, rc.parsed.args.DIR, "fontego watch");
       const log = (line: string) =>
-        rc.json ? console.log(JSON.stringify({ at: new Date().toISOString(), message: line })) : console.log(`${new Date().toLocaleTimeString()}  ${line}`);
+        rc.json ? console.log(JSON.stringify({ at: new Date().toISOString(), message: line })) : console.log(`${localTime()}  ${line}`);
       let lastError = "";
       const watcher = new Watcher(engine, client, {
         onReport: (r) => {
