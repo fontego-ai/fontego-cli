@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { signInPage } from "../src/auth.ts";
 import { Client } from "../src/client.ts";
 import { startTestServer, tempDir, type TestServer } from "./server.ts";
 
@@ -131,7 +132,14 @@ describe("signing in through the browser", () => {
     // The browser: the person approves, and the browser goes back to the CLI.
     const approved = await fetch(`${s.url}/v1/oauth/authorize`, { method: "POST", headers: browser(cookie), body: JSON.stringify({ ...q, approve: true }) });
     const back = await fetch(((await approved.json()) as any).redirect);
-    expect(await back.text()).toContain("Connected");
+    expect(back.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const page = await back.text();
+    // fontego's own page, with the web app's look and nothing loaded or run: its policy allows only its own style
+    expect(page).toContain("<h1>Connected</h1>");
+    expect(page).toContain("prefers-color-scheme:dark");
+    expect(page).toContain(`content="default-src 'none'; style-src 'unsafe-inline'"`);
+    expect(page).not.toContain("<script");
+    expect(page).toContain(new URL(s.url).host);
 
     const r = await finish();
     expect(r.code).toBe(0);
@@ -614,5 +622,20 @@ describe("signing in as someone else", () => {
     // The token it replaced still works: said too
     expect(text.out).toContain("The previous token still works on the server");
     rmSync(own, { recursive: true, force: true });
+  });
+});
+
+describe("the page the browser comes back to", () => {
+  test("says how it went, names where in plain text, and a refusal reads as one", () => {
+    const refused = signInPage("refused", { name: `<img src=x onerror=alert(1)> & co`, url: "https://fontego.example.org" });
+    expect(refused).toContain("<h1>Not connected</h1>");
+    expect(refused).toContain('class="card no"');
+    expect(refused).toContain("&#60;img src=x onerror=alert(1)&#62; &#38; co");
+    expect(refused).not.toContain("<img");
+    expect(refused).toContain("fontego.example.org");
+    const wrong = signInPage("wrong");
+    expect(wrong).toContain("<h1>Not this one</h1>");
+    expect(wrong).not.toContain('class="where"');
+    expect(signInPage("connected")).toContain('class="card ok"');
   });
 });

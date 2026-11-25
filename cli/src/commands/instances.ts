@@ -235,6 +235,7 @@ export const instanceCommands: Builtin[] = [
           try {
             t = await browserLogin(url, {
               machine,
+              name: info.name,
               waiting: (link) => {
                 const opened = openInBrowser(link);
                 // Nothing here opens it (no browser program): its link would only work on this machine, so a code

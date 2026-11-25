@@ -378,15 +378,68 @@ export function instanceLink(link: string, instanceUrl: string): string {
   );
 }
 
-const PAGE = (title: string, text: string) =>
-  `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:16px system-ui;margin:4em auto;max-width:32em;padding:0 1em"><h1>${title}</h1><p>${text}</p>`;
+/** Where a sign-in goes, as the page that ends it names it */
+export interface SignInPlace {
+  name: string;
+  url: string;
+}
+
+const PAGES = {
+  connected: { title: "Connected", ok: true, text: "fontego is signed in. You can close this tab and go back to the terminal." },
+  refused: { title: "Not connected", ok: false, text: "The sign-in was refused, so fontego isn't signed in. You can close this tab." },
+  wrong: { title: "Not this one", ok: false, text: "This link isn't the one the terminal is waiting for. Go back to the terminal and open the link it shows." },
+} as const;
+
+/**
+ * The page the browser shows when it comes back to fontego from signing in. It is fontego's own (the server's web app
+ * can't be shown from here), so it carries the web app's look itself: its palette, light and dark as the system says,
+ * and the same kind of mark. Nothing on it is loaded from anywhere and it runs no script; its policy says so.
+ */
+export function signInPage(kind: keyof typeof PAGES, place?: SignInPlace): string {
+  const { title, ok, text } = PAGES[kind];
+  const mark = ok
+    ? `<path d="M4.5 12.5l5 5L19.5 7"/>`
+    : `<path d="M6 6l12 12M18 6L6 18"/>`;
+  const where = place
+    ? `<p class="where">${escapeHtml(place.name)} <span>${escapeHtml(new URL(place.url).host)}</span></p>`
+    : "";
+  return (
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">` +
+    `<meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light dark"><title>${title}</title>` +
+    `<style>${PAGE_STYLE}</style>` +
+    `<main class="card ${ok ? "ok" : "no"}">` +
+    `<svg class="mark" viewBox="0 0 24 24" aria-hidden="true">${mark}</svg>` +
+    `<h1>${title}</h1><p>${text}</p>${where}</main>`
+  );
+}
+
+/** The web app's palette (its app.css tokens) and a card, for signInPage */
+const PAGE_STYLE =
+  `:root{--bg:#f4f4f2;--card:#fff;--line:#dad9d5;--text:#1d1c1b;--soft:#5e5c58;--ok:#2f6b2a;--ok-soft:#dcebd5;` +
+  `--no:#a8321c;--no-soft:#f6e1db;--shadow:0 1px 2px rgb(16 24 40/6%);` +
+  `--font:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;` +
+  `--mono:ui-monospace,"JetBrains Mono","SFMono-Regular",Menlo,Consolas,monospace}` +
+  `@media (prefers-color-scheme:dark){:root{--bg:#1d1c1b;--card:#252423;--line:#363533;--text:#fff;--soft:#b3b1ae;` +
+  `--ok:#9cc98f;--ok-soft:#1f2a1c;--no:#f0907a;--no-soft:#3a221c;--shadow:none}}` +
+  `*{box-sizing:border-box}html,body{margin:0;min-height:100%}` +
+  `body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px 16px;background:var(--bg);` +
+  `color:var(--text);font:15px/1.5 var(--font);-webkit-text-size-adjust:100%}` +
+  `.card{width:100%;max-width:420px;padding:28px;background:var(--card);border:1px solid var(--line);border-radius:10px;` +
+  `box-shadow:var(--shadow)}` +
+  `.mark{width:44px;height:44px;padding:10px;border-radius:50%;fill:none;stroke-width:2.4;stroke-linecap:round;` +
+  `stroke-linejoin:round}.ok .mark{color:var(--ok);background:var(--ok-soft);stroke:currentColor}` +
+  `.no .mark{color:var(--no);background:var(--no-soft);stroke:currentColor}` +
+  `h1{margin:16px 0 6px;font-size:22px;line-height:1.25;font-weight:650}p{margin:0;color:var(--soft)}` +
+  `.where{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);color:var(--text);font-size:13.5px}` +
+  `.where span{margin-left:6px;color:var(--soft);font-family:var(--mono);font-size:12.5px}`;
 
 /**
  * The browser way: opens the instance's page, waits on 127.0.0.1 for the browser to come back with a code, and swaps
  * it for a session. `waiting` is told the link, for whoever has to open it. `machine`: the name the new session goes
  * by (machineName() unless given), which the page that approves it shows.
  */
-export async function browserLogin(url: string, opts: { waiting: (link: string) => void; timeoutMs?: number; machine?: string }): Promise<TokenResponse> {
+export async function browserLogin(url: string, opts: { waiting: (link: string) => void; timeoutMs?: number; machine?: string; name?: string }): Promise<TokenResponse> {
   const base = normalizeUrl(url);
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -399,12 +452,11 @@ export async function browserLogin(url: string, opts: { waiting: (link: string) 
     fetch(req) {
       const u = new URL(req.url);
       if (u.pathname !== "/callback") return new Response("Not found", { status: 404 });
-      if (u.searchParams.get("state") !== state) return new Response(PAGE("Not this one", "This link isn't the one the terminal is waiting for."), { status: 400, headers: { "content-type": "text/html" } });
+      const html = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
+      if (u.searchParams.get("state") !== state) return new Response(signInPage("wrong"), { status: 400, headers: html });
       const error = u.searchParams.get("error");
       settle({ code: u.searchParams.get("code") ?? undefined, error: error ?? undefined });
-      return new Response(error ? PAGE("Not connected", "The CLI was told no. You can close this tab.") : PAGE("Connected", "You can close this tab and go back to the terminal."), {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      return new Response(signInPage(error ? "refused" : "connected", { name: opts.name ?? new URL(base).host, url: base }), { headers: html });
     },
   });
   const redirectUri = `http://127.0.0.1:${server.port}/callback`;
